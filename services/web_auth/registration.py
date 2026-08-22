@@ -83,9 +83,11 @@ class AuthConfig:
     max_code_attempts: int = 5
     phone_hour_limit: int = 5
     phone_day_limit: int = 5
+    ip_minute_limit: int = 10
     ip_hour_limit: int = 20
     ip_prefix_hour_limit: int = 30
     device_hour_limit: int = 10
+    device_day_limit: int = 20
     tenant_hour_limit: int = 300
     global_day_limit: int = 10_000
     captcha_after_phone_day: int = 3
@@ -288,6 +290,7 @@ class InMemoryRegistrationStore:
         """Atomically check limits and reserve one provider attempt."""
 
         with self._lock:
+            minute = now - timedelta(minutes=1)
             hour = now - timedelta(hours=1)
             day = now - timedelta(days=1)
             phone_times = self._send_times[("phone", phone_hash)]
@@ -300,9 +303,11 @@ class InMemoryRegistrationStore:
             limits = (
                 ("phone", phone_hash, hour, config.phone_hour_limit),
                 ("phone", phone_hash, day, config.phone_day_limit),
+                ("ip", ip_hash, minute, config.ip_minute_limit),
                 ("ip", ip_hash, hour, config.ip_hour_limit),
                 ("ip_prefix", ip_prefix_hash, hour, config.ip_prefix_hour_limit),
                 ("device", device_hash, hour, config.device_hour_limit),
+                ("device", device_hash, day, config.device_day_limit),
                 ("tenant", tenant_hash, hour, config.tenant_hour_limit),
                 ("global", "all", day, config.global_day_limit),
             )

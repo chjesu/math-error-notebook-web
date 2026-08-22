@@ -123,6 +123,70 @@ class RegistrationServiceTests(unittest.TestCase):
         self.assertEqual(results[5].status, SendCodeStatus.RETRY_LATER)
         self.assertEqual(len(self.sender.deliveries), 5)
 
+    def test_ip_minute_and_device_day_limits_are_atomic(self) -> None:
+        def reserve(store, config, index, *, ip_hash, device_hash, now):
+            return store.reserve_send(
+                phone_hash=f"phone-{index}",
+                ip_hash=ip_hash,
+                ip_prefix_hash=f"prefix-{index}",
+                device_hash=device_hash,
+                tenant_hash="tenant",
+                now=now,
+                config=config,
+            )[0]
+
+        ip_store = InMemoryRegistrationStore()
+        ip_config = AuthConfig(
+            phone_hour_limit=99,
+            phone_day_limit=99,
+            ip_minute_limit=2,
+            ip_hour_limit=99,
+            ip_prefix_hour_limit=99,
+            device_hour_limit=99,
+            device_day_limit=99,
+            tenant_hour_limit=99,
+        )
+        self.assertEqual(
+            [
+                reserve(
+                    ip_store,
+                    ip_config,
+                    index,
+                    ip_hash="shared-ip",
+                    device_hash=f"device-{index}",
+                    now=NOW + timedelta(seconds=index),
+                )
+                for index in range(3)
+            ],
+            [True, True, False],
+        )
+
+        device_store = InMemoryRegistrationStore()
+        device_config = AuthConfig(
+            phone_hour_limit=99,
+            phone_day_limit=99,
+            ip_minute_limit=99,
+            ip_hour_limit=99,
+            ip_prefix_hour_limit=99,
+            device_hour_limit=99,
+            device_day_limit=2,
+            tenant_hour_limit=99,
+        )
+        self.assertEqual(
+            [
+                reserve(
+                    device_store,
+                    device_config,
+                    index,
+                    ip_hash=f"ip-{index}",
+                    device_hash="shared-device",
+                    now=NOW + timedelta(hours=index),
+                )
+                for index in range(3)
+            ],
+            [True, True, False],
+        )
+
     def test_invalid_attempts_lock_challenge(self) -> None:
         sent = self.request()
         for _ in range(4):

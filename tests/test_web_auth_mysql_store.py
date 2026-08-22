@@ -65,7 +65,7 @@ class MySqlRegistrationStoreTests(unittest.TestCase):
         )
 
     def test_atomic_reservation_locks_every_bucket_in_stable_order(self) -> None:
-        connection = FakeConnection([(0,)] * 7 + [(NOW.replace(tzinfo=None),), (0,)])
+        connection = FakeConnection([(0,)] * 9 + [(NOW.replace(tzinfo=None),), (0,)])
         allowed, _ = self.reserve(self.store(connection))
         self.assertTrue(allowed)
         self.assertEqual((connection.begun, connection.committed, connection.rolled_back), (1, 1, 0))
@@ -74,7 +74,9 @@ class MySqlRegistrationStoreTests(unittest.TestCase):
             for query, args in connection.cursor_instance.executed
             if query.startswith("SELECT request_count")
         ]
-        self.assertEqual(len(locks), 7)
+        self.assertEqual(len(locks), 9)
+        self.assertIn("minute", [args[2] for args in locks])
+        self.assertIn("day", [args[2] for args in locks if args[0] == "device"])
         self.assertEqual(locks, sorted(locks))
         self.assertTrue(
             any("INSERT INTO auth_sms_send_events" in query for query, _ in connection.cursor_instance.executed)
@@ -88,7 +90,7 @@ class MySqlRegistrationStoreTests(unittest.TestCase):
 
     def test_rolling_phone_day_limit_cannot_reset_at_bucket_boundary(self) -> None:
         connection = FakeConnection(
-            [(0,)] * 7 + [(NOW.replace(tzinfo=None),), (AuthConfig().phone_day_limit,)]
+            [(0,)] * 9 + [(NOW.replace(tzinfo=None),), (AuthConfig().phone_day_limit,)]
         )
         allowed, _ = self.reserve(self.store(connection))
         self.assertFalse(allowed)
@@ -98,7 +100,7 @@ class MySqlRegistrationStoreTests(unittest.TestCase):
         )
 
     def test_limit_hit_rolls_back_without_send_event(self) -> None:
-        connection = FakeConnection([(10,)])  # alphabetically first bucket is device/hour
+        connection = FakeConnection([(AuthConfig().device_day_limit,)])
         allowed, _ = self.reserve(self.store(connection))
         self.assertFalse(allowed)
         self.assertEqual((connection.committed, connection.rolled_back), (0, 1))

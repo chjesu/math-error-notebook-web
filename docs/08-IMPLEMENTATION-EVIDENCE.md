@@ -7,7 +7,7 @@
 | 要求 | 证据 |
 |---|---|
 | 手机验证码注册/登录 | `services/web_auth/registration.py`、`asgi.py` |
-| 防验证码轰炸 | 手机 60 秒冷却、5 次/小时、5 次/滚动 24 小时，并叠加 IP、IP 前缀、设备、租户和全局限额 |
+| 防验证码轰炸 | 手机 60 秒冷却、5 次/小时、5 次/滚动 24 小时；IP 10 次/分钟、20 次/小时；设备 10 次/小时、20 次/日，并叠加 IP 前缀、租户和全局限额 |
 | MySQL 持久状态 | `mysql_store.py`、`migrations/0001_phone_registration.sql` |
 | 瑞成云通道 | `ruicheng_sms.py`；单次 POST、3/5 秒超时、不自动重试 |
 | CAPTCHA | `turnstile.py`；服务端校验 success、hostname、action，失败关闭 |
@@ -19,7 +19,7 @@
 
 ## 自动化验证
 
-- `python -X utf8 -B -m unittest discover -s tests -p "test_*.py"`：47 项通过。
+- `python -X utf8 -B -m unittest discover -s tests -p "test_*.py"`：50 项通过。
 - `python -X utf8 -B scripts/project_workflow.py doctor --json`：`status=ok`，无缺失文件。
 - 使用虚构环境变量调用 `services.web_auth.bootstrap:create_app`：成功创建 `AuthAsgiApp`，未连接真实 MySQL、Turnstile 或短信网关。
 - Codex 路由预览：需求为 Luna/low，普通实现为 Terra/medium；认证风险提升为 Sol/high。
@@ -33,4 +33,3 @@
 5. 通过显式外发授权完成 Luna、Terra、Sol 三层只读复核；
 6. 完成枚举时序、WAF/SLB 可信代理、告警、成本熔断、备份和回滚演练；
 7. 由人工交付经理记录部署批准。
-

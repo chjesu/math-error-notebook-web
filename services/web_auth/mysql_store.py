@@ -44,6 +44,8 @@ class MySqlRegistrationStore:
     @staticmethod
     def _window_start(now: datetime, kind: str) -> datetime:
         utc = now.astimezone(timezone.utc).replace(tzinfo=None)
+        if kind == "minute":
+            return utc.replace(second=0, microsecond=0)
         if kind == "hour":
             return utc.replace(minute=0, second=0, microsecond=0)
         if kind == "day":
@@ -64,9 +66,11 @@ class MySqlRegistrationStore:
         specs = [
             ("phone", phone_hash, "hour", self._window_start(now, "hour"), config.phone_hour_limit),
             ("phone", phone_hash, "day", self._window_start(now, "day"), config.phone_day_limit),
+            ("ip", ip_hash, "minute", self._window_start(now, "minute"), config.ip_minute_limit),
             ("ip", ip_hash, "hour", self._window_start(now, "hour"), config.ip_hour_limit),
             ("ip_prefix", ip_prefix_hash, "hour", self._window_start(now, "hour"), config.ip_prefix_hour_limit),
             ("device", device_hash, "hour", self._window_start(now, "hour"), config.device_hour_limit),
+            ("device", device_hash, "day", self._window_start(now, "day"), config.device_day_limit),
             ("tenant", tenant_hash, "hour", self._window_start(now, "hour"), config.tenant_hour_limit),
             ("global", "all", "day", self._window_start(now, "day"), config.global_day_limit),
         ]
