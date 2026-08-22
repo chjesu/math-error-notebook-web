@@ -223,13 +223,23 @@ class MySqlDomainStore:
         now = _utcnow()
         try:
             connection.begin()
-            changed = cursor.execute(
+            cursor.execute(
+                "SELECT file_id,input_version,status,question_text,answer_text FROM intake_items WHERE id=%s AND user_id=%s FOR UPDATE",
+                (intake_id, user_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise LookupError("intake not found")
+            if str(row[2]) == "waiting_confirmation" and str(row[3]) == question and str(row[4]) == answer_text:
+                connection.commit()
+                return IntakeItem(intake_id, user_id, str(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4]))
+            if str(row[2]) != "extracting":
+                raise RuntimeError("conflict")
+            cursor.execute(
                 "UPDATE intake_items SET question_text=%s,answer_text=%s,evidence_json=%s,status='waiting_confirmation',updated_at=%s "
                 "WHERE id=%s AND user_id=%s AND status='extracting'",
                 (question, answer_text, json.dumps(evidence, ensure_ascii=False), now, intake_id, user_id),
             )
-            if changed != 1:
-                raise LookupError("intake not found")
             cursor.execute("UPDATE web_jobs SET status='waiting_confirmation',checkpoint_json=%s,updated_at=%s WHERE user_id=%s AND resource_type='intake' AND resource_id=%s AND job_type='extract'", (json.dumps({"stage": "candidate_saved"}), now, user_id, intake_id))
             cursor.execute("SELECT file_id,input_version,status,question_text,answer_text FROM intake_items WHERE id=%s AND user_id=%s", (intake_id, user_id))
             row = cursor.fetchone()

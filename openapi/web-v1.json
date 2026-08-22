@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "李兆霖数学错题本 Web API",
-    "version": "0.3.2"
+    "version": "0.3.3"
   },
   "paths": {
     "/v1/auth/otp/request": {
@@ -57,7 +57,7 @@
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
         "requestBody": {"$ref": "#/components/requestBodies/FileUpload"},
-        "responses": {"201": {"$ref": "#/components/responses/File"}, "401": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}}
+        "responses": {"201": {"$ref": "#/components/responses/File"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "413": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/tasks/{task_id}": {
@@ -93,6 +93,26 @@
         "parameters": [{"$ref": "#/components/parameters/IntakeId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
         "requestBody": {"$ref": "#/components/requestBodies/Version"},
         "responses": {"202": {"$ref": "#/components/responses/TaskAccepted"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/intakes/{intake_id}/manual-candidate": {
+      "post": {
+        "operationId": "saveManualIntakeCandidate",
+        "description": "本地或自动识别不可用时，由当前用户手工补录题干与作答；结果仍须确认。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IntakeId"}],
+        "requestBody": {"$ref": "#/components/requestBodies/ManualIntakeCandidate"},
+        "responses": {"201": {"$ref": "#/components/responses/Intake"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/attempts/{attempt_id}/manual-grade": {
+      "post": {
+        "operationId": "saveManualGradeCandidate",
+        "description": "本地或自动判题不可用时，由当前用户记录判题候选；候选不会自动写入正式错题。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/AttemptId"}],
+        "requestBody": {"$ref": "#/components/requestBodies/ManualGradeCandidate"},
+        "responses": {"201": {"$ref": "#/components/responses/GradeCandidate"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/grade-results/{result_id}": {
@@ -198,6 +218,7 @@
       "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 64}},
       "TaskId": {"name": "task_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
       "IntakeId": {"name": "intake_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
+      "AttemptId": {"name": "attempt_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
       "ResultId": {"name": "result_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
       "ErrorId": {"name": "error_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}}
     },
@@ -207,6 +228,8 @@
       "FileUpload": {"required": true, "content": {"multipart/form-data": {"schema": {"$ref": "#/components/schemas/FileUpload"}}}},
       "CreateIntake": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateIntake"}}}},
       "IntakeRevision": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IntakeRevision"}}}},
+      "ManualIntakeCandidate": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualIntakeCandidate"}}}},
+      "ManualGradeCandidate": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualGradeCandidate"}}}},
       "Version": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Version"}}}},
       "ReviewResult": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewResult"}}}},
       "PracticePdf": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PracticePdfRequest"}}}}
@@ -242,6 +265,8 @@
       "File": {"type": "object", "required": ["file_id", "status", "content_sha256"], "properties": {"file_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["quarantined", "ready", "rejected"]}, "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
       "CreateIntake": {"type": "object", "additionalProperties": false, "required": ["file_id"], "properties": {"file_id": {"$ref": "#/components/schemas/Id"}}},
       "IntakeRevision": {"type": "object", "additionalProperties": false, "required": ["input_version", "question_text", "answer_text"], "properties": {"input_version": {"type": "integer", "minimum": 1}, "question_text": {"type": "string", "minLength": 1}, "answer_text": {"type": "string"}}},
+      "ManualIntakeCandidate": {"type": "object", "additionalProperties": false, "required": ["question_text"], "properties": {"question_text": {"type": "string", "minLength": 1}, "answer_text": {"type": "string", "default": ""}}},
+      "ManualGradeCandidate": {"type": "object", "additionalProperties": false, "required": ["input_version", "verdict"], "properties": {"input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "first_error": {"type": "string"}, "evidence": {"type": "string"}}},
       "Version": {"type": "object", "additionalProperties": false, "required": ["input_version"], "properties": {"input_version": {"type": "integer", "minimum": 1}}},
       "TaskAccepted": {"type": "object", "required": ["resource_id", "task_id"], "properties": {"resource_id": {"$ref": "#/components/schemas/Id"}, "task_id": {"$ref": "#/components/schemas/Id"}}},
       "Task": {"type": "object", "required": ["task_id", "type", "status"], "properties": {"task_id": {"$ref": "#/components/schemas/Id"}, "type": {"enum": ["extract", "grade", "import", "practice_pdf"]}, "status": {"enum": ["queued", "running", "waiting_confirmation", "completed", "failed_retryable", "failed_final", "cancelled"]}, "checkpoint": {"type": ["object", "null"]}, "last_error_code": {"type": ["string", "null"]}}},

@@ -423,7 +423,14 @@ def _clear_test_data() -> None:
         connection.close()
 
 
-async def _asgi_call(app: Any, path: str, payload: dict[str, Any]) -> tuple[int, dict[str, str], dict]:
+async def _asgi_call(
+    app: Any,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    cookie: str | None = None,
+    idempotency_key: str | None = None,
+) -> tuple[int, dict[str, str], dict]:
     body = json.dumps(payload).encode("utf-8")
     requests = [{"type": "http.request", "body": body, "more_body": False}]
     responses: list[dict[str, Any]] = []
@@ -434,6 +441,15 @@ async def _asgi_call(app: Any, path: str, payload: dict[str, Any]) -> tuple[int,
     async def send(message: dict[str, Any]) -> None:
         responses.append(message)
 
+    request_headers = [
+        (b"host", b"local.test"),
+        (b"content-type", b"application/json"),
+        (b"x-device-id", b"local-smoke-device"),
+    ]
+    if cookie:
+        request_headers.extend([(b"cookie", cookie.split(";", 1)[0].encode("ascii")), (b"origin", b"https://local.test")])
+    if idempotency_key:
+        request_headers.append((b"idempotency-key", idempotency_key.encode("ascii")))
     await app(
         {
             "type": "http",
@@ -441,11 +457,7 @@ async def _asgi_call(app: Any, path: str, payload: dict[str, Any]) -> tuple[int,
             "path": path,
             "scheme": "https",
             "client": ("198.51.100.10", 12345),
-            "headers": [
-                (b"host", b"local.test"),
-                (b"content-type", b"application/json"),
-                (b"x-device-id", b"local-smoke-device"),
-            ],
+            "headers": request_headers,
         },
         receive,
         send,
@@ -474,6 +486,7 @@ def _service():
 
 
 def _domain_smoke(service: Any, session_cookie: str) -> dict[str, int]:
+    from services.web_app import NotebookAsgiApp
     from services.web_domain import MySqlDomainStore, NotebookService
 
     token = session_cookie.split(";", 1)[0].split("=", 1)[1]
@@ -484,11 +497,25 @@ def _domain_smoke(service: Any, session_cookie: str) -> dict[str, int]:
     with tempfile.TemporaryDirectory(prefix="domain-smoke-", dir=RUNTIME) as directory:
         notebook = NotebookService(store, Path(directory))
         uploaded = notebook.upload(user_id=user.user_id, purpose="question_image", original_name="question.png", content=b"\x89PNG\r\n\x1a\nlocal-smoke")
-        intake, _ = store.create_intake(user_id=user.user_id, file_id=uploaded.file_id, idempotency_key="smoke-extract")
-        store.save_extraction_candidate(user_id=user.user_id, intake_id=intake.intake_id, question_text="解方程 x+1=2", answer_text="x=0", evidence={"source": "local-smoke"})
-        attempt_id, _ = store.confirm_intake(user_id=user.user_id, intake_id=intake.intake_id, expected_version=1, idempotency_key="smoke-grade")
-        candidate = store.record_grade_candidate(user_id=user.user_id, attempt_id=attempt_id, input_version=1, verdict="incorrect", first_error="移项符号错误", evidence="x 应为 1")
-        error = store.commit_grade(user_id=user.user_id, candidate_id=candidate.candidate_id, expected_version=1)
+        app = NotebookAsgiApp(service, notebook, allowed_hosts={"local.test"})
+        created = asyncio.run(_asgi_call(app, "/v1/intakes", {"file_id": uploaded.file_id}, cookie=session_cookie, idempotency_key="smoke-extract"))
+        if created[0] != 202:
+            raise RuntimeError("domain intake API smoke test failed")
+        intake_id = created[2]["resource_id"]
+        manual = asyncio.run(_asgi_call(app, f"/v1/intakes/{intake_id}/manual-candidate", {"question_text": "解方程 x+1=2", "answer_text": "x=0"}, cookie=session_cookie))
+        repeated = asyncio.run(_asgi_call(app, f"/v1/intakes/{intake_id}/manual-candidate", {"question_text": "解方程 x+1=2", "answer_text": "x=0"}, cookie=session_cookie))
+        if manual[0] != 201 or repeated[2] != manual[2]:
+            raise RuntimeError("domain manual intake API smoke test failed")
+        confirmed = asyncio.run(_asgi_call(app, f"/v1/intakes/{intake_id}/confirm", {"input_version": 1}, cookie=session_cookie, idempotency_key="smoke-grade"))
+        if confirmed[0] != 202:
+            raise RuntimeError("domain manual intake confirmation API smoke test failed")
+        graded = asyncio.run(_asgi_call(app, f"/v1/attempts/{confirmed[2]['resource_id']}/manual-grade", {"input_version": 1, "verdict": "incorrect", "first_error": "移项符号错误", "evidence": "x 应为 1"}, cookie=session_cookie))
+        if graded[0] != 201:
+            raise RuntimeError("domain manual grade candidate API smoke test failed")
+        committed = asyncio.run(_asgi_call(app, f"/v1/grade-results/{graded[2]['result_id']}/commit", {"input_version": 1}, cookie=session_cookie, idempotency_key="smoke-commit"))
+        if committed[0] != 201:
+            raise RuntimeError("domain manual grade commit API smoke test failed")
+        error_id = committed[2]["error_id"]
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         source_id = hashlib.sha256(f"{user.user_id}:source".encode("ascii")).hexdigest()[:32]
         question_id = hashlib.sha256(f"{user.user_id}:question".encode("ascii")).hexdigest()[:32]
@@ -509,16 +536,16 @@ def _domain_smoke(service: Any, session_cookie: str) -> dict[str, int]:
         finally:
             cursor.close()
             connection.close()
-        recommendations, _ = store.assign_recommendations(user_id=user.user_id, error_id=error.error_id)
+        recommendations, _ = store.assign_recommendations(user_id=user.user_id, error_id=error_id)
         reviews = store.list_due_reviews(user_id=user.user_id)
         if len(recommendations) != 1 or len(reviews) != 1:
             raise RuntimeError("domain recommendation or review smoke test failed")
         store.complete_review(user_id=user.user_id, task_id=reviews[0].task_id, result="correct", idempotency_key="smoke-review")
-        pdf_job = notebook.create_practice_pdf(user_id=user.user_id, error_ids=[error.error_id], idempotency_key="smoke-pdf")
+        pdf_job = notebook.create_practice_pdf(user_id=user.user_id, error_ids=[error_id], idempotency_key="smoke-pdf")
         _, pdf = notebook.download_practice_pdf(user_id=user.user_id, job_id=pdf_job.job_id)
         if not pdf.startswith(b"%PDF-"):
             raise RuntimeError("domain PDF smoke test failed")
-        return {"recommendations": len(recommendations), "reviews": len(reviews), "pdf_bytes": len(pdf)}
+        return {"manual_api": 1, "recommendations": len(recommendations), "reviews": len(reviews), "pdf_bytes": len(pdf)}
 
 
 def _clear_domain_smoke_data(user_id: str) -> None:
@@ -635,6 +662,7 @@ def smoke() -> dict[str, Any]:
         "ip_minute_provider_sends": len(ip_sender.deliveries),
         "domain_recommendations": domain["recommendations"],
         "domain_reviews": domain["reviews"],
+        "domain_manual_api": domain["manual_api"],
         "domain_pdf_bytes": domain["pdf_bytes"],
     }
 

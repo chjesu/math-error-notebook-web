@@ -47,8 +47,8 @@ erDiagram
 | 记录 | 可修改 | 成为正式记录的门 |
 |---|---|---|
 | 上传文件 | 否；删除为状态变化 | 安全检查为 ready |
-| `intake_items` 识别候选 | 用户可修订；每次 `input_version+1` | 用户确认当前版本 |
-| `grade_candidates` 判题候选 | 模型不可覆盖输入 | `input_version` 相等且 verdict 非 unclear |
+| `intake_items` 识别候选 | 自动解析或用户手工补录后可修订；每次 `input_version+1` | 用户确认当前版本 |
+| `grade_candidates` 判题候选 | 模型不可覆盖输入；本地手工候选明确记录为用户输入 | `input_version` 相等且 verdict 非 unclear |
 | `error_notebook_entries` 正式错题 | 只追加审计更新 | 用户显式确认；按 attempt 唯一 |
 | 题库候选版本 | 只追加版本 | 来源允许 + 独立/人工验证 |
 
@@ -56,7 +56,7 @@ erDiagram
 
 ## 4. API 与错误（ARCH-004）
 
-权威机器契约：`openapi/web-v1.json`。当前 21 条路径覆盖 OTP、会话、工作台、文件与任务、识别/判题/正式入本、错题、已验证推荐、今日复习、进度以及练习 PDF 创建/授权下载。
+权威机器契约：`openapi/web-v1.json`。当前 23 条路径覆盖 OTP、会话、工作台、文件与任务、自动不可用时的手工识别/判题候选、正式入本、错题、已验证推荐、今日复习、进度以及练习 PDF 创建/授权下载。
 
 | 错误码 | HTTP | 页面行为 |
 |---|---:|---|

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from typing import Any, Awaitable, Callable
@@ -111,7 +112,8 @@ class AuthAsgiApp:
     ) -> None:
         if set(payload) - {"phone", "captcha_token"}:
             raise ValueError("unsupported request field")
-        result = self.service.request_code(
+        result = await asyncio.to_thread(
+            self.service.request_code,
             phone=str(payload["phone"]),
             captcha_token=(str(payload["captcha_token"]) if payload.get("captcha_token") else None),
             ip_address=client_ip,
@@ -148,7 +150,8 @@ class AuthAsgiApp:
     ) -> None:
         if set(payload) - {"challenge_token", "phone", "code"}:
             raise ValueError("unsupported verification field")
-        result = self.service.register(
+        result = await asyncio.to_thread(
+            self.service.register,
             challenge_id=str(payload["challenge_token"]),
             phone=str(payload["phone"]),
             code=str(payload["code"]),
@@ -187,7 +190,7 @@ class AuthAsgiApp:
             await self._json(send, 405, {"error": "method_not_allowed"}, [(b"allow", allowed.encode("ascii"))])
             return
         token = self._cookie(headers.get("cookie", ""), self.session_cookie)
-        user = self.service.authenticate_session(token or "")
+        user = await asyncio.to_thread(self.service.authenticate_session, token or "")
         if user is None:
             await self._json(send, 401, {"error": "authentication_required"})
             return
@@ -195,9 +198,9 @@ class AuthAsgiApp:
             await self._json(send, 200, {"authenticated": True, "account_status": user.status})
             return
         if path == "/v1/sessions":
-            self.service.logout_all(token or "")
+            await asyncio.to_thread(self.service.logout_all, token or "")
         else:
-            self.service.logout(token or "")
+            await asyncio.to_thread(self.service.logout, token or "")
         expired = (
             f"{self.session_cookie}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
         ).encode("ascii")

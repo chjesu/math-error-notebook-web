@@ -16,6 +16,9 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("练习 PDF", html)
         self.assertIn("/v1/reviews/today", script)
         self.assertIn("/v1/practice-pdfs", script)
+        self.assertIn("/manual-candidate", script)
+        self.assertIn("/manual-grade", script)
+        self.assertIn("确认写入错题本", html)
 
     def test_mobile_layout_and_keyboard_focus_are_defined(self) -> None:
         css = (Path(__file__).resolve().parents[1] / "web" / "app.css").read_text(encoding="utf-8")

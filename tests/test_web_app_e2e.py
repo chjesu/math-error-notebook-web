@@ -90,18 +90,22 @@ class NotebookE2ETests(unittest.TestCase):
         created = self.call("/v1/intakes", method="POST", payload={"file_id": uploaded[2]["file_id"]}, cookie=cookie, idempotency_key="extract-0001")
         self.assertEqual(created[0], 202)
         intake_id = created[2]["resource_id"]
-        user_id = next(iter(self.auth_store.users_by_phone.values())).user_id
-        self.domain_store.save_extraction_candidate(user_id=user_id, intake_id=intake_id, question_text="若 x+1=2，求 x。", answer_text="x=0", evidence={"page": 1})
+        manual = self.call(f"/v1/intakes/{intake_id}/manual-candidate", method="POST", payload={"question_text": "若 x+1=2，求 x。", "answer_text": "x=0"}, cookie=cookie)
+        self.assertEqual((manual[0], manual[2]["status"]), (201, "waiting_confirmation"))
+        repeated = self.call(f"/v1/intakes/{intake_id}/manual-candidate", method="POST", payload={"question_text": "若 x+1=2，求 x。", "answer_text": "x=0"}, cookie=cookie)
+        self.assertEqual(repeated[2], manual[2])
 
         revised = self.call(f"/v1/intakes/{intake_id}", method="PATCH", payload={"input_version": 1, "question_text": "若 x+1=2，求 x。", "answer_text": "x=0"}, cookie=cookie)
         self.assertEqual((revised[0], revised[2]["input_version"]), (200, 2))
         confirmed = self.call(f"/v1/intakes/{intake_id}/confirm", method="POST", payload={"input_version": 2}, cookie=cookie, idempotency_key="grade-0001")
         self.assertEqual(confirmed[0], 202)
-        candidate = self.domain_store.record_grade_candidate(user_id=user_id, attempt_id=confirmed[2]["resource_id"], input_version=2, verdict="incorrect", first_error="移项后符号错误", evidence="x+1=2 应得 x=1")
+        graded = self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/manual-grade", method="POST", payload={"input_version": 2, "verdict": "incorrect", "first_error": "移项后符号错误", "evidence": "x+1=2 应得 x=1"}, cookie=cookie)
+        self.assertEqual(graded[0], 201)
+        candidate_id = graded[2]["result_id"]
 
-        result = self.call(f"/v1/grade-results/{candidate.candidate_id}", cookie=cookie)
+        result = self.call(f"/v1/grade-results/{candidate_id}", cookie=cookie)
         self.assertEqual((result[0], result[2]["verdict"]), (200, "incorrect"))
-        committed = self.call(f"/v1/grade-results/{candidate.candidate_id}/commit", method="POST", payload={"input_version": 2}, cookie=cookie, idempotency_key="commit-0001")
+        committed = self.call(f"/v1/grade-results/{candidate_id}/commit", method="POST", payload={"input_version": 2}, cookie=cookie, idempotency_key="commit-0001")
         self.assertEqual(committed[0], 201)
         error_id = committed[2]["error_id"]
         self.assertEqual(self.call("/v1/errors", cookie=cookie)[2]["items"][0]["error_id"], error_id)
@@ -127,6 +131,27 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(denied[0], 404)
         self.assertEqual(denied[2]["error"]["code"], "not_found")
         self.assertEqual(self.call(practice[2]["download_url"], cookie=other_cookie)[0], 404)
+        self.assertEqual(self.call(f"/v1/intakes/{intake_id}/manual-candidate", method="POST", payload={"question_text": "越权题目"}, cookie=other_cookie)[0], 404)
+
+    def test_manual_grade_requires_first_error_and_large_body_is_413(self) -> None:
+        cookie = self.login("13700137000")
+        content_type, body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nimage")
+        uploaded = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="upload-validation")
+        created = self.call("/v1/intakes", method="POST", payload={"file_id": uploaded[2]["file_id"]}, cookie=cookie, idempotency_key="extract-validation")
+        intake_id = created[2]["resource_id"]
+        self.call(f"/v1/intakes/{intake_id}/manual-candidate", method="POST", payload={"question_text": "题目", "answer_text": "错误作答"}, cookie=cookie)
+        confirmed = self.call(f"/v1/intakes/{intake_id}/confirm", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="grade-validation")
+        invalid = self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/manual-grade", method="POST", payload={"input_version": 1, "verdict": "incorrect"}, cookie=cookie)
+        self.assertEqual((invalid[0], invalid[2]["error"]["code"]), (400, "invalid_request"))
+
+        limited = NotebookAsgiApp(self.auth_service, self.notebook, allowed_hosts={"example.test"}, max_upload_bytes=8)
+        original = self.app
+        self.app = limited
+        try:
+            too_large = self.call("/v1/files", method="POST", body=b"012345678", content_type="multipart/form-data; boundary=x", cookie=cookie)
+        finally:
+            self.app = original
+        self.assertEqual((too_large[0], too_large[2]["error"]["code"]), (413, "request_too_large"))
 
     def test_stale_candidate_and_unclear_result_cannot_enter_notebook(self) -> None:
         user = "a" * 32

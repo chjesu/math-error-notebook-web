@@ -3,6 +3,9 @@ let challenge = null;
 let phone = null;
 let dueReview = null;
 let recentErrorIds = [];
+let activeIntake = null;
+let activeAttempt = null;
+let activeCandidate = null;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -105,12 +108,102 @@ $("#upload-form").addEventListener("submit", async event => {
   try {
     const uploaded = await api("/v1/files", {method: "POST", body: form, headers: {"Idempotency-Key": crypto.randomUUID()}});
     const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-    status($("#upload-status"), `已保存，识别任务 ${task.task_id.slice(0, 8)} 正在处理。`);
+    activeIntake = {intakeId: task.resource_id, inputVersion: 1};
+    activeAttempt = null;
+    activeCandidate = null;
+    $("#manual-flow").hidden = false;
+    $("#manual-intake-form").hidden = false;
+    $("#manual-grade-form").hidden = true;
+    $("#grade-confirm").hidden = true;
+    status($("#upload-status"), `文件已保存。请手工确认题干与作答；自动识别 Worker 接入后也会保留确认步骤。`);
+    $("#question-text").focus();
     await refresh();
   } catch (error) {
     status($("#upload-status"), `上传失败：${error.message}。文件未丢失时可重试。`, true);
   } finally {
     button.disabled = false;
+  }
+});
+
+$("#manual-intake-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!activeIntake) return;
+  const button = event.submitter;
+  button.disabled = true;
+  try {
+    const intake = await api(`/v1/intakes/${activeIntake.intakeId}/manual-candidate`, {
+      method: "POST",
+      body: JSON.stringify({question_text: $("#question-text").value, answer_text: $("#answer-text").value})
+    });
+    const confirmed = await api(`/v1/intakes/${activeIntake.intakeId}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({input_version: intake.input_version}),
+      headers: {"Idempotency-Key": crypto.randomUUID()}
+    });
+    activeIntake.inputVersion = intake.input_version;
+    activeAttempt = confirmed.resource_id;
+    $("#manual-intake-form").hidden = true;
+    $("#manual-grade-form").hidden = false;
+    status($("#manual-status"), "题干与作答已确认，请记录判题候选。");
+    $("#verdict").focus();
+  } catch (error) {
+    status($("#manual-status"), `确认失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#verdict").addEventListener("change", event => {
+  $("#first-error").required = ["incorrect", "partial"].includes(event.target.value);
+});
+
+$("#manual-grade-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!activeAttempt || !activeIntake) return;
+  const button = event.submitter;
+  button.disabled = true;
+  try {
+    activeCandidate = await api(`/v1/attempts/${activeAttempt}/manual-grade`, {
+      method: "POST",
+      body: JSON.stringify({
+        input_version: activeIntake.inputVersion,
+        verdict: $("#verdict").value,
+        first_error: $("#first-error").value,
+        evidence: $("#grade-evidence").value
+      })
+    });
+    const canCommit = ["incorrect", "partial"].includes(activeCandidate.verdict);
+    $("#grade-summary").textContent = canCommit
+      ? `候选结果：${activeCandidate.verdict === "incorrect" ? "错误" : "部分正确"}；首错：${activeCandidate.first_error}`
+      : activeCandidate.verdict === "correct" ? "候选结果：本题正确，不写入错题本。" : "证据不足，不能写入错题本。";
+    $("#grade-confirm").hidden = false;
+    $("#commit-grade").hidden = !canCommit;
+    status($("#manual-status"), canCommit ? "请核对候选后确认入本。" : "已安全停止，不会写入正式错题。");
+  } catch (error) {
+    status($("#manual-status"), `判题记录失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#commit-grade").addEventListener("click", async event => {
+  if (!activeCandidate) return;
+  event.currentTarget.disabled = true;
+  try {
+    await api(`/v1/grade-results/${activeCandidate.result_id}/commit`, {
+      method: "POST",
+      body: JSON.stringify({input_version: activeCandidate.input_version}),
+      headers: {"Idempotency-Key": crypto.randomUUID()}
+    });
+    status($("#upload-status"), "已写入错题本，并安排首次复习。");
+    $("#manual-flow").hidden = true;
+    $("#upload-form").reset();
+    activeIntake = activeAttempt = activeCandidate = null;
+    await refresh();
+  } catch (error) {
+    status($("#manual-status"), `入本失败：${error.message}`, true);
+  } finally {
+    event.currentTarget.disabled = false;
   }
 });
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from email import policy
 from email.parser import BytesParser
 import json
@@ -64,7 +65,7 @@ class NotebookAsgiApp:
             await self._asset(send, *static)
             return
         token = self._cookie(headers.get("cookie", ""), self.session_cookie)
-        user = self.auth_service.authenticate_session(token or "")
+        user = await asyncio.to_thread(self.auth_service.authenticate_session, token or "")
         if user is None:
             await self._error(send, 401, "authentication_required")
             return
@@ -75,87 +76,125 @@ class NotebookAsgiApp:
                 return
         try:
             if path == "/v1/workbench" and method == "GET":
-                items = self.notebook.store.list_errors(user_id=user.user_id)
-                pending = self.notebook.store.pending_job_count(user_id=user.user_id)
-                progress = self.notebook.store.progress(user_id=user.user_id)
+                items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
+                pending = await self._sync(self.notebook.store.pending_job_count, user_id=user.user_id)
+                progress = await self._sync(self.notebook.store.progress, user_id=user.user_id)
                 await self._json(send, 200, {"error_count": len(items), "pending_task_count": pending, "due_review_count": progress["due_review_count"], "recommendation_gap_count": progress["recommendation_gap_count"], "recent_errors": [self._error_entry(item) for item in items[:5]]})
             elif path == "/v1/files" and method == "POST":
                 purpose, filename, content = await self._multipart(receive, headers)
-                record = self.notebook.upload(user_id=user.user_id, purpose=purpose, original_name=filename, content=content)
+                record = await self._sync(self.notebook.upload, user_id=user.user_id, purpose=purpose, original_name=filename, content=content)
                 await self._json(send, 201, {"file_id": record.file_id, "status": record.status, "content_sha256": record.content_sha256})
             elif path == "/v1/intakes" and method == "POST":
                 payload = await self._json_body(receive)
-                intake, job = self.notebook.store.create_intake(user_id=user.user_id, file_id=str(payload["file_id"]), idempotency_key=self._key(headers))
+                intake, job = await self._sync(self.notebook.store.create_intake, user_id=user.user_id, file_id=str(payload["file_id"]), idempotency_key=self._key(headers))
                 await self._json(send, 202, {"resource_id": intake.intake_id, "task_id": job.job_id})
             elif path.startswith("/v1/tasks/") and method == "GET":
-                job = self.notebook.store.get_job(user_id=user.user_id, job_id=path.rsplit("/", 1)[1])
+                job = await self._sync(self.notebook.store.get_job, user_id=user.user_id, job_id=path.rsplit("/", 1)[1])
                 if not job:
                     raise LookupError
                 await self._json(send, 200, self._job(job))
+            elif path.startswith("/v1/intakes/") and path.endswith("/manual-candidate") and method == "POST":
+                intake_id = path.split("/")[-2]
+                payload = await self._json_body(receive)
+                intake = await self._sync(
+                    self.notebook.store.save_extraction_candidate,
+                    user_id=user.user_id,
+                    intake_id=intake_id,
+                    question_text=str(payload["question_text"]),
+                    answer_text=str(payload.get("answer_text", "")),
+                    evidence={"source": "user_manual"},
+                )
+                await self._json(send, 201, self._intake(intake))
             elif path.startswith("/v1/intakes/") and path.endswith("/confirm") and method == "POST":
                 intake_id = path.split("/")[-2]
                 payload = await self._json_body(receive)
-                attempt_id, job = self.notebook.store.confirm_intake(user_id=user.user_id, intake_id=intake_id, expected_version=int(payload["input_version"]), idempotency_key=self._key(headers))
+                attempt_id, job = await self._sync(self.notebook.store.confirm_intake, user_id=user.user_id, intake_id=intake_id, expected_version=int(payload["input_version"]), idempotency_key=self._key(headers))
                 await self._json(send, 202, {"resource_id": attempt_id, "task_id": job.job_id})
             elif path.startswith("/v1/intakes/") and method == "PATCH":
                 intake_id = path.rsplit("/", 1)[1]
                 payload = await self._json_body(receive)
-                intake = self.notebook.store.revise_intake(user_id=user.user_id, intake_id=intake_id, expected_version=int(payload["input_version"]), question_text=str(payload["question_text"]), answer_text=str(payload["answer_text"]))
+                intake = await self._sync(self.notebook.store.revise_intake, user_id=user.user_id, intake_id=intake_id, expected_version=int(payload["input_version"]), question_text=str(payload["question_text"]), answer_text=str(payload["answer_text"]))
                 await self._json(send, 200, self._intake(intake))
+            elif path.startswith("/v1/attempts/") and path.endswith("/manual-grade") and method == "POST":
+                attempt_id = path.split("/")[-2]
+                payload = await self._json_body(receive)
+                verdict = str(payload["verdict"])
+                first_error = str(payload.get("first_error", "")).strip() or None
+                evidence = str(payload.get("evidence", "")).strip() or None
+                if verdict not in {"correct", "partial", "incorrect", "unclear"}:
+                    raise ValueError("unsupported verdict")
+                if verdict in {"partial", "incorrect"} and not first_error:
+                    raise ValueError("first_error is required")
+                if verdict in {"correct", "unclear"}:
+                    first_error = None
+                candidate = await self._sync(
+                    self.notebook.store.record_grade_candidate,
+                    user_id=user.user_id,
+                    attempt_id=attempt_id,
+                    input_version=int(payload["input_version"]),
+                    verdict=verdict,
+                    first_error=first_error,
+                    evidence=evidence,
+                )
+                await self._json(send, 201, self._candidate(candidate))
             elif path.startswith("/v1/grade-results/") and path.endswith("/commit") and method == "POST":
                 candidate_id = path.split("/")[-2]
                 payload = await self._json_body(receive)
-                entry = self.notebook.store.commit_grade(user_id=user.user_id, candidate_id=candidate_id, expected_version=int(payload["input_version"]))
+                entry = await self._sync(self.notebook.store.commit_grade, user_id=user.user_id, candidate_id=candidate_id, expected_version=int(payload["input_version"]))
                 await self._json(send, 201, self._error_entry(entry))
             elif path.startswith("/v1/grade-results/") and method == "GET":
-                candidate = self.notebook.store.get_grade_candidate(user_id=user.user_id, candidate_id=path.rsplit("/", 1)[1])
+                candidate = await self._sync(self.notebook.store.get_grade_candidate, user_id=user.user_id, candidate_id=path.rsplit("/", 1)[1])
                 if not candidate:
                     raise LookupError
                 await self._json(send, 200, self._candidate(candidate))
             elif path == "/v1/errors" and method == "GET":
-                await self._json(send, 200, {"items": [self._error_entry(item) for item in self.notebook.store.list_errors(user_id=user.user_id)]})
+                items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
+                await self._json(send, 200, {"items": [self._error_entry(item) for item in items]})
             elif path.startswith("/v1/errors/") and path.endswith("/recommendations") and method in {"GET", "POST"}:
                 error_id = path.split("/")[-2]
                 if method == "POST":
                     self._key(headers)
-                    recommendations, gap = self.notebook.store.assign_recommendations(user_id=user.user_id, error_id=error_id)
+                    recommendations, gap = await self._sync(self.notebook.store.assign_recommendations, user_id=user.user_id, error_id=error_id)
                 else:
-                    recommendations = self.notebook.store.list_recommendations(user_id=user.user_id, error_id=error_id)
+                    recommendations = await self._sync(self.notebook.store.list_recommendations, user_id=user.user_id, error_id=error_id)
                     gap = len(recommendations) < 2
                 await self._json(send, 200, {"items": [self._recommendation(item) for item in recommendations], "gap": gap})
             elif path.startswith("/v1/errors/") and method == "GET":
-                entry = self.notebook.store.get_error(user_id=user.user_id, error_id=path.rsplit("/", 1)[1])
+                entry = await self._sync(self.notebook.store.get_error, user_id=user.user_id, error_id=path.rsplit("/", 1)[1])
                 if not entry:
                     raise LookupError
                 await self._json(send, 200, self._error_entry(entry))
             elif path == "/v1/reviews/today" and method == "GET":
-                tasks = self.notebook.store.list_due_reviews(user_id=user.user_id)
+                tasks = await self._sync(self.notebook.store.list_due_reviews, user_id=user.user_id)
                 await self._json(send, 200, {"items": [self._review(item) for item in tasks], "count": len(tasks)})
             elif path.startswith("/v1/reviews/") and path.endswith("/complete") and method == "POST":
                 payload = await self._json_body(receive)
-                next_task = self.notebook.store.complete_review(user_id=user.user_id, task_id=path.split("/")[-2], result=str(payload["result"]), idempotency_key=self._key(headers))
+                next_task = await self._sync(self.notebook.store.complete_review, user_id=user.user_id, task_id=path.split("/")[-2], result=str(payload["result"]), idempotency_key=self._key(headers))
                 await self._json(send, 200, {"completed": True, "next_review": self._review(next_task) if next_task else None, "mastered": next_task is None})
             elif path == "/v1/progress" and method == "GET":
-                await self._json(send, 200, self.notebook.store.progress(user_id=user.user_id))
+                progress = await self._sync(self.notebook.store.progress, user_id=user.user_id)
+                await self._json(send, 200, progress)
             elif path == "/v1/practice-pdfs" and method == "POST":
                 payload = await self._json_body(receive)
                 error_ids = payload.get("error_ids")
                 include_answers = payload.get("include_answers", False)
                 if not isinstance(error_ids, list) or not all(isinstance(item, str) for item in error_ids) or not 1 <= len(error_ids) <= 12 or not isinstance(include_answers, bool):
                     raise ValueError("invalid practice request")
-                job = self.notebook.create_practice_pdf(user_id=user.user_id, error_ids=list(dict.fromkeys(error_ids)), idempotency_key=self._key(headers), include_answers=include_answers)
+                job = await self._sync(self.notebook.create_practice_pdf, user_id=user.user_id, error_ids=list(dict.fromkeys(error_ids)), idempotency_key=self._key(headers), include_answers=include_answers)
                 await self._json(send, 201, self._practice_job(job))
             elif path.startswith("/v1/practice-pdfs/") and path.endswith("/download") and method == "GET":
                 job_id = path.split("/")[-2]
-                filename, content = self.notebook.download_practice_pdf(user_id=user.user_id, job_id=job_id)
+                filename, content = await self._sync(self.notebook.download_practice_pdf, user_id=user.user_id, job_id=job_id)
                 await self._bytes(send, 200, content, "application/pdf", filename)
             elif path.startswith("/v1/practice-pdfs/") and method == "GET":
-                job = self.notebook.store.get_job(user_id=user.user_id, job_id=path.rsplit("/", 1)[1])
+                job = await self._sync(self.notebook.store.get_job, user_id=user.user_id, job_id=path.rsplit("/", 1)[1])
                 if not job or job.job_type != "practice_pdf":
                     raise LookupError
                 await self._json(send, 200, self._practice_job(job))
             else:
                 await self._error(send, 404, "not_found")
+        except RequestTooLarge:
+            await self._error(send, 413, "request_too_large")
         except LookupError:
             await self._error(send, 404, "not_found")
         except RuntimeError as exc:
@@ -168,9 +207,11 @@ class NotebookAsgiApp:
         body = bytearray()
         while True:
             message = await receive()
+            if message.get("type") != "http.request":
+                raise ValueError("invalid ASGI message")
             body.extend(message.get("body", b""))
             if len(body) > self.max_upload_bytes:
-                raise ValueError("request_too_large")
+                raise RequestTooLarge
             if not message.get("more_body", False):
                 return bytes(body)
 
@@ -199,6 +240,10 @@ class NotebookAsgiApp:
         if purpose not in {"exam", "answer_photo", "question_image"}:
             raise ValueError("unsupported public upload purpose")
         return purpose, filename, content
+
+    @staticmethod
+    async def _sync(function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(function, *args, **kwargs)
 
     @staticmethod
     def _cookie(header: str, name: str) -> str | None:
@@ -264,7 +309,11 @@ class NotebookAsgiApp:
         if not path.is_file():
             await NotebookAsgiApp._json(send, 404, {"error": {"code": "not_found", "message": "not_found", "retryable": False, "request_id": secrets.token_hex(8)}})
             return
-        body = path.read_bytes()
+        body = await asyncio.to_thread(path.read_bytes)
         cache = b"public,max-age=31536000,immutable" if immutable else b"no-cache"
         await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", media_type.encode("ascii")), (b"content-length", str(len(body)).encode("ascii")), (b"cache-control", cache), (b"x-content-type-options", b"nosniff")]})
         await send({"type": "http.response.body", "body": body})
+
+
+class RequestTooLarge(ValueError):
+    pass

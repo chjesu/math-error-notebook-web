@@ -85,11 +85,14 @@ class InMemoryNotebookStore:
     def save_extraction_candidate(self, *, user_id: str, intake_id: str, question_text: str, answer_text: str, evidence: dict[str, Any]) -> IntakeItem:
         del evidence
         current = self._intake(user_id, intake_id)
+        question = question_text.strip()
+        if not question:
+            raise ValueError("question_text is required")
+        if current.status == "waiting_confirmation" and current.question_text == question and current.answer_text == answer_text:
+            return current
         if current.status != "extracting":
             raise RuntimeError("conflict")
-        updated = IntakeItem(current.intake_id, user_id, current.file_id, current.input_version, "waiting_confirmation", question_text.strip(), answer_text)
-        if not updated.question_text:
-            raise ValueError("question_text is required")
+        updated = IntakeItem(current.intake_id, user_id, current.file_id, current.input_version, "waiting_confirmation", question, answer_text)
         self.intakes[intake_id] = updated
         self._update_job(user_id, "extract", intake_id, "waiting_confirmation", {"stage": "candidate_saved"})
         return updated

@@ -1,14 +1,14 @@
 # 李兆霖数学错题本 Web
 
-个人数学错题本的独立 Web 后端项目。v0.3.2 产品基线规定：所有用户完成手机号验证码后直接使用自己的错题本，不填写资料，不选择身份，不创建家庭，也不经过监护或实名流程。当前认证代码仍包含早期监护同意门，尚需在后续实现中安全移除。
+个人数学错题本的独立 Web 项目。v0.3.2 产品基线规定：所有用户完成手机号验证码后直接使用自己的错题本，不填写资料，不选择身份，不创建家庭，也不经过监护或实名流程。当前注册状态机和数据库迁移已经按该口径完成。
 
-本仓库不包含数学 SQLite 题库、错题照片、PDF 或短信密钥。题库能力后续通过受控领域服务接入。
+本仓库不包含正式数学题库语料、错题照片或短信密钥。题库只能通过受控迁移接入；本地没有合格推荐题时会明确显示缺口。
 
 ## 快速检查
 
 ```powershell
 python -X utf8 -B scripts/project_workflow.py doctor --json
-python -X utf8 -B scripts/project_workflow.py status WEB-PROJECT-001 --json
+python -X utf8 -B scripts/project_workflow.py status WEB-PRD-003 --json
 python -X utf8 -B -m unittest discover -s tests -p "test_*.py"
 python -X utf8 -B scripts/codex_task_router.py route --task web-security-review --json
 ```
@@ -25,6 +25,8 @@ python -X utf8 -B scripts/codex_task_router.py route --task web-security-review 
 
 服务仅监听 `127.0.0.1:8000`。请求验证码后，模拟验证码显示在当前终端。测试 CAPTCHA token 为 `local-captcha`。停止数据库使用：
 
+自动识别和自动判题 Worker 尚未接入时，上传后可在页面直接手工确认题干、作答、结果和首错步骤，再确认写入错题本；候选不会自动进入正式错题。
+
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py stop
 ```
@@ -39,13 +41,8 @@ python -X utf8 -B scripts/codex_task_router.py route --task web-security-review 
 
 1. 在 MySQL 8 执行 `services/web_auth/migrations/0001_phone_registration.sql`。
 2. 从密钥管理服务注入 `services/web_auth/README.md` 列出的环境变量。
-3. 安装 `requirements.txt`。
-4. 由可信 SLB/WAF 终止 HTTPS，并启动：
-
-```powershell
-uvicorn services.web_auth.bootstrap:create_app --factory --host 127.0.0.1 --port 8000 `
-  --proxy-headers --forwarded-allow-ips=<SLB内网IP>
-```
+3. 安装锁定并审查后的生产依赖。
+4. 冻结完整 `NotebookAsgiApp` 的生产装配、可信代理和 Worker 启动入口；当前 `local_env.py serve` 与认证子应用启动器都不得直接用于生产。
 
 上线前必须完成 `docs/05-TEST-ACCEPTANCE-OPERATIONS.md` 的真实 MySQL 并发、短信小流量、枚举时序、成本熔断和回滚验收。
 

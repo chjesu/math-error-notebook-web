@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import unittest
 
 from services.web_auth import (
@@ -74,6 +75,23 @@ class AuthAsgiTests(unittest.TestCase):
         self.assertEqual((first[0], second[0]), (202, 202))
         self.assertEqual(set(first[2]), set(second[2]))
         self.assertEqual(first[2]["message"], second[2]["message"])
+
+    def test_registration_work_runs_outside_the_event_loop_thread(self) -> None:
+        caller_thread = threading.get_ident()
+        worker_threads: list[int] = []
+        original = self.service.request_code
+
+        def wrapped(**kwargs):
+            worker_threads.append(threading.get_ident())
+            return original(**kwargs)
+
+        self.service.request_code = wrapped
+        try:
+            self.assertEqual(self.call("/v1/auth/otp/request", {"phone": "13800138000"})[0], 202)
+        finally:
+            self.service.request_code = original
+        self.assertEqual(len(worker_threads), 1)
+        self.assertNotEqual(worker_threads[0], caller_thread)
 
     def test_provider_failure_has_same_public_shape(self) -> None:
         accepted = self.call("/v1/auth/otp/request", {"phone": "13800138000"})
