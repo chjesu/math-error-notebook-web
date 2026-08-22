@@ -30,6 +30,7 @@
 - `scripts/local_env.py smoke` 使用真实 MySQL、模拟短信与模拟 CAPTCHA 完成验证码请求、注册、Secure Cookie、验证码单次消费验证。
 - 50 个同手机号并发请求仅产生 1 次模拟短信；同 IP 一分钟 11 个请求仅产生 10 次模拟短信。
 - 本地 Uvicorn 真实监听 `127.0.0.1:8000`，`GET /healthz` 返回 `200`、`Cache-Control: no-store`。
+- 经 localhost HTTP 实际请求，`POST /v1/auth/otp/request` 返回 `202`，读取终端模拟码后 `POST /v1/auth/otp/verify` 返回 `200` 和 `HttpOnly; Secure; SameSite=Lax` 会话 Cookie。
 - 本地模拟不连接瑞成云或 Turnstile，不产生短信费用，也不代表生产网络与供应商验收通过。
 
 ## 尚未完成，禁止据此上线
