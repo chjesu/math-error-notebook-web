@@ -80,6 +80,16 @@ class AuthAsgiTests(unittest.TestCase):
         self.assertEqual(first[2]["status"], second[2]["status"])
         self.assertEqual(first[2]["message"], second[2]["message"])
 
+    def test_provider_failure_has_the_same_public_shape(self) -> None:
+        accepted = self.call("/v1/auth/otp/request", {"phone": "13800138000"})
+        self.sender.fail = True
+        failed = self.call("/v1/auth/otp/request", {"phone": "13900139000"})
+        self.assertEqual((accepted[0], failed[0]), (202, 202))
+        self.assertEqual(set(accepted[2]), set(failed[2]))
+        self.assertEqual(accepted[2]["status"], failed[2]["status"])
+        self.assertEqual(accepted[2]["message"], failed[2]["message"])
+        self.assertTrue(failed[2]["challenge_token"])
+
     def test_forwarded_for_header_is_not_trusted(self) -> None:
         payload = {"phone": "13800138000"}
         self.call(

@@ -19,7 +19,7 @@
 
 ## 自动化验证
 
-- `python -X utf8 -B -m unittest discover -s tests -p "test_*.py"`：50 项通过。
+- `python -X utf8 -B -m unittest discover -s tests -p "test_*.py"`：51 项通过。
 - `python -X utf8 -B scripts/project_workflow.py doctor --json`：`status=ok`，无缺失文件。
 - 使用虚构环境变量调用 `services.web_auth.bootstrap:create_app`：成功创建 `AuthAsgiApp`，未连接真实 MySQL、Turnstile 或短信网关。
 - Codex 路由预览：需求为 Luna/low，普通实现为 Terra/medium；认证风险提升为 Sol/high。

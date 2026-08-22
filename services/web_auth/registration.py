@@ -574,7 +574,8 @@ class RegistrationService:
             )
             return SendCodeResult(
                 SendCodeStatus.TEMPORARILY_UNAVAILABLE,
-                "服务暂时不可用，请稍后重试。",
+                self.GENERIC_SEND_MESSAGE,
+                challenge_id=secrets.token_hex(16),
                 retry_after_seconds=self._jitter(retry_after),
             )
         self.store.mark_delivery(challenge_id, "sent", receipt)

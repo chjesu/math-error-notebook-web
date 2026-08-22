@@ -126,9 +126,6 @@ class AuthAsgiApp:
                 },
             )
             return
-        if result.status is SendCodeStatus.TEMPORARILY_UNAVAILABLE:
-            await self._json(send, 503, {"error": "temporarily_unavailable"})
-            return
         await self._json(
             send,
             202,
