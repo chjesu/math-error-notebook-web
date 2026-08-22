@@ -1,25 +1,26 @@
 # 李兆霖数学错题本 Web 版文档索引
 
-> 文档基线：`v0.2.0`
+> 文档基线：`v0.3.0`
 > 基线日期：`2026-08-22`
-> 当前状态：`注册服务可独立启动，生产集成与上线验收待完成`
+> 当前状态：`产品功能基线已补齐；注册服务可运行，完整学习闭环仍在开发`
 
-本目录记录“李兆霖数学错题本”多用户 Web 版的产品决策与实施需求。当前版本已把开放的手机号短信验证码注册正式纳入 MVP，同时保留家庭租户与受控邀请码机制。
+本目录记录“李兆霖数学错题本”多用户 Web 版的产品决策、功能设计、技术架构、实施与验收要求。v0.3.0 明确公开 MVP 必须同时通过账号/租户基础门和错题学习闭环门。
 
 ## 文档导航
 
 | 文档 | 用途 | 版本 | 状态 |
 |---|---|---:|---|
-| [01-DISCUSSION-MINUTES.md](./01-DISCUSSION-MINUTES.md) | 已确认决策、边界及待办 | v0.2.0 | 已确认 |
-| [02-PRODUCT-REQUIREMENTS.md](./02-PRODUCT-REQUIREMENTS.md) | MVP 产品需求、验收标准与非功能要求 | v0.2.0 | 已确认 |
+| [01-DISCUSSION-MINUTES.md](./01-DISCUSSION-MINUTES.md) | 已确认决策、边界及待办 | v0.3.0 | 已确认 |
+| [02-PRODUCT-REQUIREMENTS.md](./02-PRODUCT-REQUIREMENTS.md) | 完整 MVP 产品需求、权限、指标和验收标准 | v0.3.0 | 已确认 |
 | [03-TECHNICAL-ARCHITECTURE.md](./03-TECHNICAL-ARCHITECTURE.md) | 系统架构、注册状态机、MySQL 与安全边界 | v0.2.0 | 已确认 |
-| [04-IMPLEMENTATION-PLAN.md](./04-IMPLEMENTATION-PLAN.md) | 分批实施、迁移、灰度和完成证据 | v0.2.0 | 待验收 |
-| [05-TEST-ACCEPTANCE-OPERATIONS.md](./05-TEST-ACCEPTANCE-OPERATIONS.md) | 安全测试、验收门禁、监控和事件处置 | v0.2.0 | 已确认 |
+| [04-IMPLEMENTATION-PLAN.md](./04-IMPLEMENTATION-PLAN.md) | 分批实施、迁移、灰度和完成证据 | v0.3.0 | 待验收 |
+| [05-TEST-ACCEPTANCE-OPERATIONS.md](./05-TEST-ACCEPTANCE-OPERATIONS.md) | 安全与学习闭环测试、验收门禁、监控和事件处置 | v0.3.0 | 已确认 |
 | [06-WORKBREAKDOWN-CODEX-WORKFLOW.md](./06-WORKBREAKDOWN-CODEX-WORKFLOW.md) | 角色、领取分工、可恢复流程和模型路由 | v0.2.0 | 已确认 |
 | [07-SMS-PROVIDER-RUICHENG.md](./07-SMS-PROVIDER-RUICHENG.md) | 瑞成云适配、密钥、网络和上线约束 | v0.2.0 | 待验收 |
 | [08-IMPLEMENTATION-EVIDENCE.md](./08-IMPLEMENTATION-EVIDENCE.md) | 当前实现、测试证据与剩余上线门 | v0.2.0 | 已确认 |
+| [09-PRODUCT-FUNCTION-DESIGN.md](./09-PRODUCT-FUNCTION-DESIGN.md) | 页面、流程、异常恢复、运营和产品事件设计 | v0.3.0 | 已确认 |
 
-## v0.2.0 产品基线
+## v0.3.0 产品基线
 
 1. 用户可以使用中国大陆手机号和短信验证码注册、登录；系统必须具备防验证码轰炸能力。
 2. 注册流程不得因“开放注册”被排除在 MVP 之外。
@@ -27,22 +28,28 @@
 4. 邀请码仍然保留，但主要用于高权限角色授予和受控家庭加入，不作为普通用户注册的唯一入口。
 5. 未成年人账号必须记录监护人同意关系；未完成同意前只能处于受限状态。
 6. 手机号在界面、日志和运营查询中默认脱敏；用户可申请导出个人数据和注销账号。
+7. 家庭可有多个学生档案；学习数据按家庭和学生双重作用域隔离。
+8. 识别、判题、错因和推荐先作为候选，确认与确定性质量门后才成为正式记录。
+9. 公开 MVP 必须跑通上传/录入、确认、判题、错题入本、推荐、分阶段复习和 PDF。
+10. 推荐只使用已验证且授权允许的题；题量不足时展示缺口。
+11. 用户授权的私有试题默认不跨租户复用。
+12. 异步任务必须显示数据是否保存和下一步，并可从检查点恢复。
 
 ## 统一需求编号
 
 | 编号 | 主题 | MVP | 状态 |
 |---|---|---|---|
-| AUTH-001 | 手机号短信验证码注册与登录 | 是 | 已确认 |
-| AUTH-002 | 验证码防轰炸与风控 | 是 | 已确认 |
-| AUTH-003 | 未成年人监护人同意 | 是 | 已确认 |
-| TENANT-001 | 注册后创建家庭租户 | 是 | 已确认 |
-| TENANT-002 | 受控加入家庭租户 | 是 | 已确认 |
-| AUTHZ-001 | 邀请码与高权限授予 | 是 | 已确认 |
-| PRIV-001 | 手机号脱敏与敏感数据保护 | 是 | 已确认 |
-| PRIV-002 | 个人数据导出 | 是 | 已确认 |
-| PRIV-003 | 账号注销 | 是 | 已确认 |
+| AUTH-001、AUTH-002、AUTH-003 | 注册、风控和监护同意 | 是 | 已确认 |
+| TENANT-001、TENANT-002、AUTHZ-001、STUDENT-001 | 家庭、邀请、成员和学生作用域 | 是 | 已确认 |
+| INTAKE-001、INTAKE-002 | 上传/录入、试卷切分和确认 | 是 | 已确认 |
+| GRADE-001、ERROR-001 | 判题、首错步骤和正式错题本 | 是 | 已确认 |
+| CONTENT-001、RECOMMEND-001 | 题库验证和推荐质量门 | 是 | 已确认 |
+| REVIEW-001、PDF-001 | 分阶段复习和练习 PDF | 是 | 已确认 |
+| JOB-001、WORKBENCH-001 | 可恢复任务和学习工作台 | 是 | 已确认 |
+| PRIV-001、PRIV-002、PRIV-003 | 敏感数据、导出和注销 | 是 | 已确认 |
+| OPS-001 | 最小运营和人工复核 | 是 | 已确认 |
 
-具体业务规则和逐条验收标准以 [02-PRODUCT-REQUIREMENTS.md](./02-PRODUCT-REQUIREMENTS.md) 为准。
+具体业务规则和逐条验收标准以 [02-PRODUCT-REQUIREMENTS.md](./02-PRODUCT-REQUIREMENTS.md) 为准；页面与交互以 [09-PRODUCT-FUNCTION-DESIGN.md](./09-PRODUCT-FUNCTION-DESIGN.md) 为准。
 
 ## 状态定义
 

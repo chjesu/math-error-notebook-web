@@ -53,6 +53,7 @@ uvicorn services.web_auth.bootstrap:create_app --factory --host 127.0.0.1 --port
 
 - [项目架构](PROJECT_ARCHITECTURE.md)
 - [产品需求](docs/02-PRODUCT-REQUIREMENTS.md)
+- [产品功能设计](docs/09-PRODUCT-FUNCTION-DESIGN.md)
 - [技术架构](docs/03-TECHNICAL-ARCHITECTURE.md)
 - [实施计划](docs/04-IMPLEMENTATION-PLAN.md)
 - [测试与运维](docs/05-TEST-ACCEPTANCE-OPERATIONS.md)
