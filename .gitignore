@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.runtime/
+.env
+data/workflows/*.json
+data/audits/
+data/review-inputs/
+data/review-results/
+!data/workflows/.gitkeep
