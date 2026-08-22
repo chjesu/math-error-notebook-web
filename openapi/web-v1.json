@@ -126,6 +126,68 @@
         "parameters": [{"$ref": "#/components/parameters/ErrorId"}],
         "responses": {"200": {"$ref": "#/components/responses/ErrorEntry"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
       }
+    },
+    "/v1/errors/{error_id}/recommendations": {
+      "get": {
+        "operationId": "listRecommendations",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/ErrorId"}],
+        "responses": {"200": {"$ref": "#/components/responses/RecommendationList"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      },
+      "post": {
+        "operationId": "assignVerifiedRecommendations",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/ErrorId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "responses": {"200": {"$ref": "#/components/responses/RecommendationList"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/reviews/today": {
+      "get": {
+        "operationId": "listTodayReviews",
+        "security": [{"sessionCookie": []}],
+        "responses": {"200": {"$ref": "#/components/responses/ReviewList"}, "401": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/reviews/{review_id}/complete": {
+      "post": {
+        "operationId": "completeReview",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"name": "review_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"$ref": "#/components/requestBodies/ReviewResult"},
+        "responses": {"200": {"$ref": "#/components/responses/ReviewCompleted"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/progress": {
+      "get": {
+        "operationId": "getProgress",
+        "security": [{"sessionCookie": []}],
+        "responses": {"200": {"$ref": "#/components/responses/Progress"}, "401": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/practice-pdfs": {
+      "post": {
+        "operationId": "createPracticePdf",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"$ref": "#/components/requestBodies/PracticePdf"},
+        "responses": {"201": {"$ref": "#/components/responses/PracticeJob"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/practice-pdfs/{task_id}": {
+      "get": {
+        "operationId": "getPracticePdf",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/TaskId"}],
+        "responses": {"200": {"$ref": "#/components/responses/PracticeJob"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/practice-pdfs/{task_id}/download": {
+      "get": {
+        "operationId": "downloadPracticePdf",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/TaskId"}],
+        "responses": {"200": {"description": "当前用户的 A4 PDF", "content": {"application/pdf": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
     }
   },
   "components": {
@@ -145,7 +207,9 @@
       "FileUpload": {"required": true, "content": {"multipart/form-data": {"schema": {"$ref": "#/components/schemas/FileUpload"}}}},
       "CreateIntake": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateIntake"}}}},
       "IntakeRevision": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IntakeRevision"}}}},
-      "Version": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Version"}}}}
+      "Version": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Version"}}}},
+      "ReviewResult": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewResult"}}}},
+      "PracticePdf": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PracticePdfRequest"}}}}
     },
     "responses": {
       "OtpAccepted": {"description": "统一受理响应", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OtpAccepted"}}}},
@@ -159,6 +223,11 @@
       "GradeCandidate": {"description": "判题候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GradeCandidate"}}}},
       "ErrorEntry": {"description": "正式错题", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEntry"}}}},
       "ErrorList": {"description": "错题列表", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/ErrorEntry"}}}}}}},
+      "RecommendationList": {"description": "已验证推荐及真实缺口", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RecommendationList"}}}},
+      "ReviewList": {"description": "每个错题最多一个当前到期阶段", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewList"}}}},
+      "ReviewCompleted": {"description": "复习阶段结果", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewCompleted"}}}},
+      "Progress": {"description": "当前用户学习进度", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Progress"}}}},
+      "PracticeJob": {"description": "练习 PDF 任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PracticeJob"}}}},
       "Error": {"description": "稳定错误结构", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}
     },
     "schemas": {
@@ -168,7 +237,7 @@
       "OtpAccepted": {"type": "object", "required": ["status", "message", "challenge_token", "captcha_required"], "properties": {"status": {"const": "accepted"}, "message": {"type": "string"}, "challenge_token": {"type": ["string", "null"]}, "retry_after_seconds": {"type": ["integer", "null"], "minimum": 1}, "captcha_required": {"type": "boolean"}}},
       "AuthResult": {"type": "object", "required": ["status", "account_status", "next_action"], "properties": {"status": {"const": "authenticated"}, "account_status": {"const": "active"}, "next_action": {"const": "workbench"}}},
       "Session": {"type": "object", "required": ["authenticated", "account_status"], "properties": {"authenticated": {"const": true}, "account_status": {"const": "active"}}},
-      "Workbench": {"type": "object", "required": ["error_count", "pending_task_count", "recent_errors"], "properties": {"error_count": {"type": "integer", "minimum": 0}, "pending_task_count": {"type": "integer", "minimum": 0}, "recent_errors": {"type": "array", "items": {"$ref": "#/components/schemas/ErrorEntry"}}}},
+      "Workbench": {"type": "object", "required": ["error_count", "pending_task_count", "due_review_count", "recommendation_gap_count", "recent_errors"], "properties": {"error_count": {"type": "integer", "minimum": 0}, "pending_task_count": {"type": "integer", "minimum": 0}, "due_review_count": {"type": "integer", "minimum": 0}, "recommendation_gap_count": {"type": "integer", "minimum": 0}, "recent_errors": {"type": "array", "items": {"$ref": "#/components/schemas/ErrorEntry"}}}},
       "FileUpload": {"type": "object", "required": ["purpose", "file"], "properties": {"purpose": {"enum": ["exam", "answer_photo", "question_image"]}, "file": {"type": "string", "contentMediaType": "application/octet-stream"}}},
       "File": {"type": "object", "required": ["file_id", "status", "content_sha256"], "properties": {"file_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["quarantined", "ready", "rejected"]}, "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
       "CreateIntake": {"type": "object", "additionalProperties": false, "required": ["file_id"], "properties": {"file_id": {"$ref": "#/components/schemas/Id"}}},
@@ -179,6 +248,15 @@
       "Intake": {"type": "object", "required": ["intake_id", "input_version", "status", "question_text", "answer_text"], "properties": {"intake_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "status": {"enum": ["extracting", "waiting_confirmation", "confirmed", "cancelled"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}}},
       "GradeCandidate": {"type": "object", "required": ["result_id", "input_version", "verdict", "status"], "properties": {"result_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "status": {"enum": ["candidate", "committed", "superseded", "rejected"]}, "first_error": {"type": ["string", "null"]}, "evidence": {"type": ["string", "null"]}}},
       "ErrorEntry": {"type": "object", "required": ["error_id", "status", "question_text", "created_at"], "properties": {"error_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["open", "reviewing", "mastered", "removed"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}, "first_error": {"type": ["string", "null"]}, "created_at": {"type": "string", "format": "date-time"}}},
+      "Recommendation": {"type": "object", "required": ["recommendation_id", "question_id", "stem_text", "source", "reason", "status"], "properties": {"recommendation_id": {"$ref": "#/components/schemas/Id"}, "question_id": {"$ref": "#/components/schemas/Id"}, "stem_text": {"type": "string"}, "grade": {"type": ["integer", "null"]}, "difficulty": {"type": ["number", "null"]}, "source": {"type": "string"}, "reason": {"type": "string"}, "status": {"enum": ["assigned", "completed"]}}},
+      "RecommendationList": {"type": "object", "required": ["items", "gap"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Recommendation"}}, "gap": {"type": "boolean"}}},
+      "ReviewTask": {"type": "object", "required": ["review_id", "error_id", "stage", "due_at", "status"], "properties": {"review_id": {"$ref": "#/components/schemas/Id"}, "error_id": {"$ref": "#/components/schemas/Id"}, "stage": {"type": "integer", "minimum": 1, "maximum": 6}, "due_at": {"type": "string", "format": "date-time"}, "status": {"enum": ["pending", "ready", "completed", "cancelled"]}}},
+      "ReviewList": {"type": "object", "required": ["items", "count"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/ReviewTask"}}, "count": {"type": "integer", "minimum": 0}}},
+      "ReviewResult": {"type": "object", "additionalProperties": false, "required": ["result"], "properties": {"result": {"enum": ["correct", "partial", "wrong"]}}},
+      "ReviewCompleted": {"type": "object", "required": ["completed", "next_review", "mastered"], "properties": {"completed": {"const": true}, "next_review": {"oneOf": [{"$ref": "#/components/schemas/ReviewTask"}, {"type": "null"}]}, "mastered": {"type": "boolean"}}},
+      "Progress": {"type": "object", "required": ["error_count", "mastered_count", "due_review_count", "recommendation_gap_count", "sample_sufficient"], "properties": {"error_count": {"type": "integer", "minimum": 0}, "mastered_count": {"type": "integer", "minimum": 0}, "due_review_count": {"type": "integer", "minimum": 0}, "recommendation_gap_count": {"type": "integer", "minimum": 0}, "sample_sufficient": {"type": "boolean"}}},
+      "PracticePdfRequest": {"type": "object", "additionalProperties": false, "required": ["error_ids"], "properties": {"error_ids": {"type": "array", "minItems": 1, "maxItems": 12, "uniqueItems": true, "items": {"$ref": "#/components/schemas/Id"}}, "include_answers": {"type": "boolean", "default": false}}},
+      "PracticeJob": {"allOf": [{"$ref": "#/components/schemas/Task"}, {"type": "object", "properties": {"download_url": {"type": "string"}}}]},
       "ErrorEnvelope": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["code", "message", "retryable", "request_id"], "properties": {"code": {"enum": ["invalid_request", "invalid_or_expired_code", "request_too_large", "invalid_host", "https_required", "method_not_allowed", "authentication_required", "forbidden", "not_found", "conflict", "input_version_changed", "waiting_confirmation", "rate_limited", "captcha_required", "temporarily_unavailable", "failed_retryable", "failed_final"]}, "message": {"type": "string"}, "retryable": {"type": "boolean"}, "request_id": {"type": "string"}}}}}
     }
   }

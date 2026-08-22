@@ -55,6 +55,10 @@ class DomainContractTests(unittest.TestCase):
             body = sql.split(f"create table if not exists {table} (", 1)[1].split(") engine=", 1)[0]
             self.assertIn("user_id char(32)", body)
 
+        learning_sql = (Path(__file__).resolve().parents[1] / "services" / "web_domain" / "migrations" / "0004_learning_loop.sql").read_text(encoding="utf-8").lower()
+        self.assertIn("create table if not exists review_attempts", learning_sql)
+        self.assertIn("unique key uq_review_attempts_request (user_id, idempotency_key)", learning_sql)
+
     def test_personal_reads_match_id_and_server_user(self) -> None:
         connection = FakeConnection()
         store = MySqlDomainStore(lambda: connection)
@@ -78,6 +82,14 @@ class DomainContractTests(unittest.TestCase):
         self.assertEqual(record.user_id, "a" * 32)
         self.assertTrue(any("WHERE user_id=%s AND purpose=%s AND content_sha256=%s" in query for query, _ in connection.cursor_instance.executed))
         self.assertEqual(connection.committed, 1)
+
+    def test_pending_job_count_is_scoped_to_server_user(self) -> None:
+        connection = FakeConnection([(3,)])
+        count = MySqlDomainStore(lambda: connection).pending_job_count(user_id="a" * 32)
+        query, args = connection.cursor_instance.executed[-1]
+        self.assertEqual(count, 3)
+        self.assertIn("WHERE user_id=%s", query)
+        self.assertEqual(args, ("a" * 32,))
 
 
 if __name__ == "__main__":

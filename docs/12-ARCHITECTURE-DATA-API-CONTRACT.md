@@ -7,6 +7,8 @@
 | 请求/验证 OTP | 允许 | 允许 | 不适用 |
 | 查看工作台、文件、任务、错题 | 401 | 允许 | 404 |
 | 修改候选、确认入本、重试任务 | 401 | 允许 | 404 |
+| 获取推荐、完成复习、查看进度 | 401 | 允许 | 404 |
+| 创建或下载练习 PDF | 401 | 允许 | 404 |
 | 退出当前设备 | 401 | 允许 | 不适用 |
 | 全端退出 | 401 | 允许 | 不适用 |
 | 读取已验证公共题库 | 按接口策略 | 允许 | 不适用 |
@@ -24,6 +26,9 @@ erDiagram
     WEB_USERS ||--o{ ATTEMPTS : makes
     ATTEMPTS ||--o{ GRADE_CANDIDATES : produces
     WEB_USERS ||--o{ ERROR_NOTEBOOK_ENTRIES : owns
+    ERROR_NOTEBOOK_ENTRIES ||--o{ RECOMMENDATIONS : receives
+    ERROR_NOTEBOOK_ENTRIES ||--o{ REVIEW_TASKS : schedules
+    REVIEW_TASKS ||--o{ REVIEW_ATTEMPTS : records
     QUESTION_SOURCES ||--o{ QUESTIONS : contains
     QUESTIONS ||--o{ QUESTION_VERSIONS : versions
     QUESTION_VERSIONS ||--o{ QUESTION_VERIFICATIONS : verifies
@@ -33,7 +38,7 @@ erDiagram
 
 - 个人表必须有 `user_id NOT NULL` 和面向 `user_id` 的查询索引；外键直接引用 `web_users(id)`。
 - Store 的个人资源方法第一个命名参数必须是服务端会话给出的 `user_id`。
-- `web_files(user_id,purpose,content_sha256)`、`attempts(user_id,idempotency_key)`、`error_notebook_entries(user_id,attempt_id)`、`review_tasks(user_id,error_id,stage)` 唯一。
+- `web_files(user_id,purpose,content_sha256)`、`attempts(user_id,idempotency_key)`、`error_notebook_entries(user_id,attempt_id)`、`review_tasks(user_id,error_id,stage)`、`review_attempts(user_id,idempotency_key)` 唯一。
 - 公共题库不带个人 `user_id`；只有 `questions.status=verified`、来源授权允许、且存在 verified verification 的版本可推荐。
 - 删除旧 `web_tenants`、`tenant_memberships`、`web_students`、`tenant_invitations` 产品表；不做兼容视图。
 
@@ -51,7 +56,7 @@ erDiagram
 
 ## 4. API 与错误（ARCH-004）
 
-权威机器契约：`openapi/web-v1.json`。首版最小端点为 OTP 请求/验证、当前会话、退出、工作台、文件上传、任务查询、识别候选修订/确认、判题结果与正式入本、错题列表/详情。
+权威机器契约：`openapi/web-v1.json`。当前 21 条路径覆盖 OTP、会话、工作台、文件与任务、识别/判题/正式入本、错题、已验证推荐、今日复习、进度以及练习 PDF 创建/授权下载。
 
 | 错误码 | HTTP | 页面行为 |
 |---|---:|---|
@@ -73,7 +78,7 @@ erDiagram
 ## 5. 迁移与回滚（ARCH-005）
 
 - 0001 已发布：只读；旧字段由 0003 前向移除。
-- 0002 未在共享环境应用：就地重构为当前领域基线，禁止保留旧家庭/学生表。
+- 0002、0003 已在本地 MySQL 应用；0004 纯增量增加幂等复习结果历史，不修改既有记录。
 - 迁移表记录 `name`、`sha256`、`applied_at`；DDL 完成后才写账本。
 - 空库、已有 0001、本地重复运行、同名异哈希、DDL 中途失败五种演练必须有自动化证据。
 - 生产回滚不是执行破坏性 down SQL，而是恢复部署前 MySQL/OSS 一致性备份；数据修复用新编号前向迁移。

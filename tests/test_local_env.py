@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import inspect
 import tempfile
 from unittest import mock
 import unittest
@@ -27,9 +28,17 @@ class LocalEnvironmentTests(unittest.TestCase):
                 "0001_phone_registration.sql",
                 "0002_web_domain.sql",
                 "0003_account_simplification.sql",
+                "0004_learning_loop.sql",
             ],
         )
         self.assertTrue(all(path.is_file() for path in local_env.MIGRATIONS))
+
+    def test_domain_smoke_cleanup_never_deletes_the_shared_question_bank(self) -> None:
+        general_cleanup = inspect.getsource(local_env._clear_test_data)
+        scoped_cleanup = inspect.getsource(local_env._clear_domain_smoke_data)
+        self.assertNotIn("question_sources", general_cleanup)
+        self.assertIn("WHERE user_id=%s", scoped_cleanup)
+        self.assertIn("DELETE FROM question_sources WHERE id=%s", scoped_cleanup)
 
     def test_failed_migration_is_not_recorded_and_can_resume(self) -> None:
         labels: list[str] = []

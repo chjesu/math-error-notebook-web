@@ -6,11 +6,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import hashlib
+import json
 import uuid
 
 from services.web_files import FileIntake
 
+from .learning import Question, Recommendation, ReviewTask, next_review, rank_questions
 from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job
+from .practice_pdf import build_practice_pdf
 
 
 @dataclass(frozen=True)
@@ -38,9 +42,16 @@ class InMemoryNotebookStore:
         self.attempts: dict[str, Attempt] = {}
         self.candidates: dict[str, GradeCandidate] = {}
         self.errors: dict[str, ErrorEntry] = {}
+        self.questions: dict[str, Question] = {}
+        self.question_rules: dict[str, tuple[str, str, bool]] = {}
+        self.recommendations: dict[str, Recommendation] = {}
+        self.review_tasks: dict[str, ReviewTask] = {}
+        self.review_attempts: dict[tuple[str, str], dict[str, Any]] = {}
         self._file_keys: dict[tuple[str, str, str], str] = {}
         self._job_keys: dict[tuple[str, str, str], str] = {}
         self._attempt_keys: dict[tuple[str, str], str] = {}
+        self._review_keys: dict[tuple[str, str, int], str] = {}
+        self._practice_inputs: dict[tuple[str, str, str], str] = {}
 
     def create_file(self, *, user_id: str, purpose: str, original_name: str, object_key: str, content_sha256: str, media_type: str, byte_size: int, status: str = "ready") -> FileRecord:
         key = (user_id, purpose, content_sha256)
@@ -162,12 +173,138 @@ class InMemoryNotebookStore:
             raise RuntimeError("failed_final")
         existing = next((item for item in self.errors.values() if item.user_id == user_id and item.attempt_id == attempt.attempt_id), None)
         if existing:
+            self._ensure_review(user_id, existing.error_id)
             return existing
         entry = ErrorEntry(uuid.uuid4().hex, user_id, attempt.attempt_id, attempt.question_text, attempt.answer_text, candidate.first_error, "open", _now())
         self.errors[entry.error_id] = entry
         self.candidates[candidate_id] = GradeCandidate(candidate.candidate_id, candidate.attempt_id, candidate.input_version, candidate.verdict, candidate.first_error, candidate.evidence, "committed")
         self.attempts[attempt.attempt_id] = Attempt(attempt.attempt_id, user_id, attempt.intake_id, attempt.input_version, attempt.question_text, attempt.answer_text, "committed")
+        self._ensure_review(user_id, entry.error_id)
         return entry
+
+    def add_question(self, question: Question, *, status: str = "verified", license_status: str = "open", verified: bool = True) -> None:
+        self.questions[question.question_id] = question
+        self.question_rules[question.question_id] = (status, license_status, verified)
+
+    def assign_recommendations(self, *, user_id: str, error_id: str, limit: int = 2) -> tuple[list[Recommendation], bool]:
+        error = self.get_error(user_id=user_id, error_id=error_id)
+        if not error:
+            raise LookupError("error not found")
+        eligible = [
+            question
+            for question_id, question in self.questions.items()
+            if self.question_rules.get(question_id) in {("verified", "open", True), ("verified", "user_authorized", True)}
+            and not any(attempt.user_id == user_id and getattr(attempt, "question_id", None) == question_id for attempt in self.attempts.values())
+        ]
+        for question, reason in rank_questions(error.question_text, eligible, limit):
+            existing = next((item for item in self.recommendations.values() if item.user_id == user_id and item.error_id == error_id and item.question.question_id == question.question_id), None)
+            if not existing:
+                existing = Recommendation(uuid.uuid4().hex, user_id, error_id, question, reason, "assigned")
+                self.recommendations[existing.recommendation_id] = existing
+        items = self.list_recommendations(user_id=user_id, error_id=error_id)
+        return items[:limit], len(items) < limit
+
+    def list_recommendations(self, *, user_id: str, error_id: str) -> list[Recommendation]:
+        if not self.get_error(user_id=user_id, error_id=error_id):
+            raise LookupError("error not found")
+        return sorted(
+            (item for item in self.recommendations.values() if item.user_id == user_id and item.error_id == error_id and item.status in {"assigned", "completed"} and self.question_rules.get(item.question.question_id) in {("verified", "open", True), ("verified", "user_authorized", True)}),
+            key=lambda item: item.recommendation_id,
+        )
+
+    def list_due_reviews(self, *, user_id: str, now: datetime | None = None) -> list[ReviewTask]:
+        current = now or _now()
+        return sorted(
+            (ReviewTask(item.task_id, item.user_id, item.error_id, item.stage, item.due_at, "ready") for item in self.review_tasks.values() if item.user_id == user_id and item.status in {"pending", "ready"} and item.due_at <= current),
+            key=lambda item: (item.due_at, item.error_id),
+        )
+
+    def complete_review(self, *, user_id: str, task_id: str, result: str, idempotency_key: str, now: datetime | None = None) -> ReviewTask | None:
+        key = (user_id, idempotency_key)
+        if key in self.review_attempts:
+            next_id = self.review_attempts[key]["next_task_id"]
+            return self.review_tasks.get(next_id) if next_id else None
+        task = self.review_tasks.get(task_id)
+        completed_at = now or _now()
+        if not task or task.user_id != user_id:
+            raise LookupError("review task not found")
+        if task.status not in {"pending", "ready"} or task.due_at > completed_at:
+            raise RuntimeError("conflict")
+        target = next_review(task.stage, result, completed_at)
+        self.review_tasks[task_id] = ReviewTask(task.task_id, user_id, task.error_id, task.stage, task.due_at, "completed")
+        for existing_id, existing in list(self.review_tasks.items()):
+            if existing.user_id == user_id and existing.error_id == task.error_id and existing.status in {"pending", "ready"}:
+                self.review_tasks[existing_id] = ReviewTask(existing.task_id, user_id, existing.error_id, existing.stage, existing.due_at, "cancelled")
+        next_task = None
+        if target is None:
+            error = self.errors[task.error_id]
+            self.errors[task.error_id] = ErrorEntry(error.error_id, user_id, error.attempt_id, error.question_text, error.answer_text, error.first_error, "mastered", error.created_at)
+        else:
+            stage, due_at = target
+            review_key = (user_id, task.error_id, stage)
+            next_id = self._review_keys.get(review_key, uuid.uuid4().hex)
+            next_task = ReviewTask(next_id, user_id, task.error_id, stage, due_at, "ready" if due_at <= completed_at else "pending")
+            self.review_tasks[next_id] = next_task
+            self._review_keys[review_key] = next_id
+        self.review_attempts[key] = {"task_id": task_id, "result": result, "next_task_id": next_task.task_id if next_task else None}
+        return next_task
+
+    def progress(self, *, user_id: str, now: datetime | None = None) -> dict[str, int | bool]:
+        current = now or _now()
+        errors = [item for item in self.errors.values() if item.user_id == user_id and item.status != "removed"]
+        due = self.list_due_reviews(user_id=user_id, now=current)
+        gaps = sum(not any(rec.user_id == user_id and rec.error_id == item.error_id and rec.status == "assigned" for rec in self.recommendations.values()) for item in errors)
+        return {"error_count": len(errors), "mastered_count": sum(item.status == "mastered" for item in errors), "due_review_count": len(due), "recommendation_gap_count": gaps, "sample_sufficient": len(errors) >= 3}
+
+    def pending_job_count(self, *, user_id: str) -> int:
+        return sum(job.user_id == user_id and job.status not in {"completed", "cancelled", "failed_final"} for job in self.jobs.values())
+
+    def practice_items(self, *, user_id: str, error_ids: list[str]) -> tuple[list[dict[str, Any]], int]:
+        items: list[dict[str, Any]] = []
+        gaps = 0
+        seen_questions: set[str] = set()
+        for error_id in error_ids:
+            error = self.get_error(user_id=user_id, error_id=error_id)
+            if not error:
+                raise LookupError("error not found")
+            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "错题回顾"})
+            recommendations = self.list_recommendations(user_id=user_id, error_id=error_id)
+            if not recommendations:
+                gaps += 1
+            for recommendation in recommendations[:2]:
+                question = recommendation.question
+                if question.question_id in seen_questions:
+                    continue
+                seen_questions.add(question.question_id)
+                items.append({"kind": "recommendation", "error_id": error_id, "question_id": question.question_id, "stem_text": question.stem_text, "answer_text": question.answer_text, "difficulty": question.difficulty, "source_title": question.source_title, "reason": recommendation.reason})
+        return items, gaps
+
+    def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool) -> Job:
+        if not error_ids:
+            raise ValueError("error_ids is required")
+        for error_id in error_ids:
+            if not self.get_error(user_id=user_id, error_id=error_id):
+                raise LookupError("error not found")
+        key = (user_id, "practice_pdf", idempotency_key)
+        digest = hashlib.sha256(json.dumps([sorted(set(error_ids)), include_answers], separators=(",", ":")).encode("ascii")).hexdigest()
+        existing = self._job_keys.get(key)
+        if existing:
+            if self._practice_inputs[key] != digest:
+                raise RuntimeError("conflict")
+            return self.jobs[existing]
+        job = Job(uuid.uuid4().hex, user_id, "practice_pdf", error_ids[0], "queued", {"error_ids": error_ids, "include_answers": include_answers}, None)
+        self.jobs[job.job_id] = job
+        self._job_keys[key] = job.job_id
+        self._practice_inputs[key] = digest
+        return job
+
+    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool) -> Job:
+        job = self.get_job(user_id=user_id, job_id=job_id)
+        if not job or job.job_type != "practice_pdf":
+            raise LookupError("job not found")
+        completed = Job(job.job_id, user_id, job.job_type, job.resource_id, "completed", {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers}, None)
+        self.jobs[job_id] = completed
+        return completed
 
     def get_job(self, *, user_id: str, job_id: str) -> Job | None:
         value = self.jobs.get(job_id)
@@ -192,6 +329,16 @@ class InMemoryNotebookStore:
                 self.jobs[job_id] = Job(job_id, user_id, job_type, resource_id, status, checkpoint, None)
                 return
 
+    def _ensure_review(self, user_id: str, error_id: str) -> ReviewTask:
+        key = (user_id, error_id, 1)
+        task_id = self._review_keys.get(key)
+        if task_id:
+            return self.review_tasks[task_id]
+        task = ReviewTask(uuid.uuid4().hex, user_id, error_id, 1, _now(), "ready")
+        self.review_tasks[task.task_id] = task
+        self._review_keys[key] = task.task_id
+        return task
+
 
 class NotebookService:
     def __init__(self, store: Any, quarantine_root: Path) -> None:
@@ -209,3 +356,35 @@ class NotebookService:
             media_type=candidate.media_type,
             byte_size=candidate.byte_size,
         )
+
+    def create_practice_pdf(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool = False) -> Job:
+        job = self.store.create_practice_job(user_id=user_id, error_ids=error_ids, idempotency_key=idempotency_key, include_answers=include_answers)
+        if job.status == "completed":
+            return job
+        items, gaps = self.store.practice_items(user_id=user_id, error_ids=error_ids)
+        content = build_practice_pdf(
+            items,
+            include_answers=include_answers,
+            logo_path=Path(__file__).resolve().parents[2] / "assets" / "branding" / "logo-symbol-color-128-v1.png",
+        )
+        record = self.upload(user_id=user_id, purpose="practice_pdf", original_name=f"practice-{job.job_id[:8]}.pdf", content=content)
+        return self.store.complete_practice_job(
+            user_id=user_id,
+            job_id=job.job_id,
+            file_id=record.file_id,
+            question_count=len(items),
+            recommendation_gap_count=gaps,
+            include_answers=include_answers,
+        )
+
+    def download_practice_pdf(self, *, user_id: str, job_id: str) -> tuple[str, bytes]:
+        job = self.store.get_job(user_id=user_id, job_id=job_id)
+        if not job or job.job_type != "practice_pdf" or job.status != "completed" or not job.checkpoint:
+            raise LookupError("practice PDF not found")
+        record = self.store.get_file(user_id=user_id, file_id=str(job.checkpoint["file_id"]))
+        if not record or record.purpose != "practice_pdf":
+            raise LookupError("practice PDF not found")
+        content = self.files.read(record.object_key)
+        if hashlib.sha256(content).hexdigest() != record.content_sha256:
+            raise RuntimeError("file_integrity_failed")
+        return f"practice-{job.job_id[:8]}.pdf", content

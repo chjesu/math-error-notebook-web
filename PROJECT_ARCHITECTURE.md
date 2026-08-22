@@ -54,11 +54,11 @@ flowchart TB
 | 本地 MySQL 模拟环境 | `scripts/local_env.py` | 已实现；仅绑定 localhost，不是生产启动器 |
 | Codex 模型路由 | `scripts/codex_task_router.py`、`config/model-routing.json` | 已实现；外发必须显式授权，候选只读 |
 | 任务领取、租约、证据、恢复 | `scripts/project_workflow.py` | 已实现注册模板和全项目模板 |
-| 个人账号与 user_id 数据隔离 | 后续领域模块 | 规划中；替代家庭/学生档案产品模型 |
-| Web 题库、错题、作答和复习数据 | 后续 MySQL 迁移 | 规划中；不得直接共享桌面 SQLite |
-| 文件上传、解析、审核、判题 | API + Worker + OSS | 规划中 |
-| 推荐、复习计划和 PDF | 领域服务 + Worker | 规划中 |
-| 前端/PWA、运营后台和运维恢复 | Web/运维模块 | 规划中 |
+| 个人账号与 user_id 数据隔离 | `services/web_domain/` | 已实现；API、Store、任务和下载均从服务端会话注入 `user_id` |
+| Web 题库、错题、作答和复习数据 | MySQL 0002/0004 | 已建立并完成真实本地迁移；当前权威源题库为 0 题 |
+| 文件上传、解析、审核、判题 | API + Worker + OSS | 首题候选/确认/入本切片已实现；真实解析与判题 Worker 待接入 |
+| 推荐、复习计划和 PDF | `services/web_domain/` | 已实现本地闭环；只推荐已验证授权题，缺题时明确返回缺口 |
+| 前端/PWA、运营后台和运维恢复 | `web/`、后续运维模块 | 响应式学习闭环前端已实现；PWA、运营和恢复待完成 |
 | 阿里云部署 | WAF/SLB、RDS、OSS、运行环境 | 已后置；本地全链路通过后人工批准 |
 
 ## 4. 目录
@@ -72,6 +72,7 @@ flowchart TB
 | `services/web_auth/ruicheng_sms.py` | 瑞成云提交适配 |
 | `services/web_auth/turnstile.py` | CAPTCHA 服务端验证 |
 | `services/web_auth/migrations/` | MySQL 迁移 |
+| `services/web_domain/` | 错题、推荐、复习调度、进度和 A4 PDF |
 | `scripts/project_workflow.py` | 注册/全项目任务模板、依赖、领取、租约和证据 |
 | `scripts/codex_task_router.py` | Luna/Terra/Sol 分层只读审查 |
 | `scripts/local_env.py` | localhost MySQL、模拟短信/CAPTCHA 与端到端验收 |
@@ -124,7 +125,7 @@ flowchart LR
 
 ## 7. 完成门
 
-“本地注册环境已跑通”不等于“整个 Web 项目完成”。当前只能认定验证码与本地 MySQL 模拟基线可运行；现有监护同意阻断仍不符合 v0.3.2 的“注册后直接使用”。整个项目仍要求 user_id 领域数据、桌面库迁移对账、上传/审核/判题、推荐/复习/PDF、前端、运维恢复和端到端验收全部具备证据。
+“本地学习闭环已跑通”不等于“整个 Web 项目完成”。当前可认定手机号直达、首题入本、已验证推荐、分阶段复习和默认无答案 PDF 已在本地 MySQL/HTTP 跑通。实际含题目的权威库迁移、真实解析/判题 Worker、导出/注销、运维恢复、性能与独立安全复核仍须完成。
 
 阿里云部署只有在上述本地流程完全跑通、系统安全复核通过且用户人工批准后才能领取 `cloud_deploy_approval`。
 

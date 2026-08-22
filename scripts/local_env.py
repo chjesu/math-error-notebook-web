@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import json
 import hashlib
 import os
@@ -14,6 +15,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -38,6 +40,7 @@ MIGRATIONS = (
     ROOT / "services" / "web_auth" / "migrations" / "0001_phone_registration.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0002_web_domain.sql",
     ROOT / "services" / "web_auth" / "migrations" / "0003_account_simplification.sql",
+    ROOT / "services" / "web_domain" / "migrations" / "0004_learning_loop.sql",
 )
 
 
@@ -470,6 +473,77 @@ def _service():
     return service, sender
 
 
+def _domain_smoke(service: Any, session_cookie: str) -> dict[str, int]:
+    from services.web_domain import MySqlDomainStore, NotebookService
+
+    token = session_cookie.split(";", 1)[0].split("=", 1)[1]
+    user = service.authenticate_session(token)
+    if user is None:
+        raise RuntimeError("domain smoke session authentication failed")
+    store = MySqlDomainStore(_connection_factory())
+    with tempfile.TemporaryDirectory(prefix="domain-smoke-", dir=RUNTIME) as directory:
+        notebook = NotebookService(store, Path(directory))
+        uploaded = notebook.upload(user_id=user.user_id, purpose="question_image", original_name="question.png", content=b"\x89PNG\r\n\x1a\nlocal-smoke")
+        intake, _ = store.create_intake(user_id=user.user_id, file_id=uploaded.file_id, idempotency_key="smoke-extract")
+        store.save_extraction_candidate(user_id=user.user_id, intake_id=intake.intake_id, question_text="解方程 x+1=2", answer_text="x=0", evidence={"source": "local-smoke"})
+        attempt_id, _ = store.confirm_intake(user_id=user.user_id, intake_id=intake.intake_id, expected_version=1, idempotency_key="smoke-grade")
+        candidate = store.record_grade_candidate(user_id=user.user_id, attempt_id=attempt_id, input_version=1, verdict="incorrect", first_error="移项符号错误", evidence="x 应为 1")
+        error = store.commit_grade(user_id=user.user_id, candidate_id=candidate.candidate_id, expected_version=1)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        source_id = hashlib.sha256(f"{user.user_id}:source".encode("ascii")).hexdigest()[:32]
+        question_id = hashlib.sha256(f"{user.user_id}:question".encode("ascii")).hexdigest()[:32]
+        version_id = hashlib.sha256(f"{user.user_id}:version".encode("ascii")).hexdigest()[:32]
+        verification_id = hashlib.sha256(f"{user.user_id}:verification".encode("ascii")).hexdigest()[:32]
+        connection = _connection_factory()()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute("INSERT INTO question_sources (id,title,license_status,content_sha256,created_at) VALUES (%s,'本地验证题库','open',%s,%s)", (source_id, secrets.token_hex(32), now))
+            cursor.execute("INSERT INTO questions (id,source_id,canonical_sha256,grade,difficulty,status,current_version_no,created_at,updated_at) VALUES (%s,%s,%s,10,2.0,'verified',1,%s,%s)", (question_id, source_id, secrets.token_hex(32), now, now))
+            cursor.execute("INSERT INTO question_versions (id,question_id,version_no,stem_text,answer_text,content_sha256,created_at) VALUES (%s,%s,1,'解方程 x+2=4','x=2',%s,%s)", (version_id, question_id, secrets.token_hex(32), now))
+            cursor.execute("INSERT INTO question_verifications (id,question_version_id,verdict,method,evidence_sha256,verified_at) VALUES (%s,%s,'verified','human',%s,%s)", (verification_id, version_id, secrets.token_hex(32), now))
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+        recommendations, _ = store.assign_recommendations(user_id=user.user_id, error_id=error.error_id)
+        reviews = store.list_due_reviews(user_id=user.user_id)
+        if len(recommendations) != 1 or len(reviews) != 1:
+            raise RuntimeError("domain recommendation or review smoke test failed")
+        store.complete_review(user_id=user.user_id, task_id=reviews[0].task_id, result="correct", idempotency_key="smoke-review")
+        pdf_job = notebook.create_practice_pdf(user_id=user.user_id, error_ids=[error.error_id], idempotency_key="smoke-pdf")
+        _, pdf = notebook.download_practice_pdf(user_id=user.user_id, job_id=pdf_job.job_id)
+        if not pdf.startswith(b"%PDF-"):
+            raise RuntimeError("domain PDF smoke test failed")
+        return {"recommendations": len(recommendations), "reviews": len(reviews), "pdf_bytes": len(pdf)}
+
+
+def _clear_domain_smoke_data(user_id: str) -> None:
+    source_id = hashlib.sha256(f"{user_id}:source".encode("ascii")).hexdigest()[:32]
+    question_id = hashlib.sha256(f"{user_id}:question".encode("ascii")).hexdigest()[:32]
+    version_id = hashlib.sha256(f"{user_id}:version".encode("ascii")).hexdigest()[:32]
+    verification_id = hashlib.sha256(f"{user_id}:verification".encode("ascii")).hexdigest()[:32]
+    connection = _connection_factory()()
+    cursor = connection.cursor()
+    try:
+        for table in ("review_attempts", "recommendations", "review_tasks", "domain_audit_events", "error_notebook_entries", "grade_candidates", "attempts", "web_jobs", "intake_items", "web_files"):
+            cursor.execute(f"DELETE FROM `{table}` WHERE user_id=%s", (user_id,))
+        cursor.execute("DELETE FROM question_verifications WHERE id=%s AND question_version_id=%s", (verification_id, version_id))
+        cursor.execute("DELETE FROM question_versions WHERE id=%s AND question_id=%s", (version_id, question_id))
+        cursor.execute("DELETE FROM questions WHERE id=%s AND source_id=%s", (question_id, source_id))
+        cursor.execute("DELETE FROM question_sources WHERE id=%s", (source_id,))
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def smoke() -> dict[str, Any]:
     from services.web_auth import AuthAsgiApp, AuthConfig
     from services.web_auth.registration import SendCodeStatus
@@ -508,6 +582,13 @@ def smoke() -> dict[str, Any]:
     )
     if replay[0] != 400:
         raise RuntimeError("OTP replay protection smoke test failed")
+    smoke_user = service.authenticate_session(verified[1]["set-cookie"].split(";", 1)[0].split("=", 1)[1])
+    if smoke_user is None:
+        raise RuntimeError("domain smoke user lookup failed")
+    try:
+        domain = _domain_smoke(service, verified[1]["set-cookie"])
+    finally:
+        _clear_domain_smoke_data(smoke_user.user_id)
 
     _clear_test_data()
     concurrent_service, concurrent_sender = _service()
@@ -552,6 +633,9 @@ def smoke() -> dict[str, Any]:
         "concurrent_provider_sends": len(concurrent_sender.deliveries),
         "ip_minute_requests": 11,
         "ip_minute_provider_sends": len(ip_sender.deliveries),
+        "domain_recommendations": domain["recommendations"],
+        "domain_reviews": domain["reviews"],
+        "domain_pdf_bytes": domain["pdf_bytes"],
     }
 
 
@@ -567,12 +651,13 @@ def serve(host: str, port: int) -> None:
     if host not in {"127.0.0.1", "localhost"}:
         raise RuntimeError("local simulation may only bind to localhost")
     start()
+    from services.web_app import NotebookAsgiApp
     from services.web_auth import (
-        AuthAsgiApp,
         InMemoryCaptchaVerifier,
         MySqlRegistrationStore,
         RegistrationService,
     )
+    from services.web_domain import MySqlDomainStore, NotebookService
     import uvicorn
 
     service = RegistrationService(
@@ -581,8 +666,9 @@ def serve(host: str, port: int) -> None:
         captcha_verifier=InMemoryCaptchaVerifier({"local-captcha"}),
         secret_pepper=base64.b64decode(_load_secrets()["auth_pepper_b64"]),
     )
-    app = AuthAsgiApp(
+    app = NotebookAsgiApp(
         service,
+        NotebookService(MySqlDomainStore(_connection_factory()), RUNTIME / "quarantine"),
         allowed_hosts={"127.0.0.1", "localhost"},
         require_https=False,
     )

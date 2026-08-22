@@ -10,6 +10,8 @@ import json
 from typing import Any, Protocol
 import uuid
 
+from .learning import Question, Recommendation, ReviewTask, next_review, rank_questions
+
 
 class Cursor(Protocol):
     def execute(self, query: str, args: tuple[Any, ...] = ()) -> int: ...
@@ -116,7 +118,7 @@ class MySqlDomainStore:
         status: str = "ready",
     ) -> FileRecord:
         user = _required(user_id, "user_id", 32)
-        if purpose not in {"exam", "answer_photo", "question_image"}:
+        if purpose not in {"exam", "answer_photo", "question_image", "practice_pdf"}:
             raise ValueError("unsupported upload purpose")
         proposed = uuid.uuid4().hex
         now = _utcnow()
@@ -389,6 +391,7 @@ class MySqlDomainStore:
             cursor.execute("SELECT id,question_text,answer_text,first_error,status,created_at FROM error_notebook_entries WHERE user_id=%s AND attempt_id=%s FOR UPDATE", (user_id, attempt_id))
             existing = cursor.fetchone()
             if existing:
+                self._ensure_review_tx(cursor, user_id, str(existing[0]), now)
                 connection.commit()
                 return ErrorEntry(str(existing[0]), user_id, attempt_id, str(existing[1]), str(existing[2]), existing[3], str(existing[4]), existing[5].replace(tzinfo=timezone.utc))
             error_id = uuid.uuid4().hex
@@ -399,6 +402,7 @@ class MySqlDomainStore:
             )
             cursor.execute("UPDATE grade_candidates SET status='committed' WHERE id=%s AND user_id=%s", (candidate_id, user_id))
             cursor.execute("UPDATE attempts SET status='committed',updated_at=%s WHERE id=%s AND user_id=%s", (now, attempt_id, user_id))
+            self._ensure_review_tx(cursor, user_id, error_id, now)
             cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'grade.committed','error',%s,%s,%s)", (user_id, error_id, json.dumps({"candidate_id": candidate_id}), now))
             connection.commit()
             return ErrorEntry(error_id, user_id, attempt_id, str(row[5]), str(row[6]), row[3], "open", now.replace(tzinfo=timezone.utc))
@@ -458,6 +462,250 @@ class MySqlDomainStore:
         finally:
             cursor.close()
             connection.close()
+
+    def assign_recommendations(self, *, user_id: str, error_id: str, limit: int = 2) -> tuple[list[Recommendation], bool]:
+        error = self.get_error(user_id=user_id, error_id=error_id)
+        if not error:
+            raise LookupError("error not found")
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT q.id,v.stem_text,v.answer_text,q.grade,q.difficulty,s.title "
+                "FROM questions q JOIN question_sources s ON s.id=q.source_id "
+                "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
+                "WHERE q.status='verified' AND s.license_status IN ('open','user_authorized') "
+                "AND EXISTS (SELECT 1 FROM question_verifications x WHERE x.question_version_id=v.id AND x.verdict='verified') "
+                "AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.user_id=%s AND a.question_id=q.id) LIMIT 200",
+                (user_id,),
+            )
+            candidates = [Question(str(row[0]), str(row[1]), row[2], int(row[3]) if row[3] is not None else None, float(row[4]) if row[4] is not None else None, str(row[5])) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            connection.close()
+        ranked = rank_questions(error.question_text, candidates, limit)
+        if ranked:
+            now = _utcnow()
+            connection = self._connect()
+            cursor = connection.cursor()
+            try:
+                connection.begin()
+                for question, reason in ranked:
+                    cursor.execute(
+                        "INSERT INTO recommendations (id,user_id,error_id,question_id,reason,status,created_at) "
+                        "VALUES (%s,%s,%s,%s,%s,'assigned',%s) ON DUPLICATE KEY UPDATE reason=VALUES(reason),status='assigned'",
+                        (uuid.uuid4().hex, user_id, error_id, question.question_id, reason, now),
+                    )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                cursor.close()
+                connection.close()
+        items = self.list_recommendations(user_id=user_id, error_id=error_id)
+        return items[:limit], len(items) < limit
+
+    def list_recommendations(self, *, user_id: str, error_id: str) -> list[Recommendation]:
+        if not self.get_error(user_id=user_id, error_id=error_id):
+            raise LookupError("error not found")
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT r.id,r.reason,r.status,q.id,v.stem_text,v.answer_text,q.grade,q.difficulty,s.title "
+                "FROM recommendations r JOIN questions q ON q.id=r.question_id "
+                "JOIN question_sources s ON s.id=q.source_id "
+                "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
+                "WHERE r.user_id=%s AND r.error_id=%s AND r.status IN ('assigned','completed') "
+                "AND q.status='verified' AND s.license_status IN ('open','user_authorized') "
+                "AND EXISTS (SELECT 1 FROM question_verifications x WHERE x.question_version_id=v.id AND x.verdict='verified') "
+                "ORDER BY r.created_at,r.id",
+                (user_id, error_id),
+            )
+            return [Recommendation(str(row[0]), user_id, error_id, Question(str(row[3]), str(row[4]), row[5], int(row[6]) if row[6] is not None else None, float(row[7]) if row[7] is not None else None, str(row[8])), str(row[1]), str(row[2])) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            connection.close()
+
+    def list_due_reviews(self, *, user_id: str, now: datetime | None = None) -> list[ReviewTask]:
+        current = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT id,error_id,stage,due_at FROM review_tasks WHERE user_id=%s AND status IN ('pending','ready') AND due_at<=%s ORDER BY due_at,error_id", (user_id, current))
+            rows = cursor.fetchall()
+            return [ReviewTask(str(row[0]), user_id, str(row[1]), int(row[2]), row[3].replace(tzinfo=timezone.utc), "ready") for row in rows]
+        finally:
+            cursor.close()
+            connection.close()
+
+    def complete_review(self, *, user_id: str, task_id: str, result: str, idempotency_key: str, now: datetime | None = None) -> ReviewTask | None:
+        key = _required(idempotency_key, "idempotency_key")
+        completed_at = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute("SELECT error_id FROM review_attempts WHERE user_id=%s AND idempotency_key=%s", (user_id, key))
+            existing = cursor.fetchone()
+            if existing:
+                next_task = self._active_review_tx(cursor, user_id, str(existing[0]))
+                connection.commit()
+                return next_task
+            cursor.execute("SELECT error_id,stage,due_at,status FROM review_tasks WHERE id=%s AND user_id=%s FOR UPDATE", (task_id, user_id))
+            row = cursor.fetchone()
+            if not row:
+                raise LookupError("review task not found")
+            if str(row[3]) not in {"pending", "ready"} or row[2] > completed_at:
+                raise RuntimeError("conflict")
+            error_id, stage = str(row[0]), int(row[1])
+            target = next_review(stage, result, completed_at.replace(tzinfo=timezone.utc))
+            cursor.execute(
+                "INSERT INTO review_attempts (id,user_id,review_task_id,error_id,stage,result,idempotency_key,completed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (uuid.uuid4().hex, user_id, task_id, error_id, stage, result, key, completed_at),
+            )
+            cursor.execute("UPDATE review_tasks SET status='completed' WHERE id=%s AND user_id=%s", (task_id, user_id))
+            cursor.execute("UPDATE review_tasks SET status='cancelled' WHERE user_id=%s AND error_id=%s AND id<>%s AND status IN ('pending','ready')", (user_id, error_id, task_id))
+            next_task = None
+            if target is None:
+                cursor.execute("UPDATE error_notebook_entries SET status='mastered',updated_at=%s WHERE id=%s AND user_id=%s", (completed_at, error_id, user_id))
+            else:
+                target_stage, target_due = target
+                target_due = target_due.replace(tzinfo=None)
+                next_id = uuid.uuid4().hex
+                cursor.execute(
+                    "INSERT INTO review_tasks (id,user_id,error_id,stage,due_at,status,created_at) VALUES (%s,%s,%s,%s,%s,'pending',%s) "
+                    "ON DUPLICATE KEY UPDATE due_at=VALUES(due_at),status='pending'",
+                    (next_id, user_id, error_id, target_stage, target_due, completed_at),
+                )
+                cursor.execute("SELECT id,error_id,stage,due_at,status FROM review_tasks WHERE user_id=%s AND error_id=%s AND stage=%s", (user_id, error_id, target_stage))
+                next_row = cursor.fetchone()
+                next_task = ReviewTask(str(next_row[0]), user_id, str(next_row[1]), int(next_row[2]), next_row[3].replace(tzinfo=timezone.utc), str(next_row[4]))
+            cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'review.completed','error',%s,%s,%s)", (user_id, error_id, json.dumps({"stage": stage, "result": result}), completed_at))
+            connection.commit()
+            return next_task
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def progress(self, *, user_id: str, now: datetime | None = None) -> dict[str, int | bool]:
+        current = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT COUNT(*),SUM(status='mastered') FROM error_notebook_entries WHERE user_id=%s AND status<>'removed'", (user_id,))
+            totals = cursor.fetchone() or (0, 0)
+            cursor.execute("SELECT COUNT(*) FROM review_tasks WHERE user_id=%s AND status IN ('pending','ready') AND due_at<=%s", (user_id, current))
+            due = cursor.fetchone() or (0,)
+            cursor.execute("SELECT COUNT(*) FROM error_notebook_entries e WHERE e.user_id=%s AND e.status<>'removed' AND NOT EXISTS (SELECT 1 FROM recommendations r WHERE r.user_id=e.user_id AND r.error_id=e.id AND r.status='assigned')", (user_id,))
+            gaps = cursor.fetchone() or (0,)
+            count = int(totals[0] or 0)
+            return {"error_count": count, "mastered_count": int(totals[1] or 0), "due_review_count": int(due[0]), "recommendation_gap_count": int(gaps[0]), "sample_sufficient": count >= 3}
+        finally:
+            cursor.close()
+            connection.close()
+
+    def pending_job_count(self, *, user_id: str) -> int:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT COUNT(*) FROM web_jobs WHERE user_id=%s AND status NOT IN ('completed','cancelled','failed_final')", (user_id,))
+            return int((cursor.fetchone() or (0,))[0])
+        finally:
+            cursor.close()
+            connection.close()
+
+    def practice_items(self, *, user_id: str, error_ids: list[str]) -> tuple[list[dict[str, Any]], int]:
+        items: list[dict[str, Any]] = []
+        seen_questions: set[str] = set()
+        gaps = 0
+        for error_id in error_ids:
+            error = self.get_error(user_id=user_id, error_id=error_id)
+            if not error:
+                raise LookupError("error not found")
+            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "错题回顾"})
+            recommendations = self.list_recommendations(user_id=user_id, error_id=error_id)
+            if not recommendations:
+                gaps += 1
+            for recommendation in recommendations[:2]:
+                question = recommendation.question
+                if question.question_id in seen_questions:
+                    continue
+                seen_questions.add(question.question_id)
+                items.append({"kind": "recommendation", "error_id": error_id, "question_id": question.question_id, "stem_text": question.stem_text, "answer_text": question.answer_text, "difficulty": question.difficulty, "source_title": question.source_title, "reason": recommendation.reason})
+        return items, gaps
+
+    def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool) -> Job:
+        key = _required(idempotency_key, "idempotency_key")
+        if not error_ids:
+            raise ValueError("error_ids is required")
+        connection = self._connect()
+        cursor = connection.cursor()
+        now = _utcnow()
+        try:
+            connection.begin()
+            placeholders = ",".join(["%s"] * len(error_ids))
+            cursor.execute(f"SELECT COUNT(*) FROM error_notebook_entries WHERE user_id=%s AND id IN ({placeholders}) AND status<>'removed'", (user_id, *error_ids))
+            if int((cursor.fetchone() or (0,))[0]) != len(set(error_ids)):
+                raise LookupError("error not found")
+            digest = hashlib.sha256(json.dumps([sorted(set(error_ids)), include_answers], separators=(",", ":")).encode("ascii")).hexdigest()
+            proposed = uuid.uuid4().hex
+            cursor.execute(
+                "INSERT INTO web_jobs (id,user_id,job_type,resource_type,resource_id,idempotency_key,input_sha256,status,checkpoint_json,created_at,updated_at) "
+                "VALUES (%s,%s,'practice_pdf','error',%s,%s,%s,'queued',%s,%s,%s) ON DUPLICATE KEY UPDATE updated_at=updated_at",
+                (proposed, user_id, error_ids[0], key, digest, json.dumps({"error_ids": error_ids, "include_answers": include_answers}), now, now),
+            )
+            cursor.execute("SELECT id,resource_id,status,checkpoint_json,last_error_code,input_sha256 FROM web_jobs WHERE user_id=%s AND job_type='practice_pdf' AND idempotency_key=%s", (user_id, key))
+            row = cursor.fetchone()
+            if str(row[5]) != digest:
+                raise RuntimeError("conflict")
+            connection.commit()
+            return Job(str(row[0]), user_id, "practice_pdf", str(row[1]), str(row[2]), self._json(row[3]), row[4])
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool) -> Job:
+        checkpoint = {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers}
+        connection = self._connect()
+        cursor = connection.cursor()
+        now = _utcnow()
+        try:
+            connection.begin()
+            changed = cursor.execute("UPDATE web_jobs SET status='completed',checkpoint_json=%s,result_json=%s,updated_at=%s WHERE id=%s AND user_id=%s AND job_type='practice_pdf'", (json.dumps(checkpoint), json.dumps(checkpoint), now, job_id, user_id))
+            if changed != 1:
+                raise LookupError("job not found")
+            cursor.execute("SELECT resource_id FROM web_jobs WHERE id=%s AND user_id=%s", (job_id, user_id))
+            row = cursor.fetchone()
+            connection.commit()
+            return Job(job_id, user_id, "practice_pdf", str(row[0]), "completed", checkpoint, None)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    @staticmethod
+    def _ensure_review_tx(cursor: Cursor, user_id: str, error_id: str, now: datetime) -> None:
+        cursor.execute(
+            "INSERT INTO review_tasks (id,user_id,error_id,stage,due_at,status,created_at) VALUES (%s,%s,%s,1,%s,'ready',%s) "
+            "ON DUPLICATE KEY UPDATE id=id",
+            (uuid.uuid4().hex, user_id, error_id, now, now),
+        )
+
+    @staticmethod
+    def _active_review_tx(cursor: Cursor, user_id: str, error_id: str) -> ReviewTask | None:
+        cursor.execute("SELECT id,error_id,stage,due_at,status FROM review_tasks WHERE user_id=%s AND error_id=%s AND status IN ('pending','ready') ORDER BY due_at LIMIT 1", (user_id, error_id))
+        row = cursor.fetchone()
+        return ReviewTask(str(row[0]), user_id, str(row[1]), int(row[2]), row[3].replace(tzinfo=timezone.utc), str(row[4])) if row else None
 
     @staticmethod
     def _json(value: Any) -> dict[str, Any] | None:

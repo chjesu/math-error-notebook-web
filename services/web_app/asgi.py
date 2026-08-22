@@ -5,11 +5,12 @@ from __future__ import annotations
 from email import policy
 from email.parser import BytesParser
 import json
+from pathlib import Path
 import secrets
 from typing import Any, Awaitable, Callable
 
 from services.web_auth import AuthAsgiApp, RegistrationService
-from services.web_domain import ErrorEntry, GradeCandidate, IntakeItem, Job, NotebookService
+from services.web_domain import ErrorEntry, GradeCandidate, IntakeItem, Job, NotebookService, Recommendation, ReviewTask
 
 
 Receive = Callable[[], Awaitable[dict[str, Any]]]
@@ -34,6 +35,15 @@ class NotebookAsgiApp:
         self.require_https = require_https
         self.session_cookie = session_cookie
         self.max_upload_bytes = max_upload_bytes
+        root = Path(__file__).resolve().parents[2]
+        self.static_files = {
+            "/": (root / "web" / "index.html", "text/html; charset=utf-8", False),
+            "/web/app.css": (root / "web" / "app.css", "text/css; charset=utf-8", False),
+            "/web/app.js": (root / "web" / "app.js", "text/javascript; charset=utf-8", False),
+            "/assets/branding/favicon-v1.ico": (root / "assets" / "branding" / "favicon-v1.ico", "image/x-icon", True),
+            "/assets/branding/logo-symbol-color-64-v1.png": (root / "assets" / "branding" / "logo-symbol-color-64-v1.png", "image/png", True),
+            "/assets/branding/logo-symbol-color-128-v1.png": (root / "assets" / "branding" / "logo-symbol-color-128-v1.png", "image/png", True),
+        }
 
     async def __call__(self, scope: dict[str, Any], receive: Receive, send: Send) -> None:
         path = str(scope.get("path", ""))
@@ -48,12 +58,16 @@ class NotebookAsgiApp:
         if self.require_https and scope.get("scheme") != "https":
             await self._error(send, 400, "https_required")
             return
+        method = str(scope.get("method", ""))
+        static = self.static_files.get(path)
+        if method == "GET" and static:
+            await self._asset(send, *static)
+            return
         token = self._cookie(headers.get("cookie", ""), self.session_cookie)
         user = self.auth_service.authenticate_session(token or "")
         if user is None:
             await self._error(send, 401, "authentication_required")
             return
-        method = str(scope.get("method", ""))
         if method in {"POST", "PATCH", "PUT", "DELETE"}:
             expected_origin = f"{scope.get('scheme', 'https')}://{headers.get('host', '')}"
             if headers.get("origin") != expected_origin:
@@ -62,8 +76,9 @@ class NotebookAsgiApp:
         try:
             if path == "/v1/workbench" and method == "GET":
                 items = self.notebook.store.list_errors(user_id=user.user_id)
-                pending = sum(job.user_id == user.user_id and job.status not in {"completed", "cancelled", "failed_final"} for job in self.notebook.store.jobs.values()) if hasattr(self.notebook.store, "jobs") else 0
-                await self._json(send, 200, {"error_count": len(items), "pending_task_count": pending, "recent_errors": [self._error_entry(item) for item in items[:5]]})
+                pending = self.notebook.store.pending_job_count(user_id=user.user_id)
+                progress = self.notebook.store.progress(user_id=user.user_id)
+                await self._json(send, 200, {"error_count": len(items), "pending_task_count": pending, "due_review_count": progress["due_review_count"], "recommendation_gap_count": progress["recommendation_gap_count"], "recent_errors": [self._error_entry(item) for item in items[:5]]})
             elif path == "/v1/files" and method == "POST":
                 purpose, filename, content = await self._multipart(receive, headers)
                 record = self.notebook.upload(user_id=user.user_id, purpose=purpose, original_name=filename, content=content)
@@ -99,11 +114,46 @@ class NotebookAsgiApp:
                 await self._json(send, 200, self._candidate(candidate))
             elif path == "/v1/errors" and method == "GET":
                 await self._json(send, 200, {"items": [self._error_entry(item) for item in self.notebook.store.list_errors(user_id=user.user_id)]})
+            elif path.startswith("/v1/errors/") and path.endswith("/recommendations") and method in {"GET", "POST"}:
+                error_id = path.split("/")[-2]
+                if method == "POST":
+                    self._key(headers)
+                    recommendations, gap = self.notebook.store.assign_recommendations(user_id=user.user_id, error_id=error_id)
+                else:
+                    recommendations = self.notebook.store.list_recommendations(user_id=user.user_id, error_id=error_id)
+                    gap = len(recommendations) < 2
+                await self._json(send, 200, {"items": [self._recommendation(item) for item in recommendations], "gap": gap})
             elif path.startswith("/v1/errors/") and method == "GET":
                 entry = self.notebook.store.get_error(user_id=user.user_id, error_id=path.rsplit("/", 1)[1])
                 if not entry:
                     raise LookupError
                 await self._json(send, 200, self._error_entry(entry))
+            elif path == "/v1/reviews/today" and method == "GET":
+                tasks = self.notebook.store.list_due_reviews(user_id=user.user_id)
+                await self._json(send, 200, {"items": [self._review(item) for item in tasks], "count": len(tasks)})
+            elif path.startswith("/v1/reviews/") and path.endswith("/complete") and method == "POST":
+                payload = await self._json_body(receive)
+                next_task = self.notebook.store.complete_review(user_id=user.user_id, task_id=path.split("/")[-2], result=str(payload["result"]), idempotency_key=self._key(headers))
+                await self._json(send, 200, {"completed": True, "next_review": self._review(next_task) if next_task else None, "mastered": next_task is None})
+            elif path == "/v1/progress" and method == "GET":
+                await self._json(send, 200, self.notebook.store.progress(user_id=user.user_id))
+            elif path == "/v1/practice-pdfs" and method == "POST":
+                payload = await self._json_body(receive)
+                error_ids = payload.get("error_ids")
+                include_answers = payload.get("include_answers", False)
+                if not isinstance(error_ids, list) or not all(isinstance(item, str) for item in error_ids) or not 1 <= len(error_ids) <= 12 or not isinstance(include_answers, bool):
+                    raise ValueError("invalid practice request")
+                job = self.notebook.create_practice_pdf(user_id=user.user_id, error_ids=list(dict.fromkeys(error_ids)), idempotency_key=self._key(headers), include_answers=include_answers)
+                await self._json(send, 201, self._practice_job(job))
+            elif path.startswith("/v1/practice-pdfs/") and path.endswith("/download") and method == "GET":
+                job_id = path.split("/")[-2]
+                filename, content = self.notebook.download_practice_pdf(user_id=user.user_id, job_id=job_id)
+                await self._bytes(send, 200, content, "application/pdf", filename)
+            elif path.startswith("/v1/practice-pdfs/") and method == "GET":
+                job = self.notebook.store.get_job(user_id=user.user_id, job_id=path.rsplit("/", 1)[1])
+                if not job or job.job_type != "practice_pdf":
+                    raise LookupError
+                await self._json(send, 200, self._practice_job(job))
             else:
                 await self._error(send, 404, "not_found")
         except LookupError:
@@ -146,6 +196,8 @@ class NotebookAsgiApp:
                 content = part.get_payload(decode=True)
         if not purpose or not filename or content is None:
             raise ValueError("missing multipart field")
+        if purpose not in {"exam", "answer_photo", "question_image"}:
+            raise ValueError("unsupported public upload purpose")
         return purpose, filename, content
 
     @staticmethod
@@ -179,6 +231,20 @@ class NotebookAsgiApp:
     def _error_entry(value: ErrorEntry) -> dict[str, Any]:
         return {"error_id": value.error_id, "status": value.status, "question_text": value.question_text, "answer_text": value.answer_text, "first_error": value.first_error, "created_at": value.created_at.isoformat()}
 
+    @staticmethod
+    def _recommendation(value: Recommendation) -> dict[str, Any]:
+        return {"recommendation_id": value.recommendation_id, "question_id": value.question.question_id, "stem_text": value.question.stem_text, "grade": value.question.grade, "difficulty": value.question.difficulty, "source": value.question.source_title, "reason": value.reason, "status": value.status}
+
+    @staticmethod
+    def _review(value: ReviewTask) -> dict[str, Any]:
+        return {"review_id": value.task_id, "error_id": value.error_id, "stage": value.stage, "due_at": value.due_at.isoformat(), "status": value.status}
+
+    def _practice_job(self, value: Job) -> dict[str, Any]:
+        payload = self._job(value)
+        if value.status == "completed":
+            payload["download_url"] = f"/v1/practice-pdfs/{value.job_id}/download"
+        return payload
+
     async def _error(self, send: Send, status: int, code: str) -> None:
         await self._json(send, status, {"error": {"code": code, "message": code, "retryable": code in {"failed_retryable", "temporarily_unavailable", "rate_limited"}, "request_id": secrets.token_hex(8)}})
 
@@ -186,4 +252,19 @@ class NotebookAsgiApp:
     async def _json(send: Send, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", b"application/json; charset=utf-8"), (b"content-length", str(len(body)).encode("ascii")), (b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff")]})
+        await send({"type": "http.response.body", "body": body})
+
+    @staticmethod
+    async def _bytes(send: Send, status: int, body: bytes, media_type: str, filename: str) -> None:
+        await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", media_type.encode("ascii")), (b"content-length", str(len(body)).encode("ascii")), (b"content-disposition", f'attachment; filename="{filename}"'.encode("ascii")), (b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff")]})
+        await send({"type": "http.response.body", "body": body})
+
+    @staticmethod
+    async def _asset(send: Send, path: Path, media_type: str, immutable: bool) -> None:
+        if not path.is_file():
+            await NotebookAsgiApp._json(send, 404, {"error": {"code": "not_found", "message": "not_found", "retryable": False, "request_id": secrets.token_hex(8)}})
+            return
+        body = path.read_bytes()
+        cache = b"public,max-age=31536000,immutable" if immutable else b"no-cache"
+        await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", media_type.encode("ascii")), (b"content-length", str(len(body)).encode("ascii")), (b"cache-control", cache), (b"x-content-type-options", b"nosniff")]})
         await send({"type": "http.response.body", "body": body})

@@ -17,7 +17,8 @@
       <nav>
         <a class="active" href="#workbench">工作台</a>
         <a href="#errors">错题本</a>
-        <a href="#tasks">任务</a>
+        <a href="#reviews">今日复习</a>
+        <a href="#practice">练习 PDF</a>
       </nav>
     </aside>
 
@@ -58,17 +59,36 @@
           <section class="panel stats" aria-label="错题摘要">
             <div><strong id="error-count">0</strong><span>道错题</span></div>
             <div><strong id="task-count">0</strong><span>个待处理任务</span></div>
+            <div><strong id="review-count">0</strong><span>项今日复习</span></div>
+            <div><strong id="gap-count">0</strong><span>个推荐缺口</span></div>
           </section>
           <section class="panel recent">
             <div class="panel-title"><h2>最近错题</h2><a href="#errors">查看全部</a></div>
             <ol id="error-list" class="error-list"><li class="empty">还没有错题，上传第一道题吧。</li></ol>
+          </section>
+          <section id="reviews" class="panel review-panel">
+            <div class="panel-title"><h2>今日复习</h2><span id="review-stage" class="badge">暂无任务</span></div>
+            <p id="review-question">完成一道错题入本后，会自动安排首次复习。</p>
+            <div id="review-actions" class="actions" hidden>
+              <button type="button" data-review-result="wrong" class="ghost">仍然不会</button>
+              <button type="button" data-review-result="partial" class="ghost">部分掌握</button>
+              <button type="button" data-review-result="correct">已独立做对</button>
+            </div>
+            <p id="review-status" class="status" role="status" aria-live="polite"></p>
+          </section>
+          <section id="practice" class="panel practice-panel">
+            <h2>练习 PDF</h2>
+            <p>默认只生成题目；题库推荐不足时，会保留原题并明确说明缺口。</p>
+            <label class="check"><input id="include-answers" type="checkbox"> 显式附加已验证推荐题答案</label>
+            <button id="create-pdf" type="button">生成 A4 练习</button>
+            <p id="pdf-status" class="status" role="status" aria-live="polite"></p>
           </section>
         </div>
       </section>
     </main>
 
     <nav class="bottom-nav" aria-label="移动端主导航">
-      <a class="active" href="#workbench">工作台</a><a href="#errors">错题本</a><a href="#tasks">任务</a>
+      <a class="active" href="#workbench">工作台</a><a href="#errors">错题本</a><a href="#reviews">复习</a><a href="#practice">练习</a><a href="#more">更多</a>
     </nav>
   </div>
   <script src="/web/app.js" defer></script>

@@ -9,6 +9,7 @@ from .mysql_store import (
     MySqlDomainStore,
 )
 from .notebook import InMemoryNotebookStore, NotebookService
+from .learning import Question, Recommendation, ReviewTask
 from .paper_intake import PaperDraft, PaperItem
 
 __all__ = [
@@ -20,6 +21,9 @@ __all__ = [
     "InMemoryNotebookStore",
     "MySqlDomainStore",
     "NotebookService",
+    "Question",
+    "Recommendation",
+    "ReviewTask",
     "PaperDraft",
     "PaperItem",
 ]

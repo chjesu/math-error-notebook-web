@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 .venv/
 .runtime/
+output/pdf/
+tmp/pdfs/
 .env
 data/workflows/*.json
 data/audits/

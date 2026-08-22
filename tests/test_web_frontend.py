@@ -12,6 +12,10 @@ class FrontendContractTests(unittest.TestCase):
         for removed in ("昵称", "年级", "出生日期", "监护人", "家庭"):
             self.assertNotIn(removed, html + script)
         self.assertIn("next_action", (root / "openapi" / "web-v1.json").read_text(encoding="utf-8"))
+        self.assertIn("今日复习", html)
+        self.assertIn("练习 PDF", html)
+        self.assertIn("/v1/reviews/today", script)
+        self.assertIn("/v1/practice-pdfs", script)
 
     def test_mobile_layout_and_keyboard_focus_are_defined(self) -> None:
         css = (Path(__file__).resolve().parents[1] / "web" / "app.css").read_text(encoding="utf-8")

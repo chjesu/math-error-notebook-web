@@ -85,3 +85,9 @@ class FileIntake:
             if hashlib.sha256(target.read_bytes()).hexdigest() != digest:
                 raise RuntimeError("quarantine hash collision")
         return FileCandidate(user_id, name, media_type, len(content), digest, object_key, target)
+
+    def read(self, object_key: str) -> bytes:
+        target = (self.root / object_key).resolve()
+        if self.root not in target.parents or not target.is_file():
+            raise LookupError("file not found")
+        return target.read_bytes()

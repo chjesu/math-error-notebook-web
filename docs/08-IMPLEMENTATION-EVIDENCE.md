@@ -18,29 +18,36 @@
 | 题库迁移工具 | 仅通过权威 `notebook.py` 读取，dry-run 默认，显式权利确认后才写 MySQL，哈希对账与幂等键 | `44c8933` |
 | 判题模型路由 | Terra 产生只读候选，数学不确定性升 Sol；外发显式授权；冻结输入且不含 `user_id`/手机号 | `67ed05b` |
 | 候选/正式质量门 | `input_version` 重检、`unclear` 禁止入本、正式提交幂等、跨用户统一 404 | `44c8933`、`67ed05b` |
+| 已验证推荐 | 只读取 verified、授权允许且有验证证据的当前题目版本；响应隐藏答案并返回真实缺口 | 本次提交 |
+| 分阶段复习 | 入本即创建阶段 1；correct/partial/wrong 确定性推进、保持或回退；结果按幂等键留痕 | 本次提交 |
+| A4 练习 PDF | 正式 Logo、错题分组、推荐来源/理由、默认无答案、显式答案开关、用户授权下载 | 本次提交 |
+| 学习闭环前端 | 今日复习、推荐缺口、三档结果、PDF 入口；桌面侧栏与五项移动底栏 | 本次提交 |
 
 ## 自动化证据
 
-- `python -X utf8 -B -m unittest discover -s tests -p "test_*.py"`：75 项通过。
+- `python -X utf8 -B -m unittest discover -s tests -p "test_*.py"`：83 项通过。
 - OpenAPI 和 `schemas/grade-candidate.schema.json` 均由 Python 标准库成功解析。
-- HTTP E2E 覆盖两个账号：用户 B 访问用户 A 的错题返回 404。
+- HTTP E2E 覆盖两个账号：用户 B 访问用户 A 的错题和 PDF 均返回 404；推荐响应不包含答案。
 - 文件负向测试覆盖路径穿越、伪扩展名、空/超限、损坏 DOCX 和跨用户相同内容。
 - 迁移账本测试覆盖按顺序执行、失败不记账、同名异哈希失败关闭；MySQL 查询统一使用无标题批处理输出，兼容已有旧表的首次登记。
-- `WEB-PRD-003` 已完成 `architecture_and_contract`、`identity_and_sms`、`domain_data`、`file_pipeline`、`recoverable_jobs`、`codex_routing`、`quality_gates` 和 `sqlite_migration`；下一步为 `business_flows`。
+- `WEB-PRD-003` 的 `business_flows` 已具备实现与验收证据；下一步为 `operations_acceptance`。
 
 ## 本地环境现状
 
 - Oracle MySQL 8 本地实例运行于 `127.0.0.1:3307`，所需 Python 依赖已安装。
-- 迁移前备份位于 `.runtime/local-mysql/backups/pre-v032-20260823.sql`；用户明确批准后，0001→0002→0003 已写入迁移账本。
+- 迁移前备份位于 `.runtime/local-mysql/backups/pre-v032-20260823.sql`；0001→0004 已写入本地迁移账本，0004 重复执行通过。
 - 0002 已创建个人错题本领域表；0003 已移除空的 `guardian_consents` 及 `display_name`、`birth_date`、`guardian_*` 字段。`web_users=0`、`auth_sessions=0`。
-- `scripts/local_env.py migrate` 重复运行通过，`doctor` 全项通过；MySQL 认证/并发 smoke 通过：验证码请求 202、验证 200、重放 400、50 路并发只发送 1 次。
+- `scripts/local_env.py smoke` 真实运行：验证码请求 202、验证 200、重放 400、50 路并发只发送 1 次；MySQL 入本后得到 1 道已验证推荐、1 项到期复习并生成约 15 KB PDF，测试记录精确清理。
+- 真实 HTTP 验收：首页和脚本为 200，未登录工作台为 401；本地启动器装配完整 `NotebookAsgiApp`。
+- 12 题 A4 品牌样张为 3 页；逐页渲染无裁切、重叠或断裂版块；文本检查确认默认无答案页和答案内容。
 - 技能绑定的当前题库报告 0 道题；迁移工具与映射测试已完成，但没有可导入的正式题目。
 
 ## 未完成门禁
 
 1. 找到实际含题目的权威桌面题库后运行两次 dry-run；仅在来源权利确认、总数和 SHA-256 一致后导入。当前 0 题源已完成零项对账。
 2. 连接真实解析/判题 Worker，完成固定数学基准集与人工复核包；当前测试使用确定性候选注入验证提交门。
-3. 完成推荐、分阶段复习、练习 PDF、导出/注销、告警、备份恢复、性能和独立系统安全复核。
-4. 瑞成云、Turnstile、RDS/OSS、固定出口 IP 和阿里云部署继续后置，最终部署必须人工批准。
+3. 完成导出/注销、告警、备份恢复、性能和独立系统安全复核。
+4. 将本地同步 PDF 执行替换为真实 Worker/OSS 短时下载；在此之前仅作为本地验收实现。
+5. 瑞成云、Turnstile、RDS/OSS、固定出口 IP 和阿里云部署继续后置，最终部署必须人工批准。
 
 上述门禁完成前，当前代码只能视为本地功能切片，不能上线。
