@@ -24,12 +24,24 @@ class CodexTaskRouterTests(unittest.TestCase):
         promoted = router.select("web-implementation", ["authentication"])
         self.assertEqual(promoted["model"], "gpt-5.6-sol")
         self.assertEqual(promoted["promoted_from"], "web-implementation")
+        math_route = router.select("math-grade-candidate", [])
+        self.assertEqual(math_route["model"], "gpt-5.6-terra")
+        self.assertTrue(math_route["schema"].endswith("grade-candidate.schema.json"))
+        adjudicated = router.select("math-grade-candidate", ["math_uncertainty"])
+        self.assertEqual(adjudicated["model"], "gpt-5.6-sol")
+        self.assertEqual(adjudicated["promoted_from"], "math-grade-candidate")
 
     def test_load_input_is_bom_compatible_and_compact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "input.json"
             path.write_text('\ufeff{ "scope": "public fixture" }', encoding="utf-8")
             self.assertEqual(router.load_input(path), '{"scope":"public fixture"}')
+
+    def test_math_grade_input_is_frozen_and_rejects_identity_fields(self) -> None:
+        valid = {"attempt_id": "a" * 32, "input_version": 1, "question_text": "题目", "answer_text": "作答", "evidence": None}
+        router.validate_grade_input(valid)
+        with self.assertRaisesRegex(ValueError, "only"):
+            router.validate_grade_input(valid | {"user_id": "u" * 32})
 
     def test_low_confidence_non_sol_result_escalates_once(self) -> None:
         value = {
@@ -39,6 +51,13 @@ class CodexTaskRouterTests(unittest.TestCase):
         self.assertTrue(router.needs_escalation(value))
         value["route"] = router.select("web-security-review", [])
         self.assertFalse(router.needs_escalation(value))
+        math_value = {
+            "route": router.select("math-grade-candidate", []),
+            "result": {"verdict": "incorrect", "confidence": 0.95},
+        }
+        self.assertFalse(router.needs_escalation(math_value))
+        math_value["result"] = {"verdict": "unclear", "confidence": 0.95}
+        self.assertTrue(router.needs_escalation(math_value))
 
     def test_invoke_uses_read_only_ephemeral_codex_and_writes_metadata_only_audit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
