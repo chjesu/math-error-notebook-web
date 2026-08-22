@@ -2,7 +2,7 @@
 
 > 文档基线：v0.3.2
 > 基线日期：2026-08-22
-> 当前状态：单一用户产品基线已确认；注册服务可运行，直接进入错题本和完整学习闭环待实现
+> 当前状态：单一用户产品基线和核心 UE/UI/交互设计已确认；注册服务可运行，直接进入错题本和完整学习闭环待实现
 
 ## 当前产品口径
 
@@ -28,6 +28,7 @@
 | [07-SMS-PROVIDER-RUICHENG.md](./07-SMS-PROVIDER-RUICHENG.md) | 短信适配、密钥和网络约束 | v0.2.0 | 待验收 |
 | [08-IMPLEMENTATION-EVIDENCE.md](./08-IMPLEMENTATION-EVIDENCE.md) | 当前实现证据与剩余门禁 | v0.2.0 | 待按 v0.3.2 更新 |
 | [09-PRODUCT-FUNCTION-DESIGN.md](./09-PRODUCT-FUNCTION-DESIGN.md) | 页面、流程、异常恢复和产品事件 | v0.3.2 | 已确认 |
+| [10-UX-UI-INTERACTION-DESIGN.md](./10-UX-UI-INTERACTION-DESIGN.md) | 信息架构、线框、视觉规范、交互状态和前端顺序 | v0.3.2 | 核心流程可评审 |
 
 ## 活跃需求
 
