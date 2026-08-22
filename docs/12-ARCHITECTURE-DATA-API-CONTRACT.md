@@ -56,6 +56,8 @@ erDiagram
 | 错误码 | HTTP | 页面行为 |
 |---|---:|---|
 | `invalid_request` | 400 | 定位字段，保留用户输入 |
+| `invalid_or_expired_code` | 400 | 验证码页统一提示，不暴露账号状态 |
+| `request_too_large` | 413 | 保留本地文件选择并提示大小限制 |
 | `authentication_required` | 401 | 回到手机号入口；成功后返回原页 |
 | `forbidden` | 403 | 不重试，提示无操作权限 |
 | `not_found` | 404 | 显示不存在；跨用户同样返回此码 |

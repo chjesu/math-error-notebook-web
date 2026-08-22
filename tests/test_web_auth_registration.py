@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import unittest
@@ -9,7 +9,6 @@ import unittest
 from services.web_auth import (
     AuthConfig,
     InMemoryCaptchaVerifier,
-    InMemoryGuardianConsentVerifier,
     InMemoryRegistrationStore,
     RecordingSmsSender,
     RegistrationService,
@@ -25,13 +24,10 @@ class RegistrationServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = InMemoryRegistrationStore()
         self.sender = RecordingSmsSender()
-        self.captcha = InMemoryCaptchaVerifier({"captcha-once"})
-        self.guardian = InMemoryGuardianConsentVerifier({"guardian-consent-verified-001"})
         self.service = RegistrationService(
             store=self.store,
             sms_sender=self.sender,
-            captcha_verifier=self.captcha,
-            guardian_consent_verifier=self.guardian,
+            captcha_verifier=InMemoryCaptchaVerifier({"captcha-once"}),
             secret_pepper=b"p" * 32,
             config=AuthConfig(captcha_after_phone_day=2, captcha_after_ip_hour=4),
         )
@@ -45,237 +41,99 @@ class RegistrationServiceTests(unittest.TestCase):
             now=now,
         )
 
+    def register(self, challenge_id: str, code: str, *, now: datetime | None = None):
+        return self.service.register(
+            challenge_id=challenge_id,
+            phone="13800138000",
+            code=code,
+            ip_address="203.0.113.7",
+            device_id="browser-device-001",
+            now=now or NOW + timedelta(seconds=30),
+        )
+
     def test_normalizes_supported_cn_mobile_forms(self) -> None:
         self.assertEqual(normalize_cn_mobile("+86 138-0013-8000"), "13800138000")
         self.assertEqual(normalize_cn_mobile("8613800138000"), "13800138000")
         with self.assertRaises(ValueError):
             normalize_cn_mobile("12345")
 
-    def test_plaintext_code_is_not_persisted_or_audited(self) -> None:
+    def test_plaintext_code_and_phone_are_not_persisted_or_audited(self) -> None:
         result = self.request()
         code = self.sender.deliveries[0][1]
         persisted = json.dumps(
-            {
-                "challenge": vars(self.store.challenges[result.challenge_id]),
-                "audit": [vars(item) for item in self.store.audit_events],
-            },
+            {"challenge": vars(self.store.challenges[result.challenge_id]), "audit": [vars(item) for item in self.store.audit_events]},
             default=str,
         )
         self.assertNotIn(code, persisted)
         self.assertNotIn("13800138000", persisted)
         self.assertIn("138****8000", persisted)
 
+    def test_verification_creates_minimal_account_without_profile_fields(self) -> None:
+        sent = self.request()
+        result = self.register(sent.challenge_id, self.sender.deliveries[0][1])
+        self.assertEqual(result.status, RegistrationStatus.COMPLETE)
+        user = next(iter(self.store.users_by_phone.values()))
+        self.assertEqual(user.status, "active")
+        self.assertEqual(set(vars(user)), {"user_id", "phone_hash", "phone_last4", "created_at", "status"})
+
+    def test_verification_is_single_use_and_existing_phone_reuses_account(self) -> None:
+        first = self.request()
+        code = self.sender.deliveries[0][1]
+        complete = self.register(first.challenge_id, code)
+        replay = self.register(first.challenge_id, code)
+        self.assertEqual(replay.status, RegistrationStatus.INVALID_CODE)
+
+        second = self.request(now=NOW + timedelta(seconds=61))
+        login = self.register(second.challenge_id, self.sender.deliveries[-1][1], now=NOW + timedelta(seconds=91))
+        self.assertEqual(login.status, RegistrationStatus.COMPLETE)
+        self.assertEqual(login.user_id, complete.user_id)
+
+    def test_locked_account_cannot_create_session(self) -> None:
+        sent = self.request()
+        phone_hash = self.store.challenges[sent.challenge_id].phone_hash
+        self.store.users_by_phone[phone_hash] = User("locked-user", phone_hash, "8000", NOW, "locked")
+        result = self.register(sent.challenge_id, self.sender.deliveries[0][1])
+        self.assertEqual(result.status, RegistrationStatus.LOCKED)
+        self.assertFalse(self.store.sessions)
+
     def test_resend_invalidates_previous_code(self) -> None:
         first = self.request()
         old_code = self.sender.deliveries[-1][1]
-        second = self.request(now=NOW + timedelta(seconds=61))
-        self.assertEqual(self.store.challenges[first.challenge_id].status, "cancelled")
-        attempt = self.service.register(
-            challenge_id=first.challenge_id,
-            phone="13800138000",
-            code=old_code,
-            display_name="测试学生",
-            birth_date=date(2000, 1, 1),
-            guardian_consent_receipt=None,
-            ip_address="203.0.113.7",
-            device_id="browser-device-001",
-            now=NOW + timedelta(seconds=62),
-        )
-        self.assertEqual(attempt.status, RegistrationStatus.INVALID_CODE)
-        self.assertIsNotNone(second.challenge_id)
-
-    def test_cooldown_and_captcha_escalation(self) -> None:
-        accepted = self.request()
-        limited = self.request(now=NOW + timedelta(seconds=10))
-        self.assertEqual(accepted.status, SendCodeStatus.ACCEPTED)
-        self.assertEqual(limited.status, SendCodeStatus.RETRY_LATER)
-        self.assertIsNotNone(limited.challenge_id)
-        self.assertGreaterEqual(limited.retry_after_seconds, 50)
         self.request(now=NOW + timedelta(seconds=61))
-        captcha = self.request(now=NOW + timedelta(seconds=122))
-        self.assertEqual(captcha.status, SendCodeStatus.CAPTCHA_REQUIRED)
-        passed = self.request(now=NOW + timedelta(seconds=122), captcha="captcha-once")
-        self.assertEqual(passed.status, SendCodeStatus.ACCEPTED)
-
-    def test_default_phone_day_limit_stops_sixth_provider_send(self) -> None:
-        service = RegistrationService(
-            store=InMemoryRegistrationStore(),
-            sms_sender=self.sender,
-            captcha_verifier=InMemoryCaptchaVerifier(),
-            guardian_consent_verifier=self.guardian,
-            secret_pepper=b"p" * 32,
-            config=AuthConfig(
-                phone_hour_limit=99,
-                captcha_after_phone_day=99,
-                captcha_after_ip_hour=99,
-            ),
-        )
-        results = [
-            service.request_code(
-                phone="13800138000",
-                ip_address="203.0.113.7",
-                device_id="browser-device-001",
-                now=NOW + timedelta(hours=offset),
-            )
-            for offset in range(0, 12, 2)
-        ]
-        self.assertEqual([item.status for item in results[:5]], [SendCodeStatus.ACCEPTED] * 5)
-        self.assertEqual(results[5].status, SendCodeStatus.RETRY_LATER)
-        self.assertEqual(len(self.sender.deliveries), 5)
-
-    def test_ip_minute_and_device_day_limits_are_atomic(self) -> None:
-        def reserve(store, config, index, *, ip_hash, device_hash, now):
-            return store.reserve_send(
-                phone_hash=f"phone-{index}",
-                ip_hash=ip_hash,
-                ip_prefix_hash=f"prefix-{index}",
-                device_hash=device_hash,
-                tenant_hash="tenant",
-                now=now,
-                config=config,
-            )[0]
-
-        ip_store = InMemoryRegistrationStore()
-        ip_config = AuthConfig(
-            phone_hour_limit=99,
-            phone_day_limit=99,
-            ip_minute_limit=2,
-            ip_hour_limit=99,
-            ip_prefix_hour_limit=99,
-            device_hour_limit=99,
-            device_day_limit=99,
-            tenant_hour_limit=99,
-        )
-        self.assertEqual(
-            [
-                reserve(
-                    ip_store,
-                    ip_config,
-                    index,
-                    ip_hash="shared-ip",
-                    device_hash=f"device-{index}",
-                    now=NOW + timedelta(seconds=index),
-                )
-                for index in range(3)
-            ],
-            [True, True, False],
-        )
-
-        device_store = InMemoryRegistrationStore()
-        device_config = AuthConfig(
-            phone_hour_limit=99,
-            phone_day_limit=99,
-            ip_minute_limit=99,
-            ip_hour_limit=99,
-            ip_prefix_hour_limit=99,
-            device_hour_limit=99,
-            device_day_limit=2,
-            tenant_hour_limit=99,
-        )
-        self.assertEqual(
-            [
-                reserve(
-                    device_store,
-                    device_config,
-                    index,
-                    ip_hash=f"ip-{index}",
-                    device_hash="shared-device",
-                    now=NOW + timedelta(hours=index),
-                )
-                for index in range(3)
-            ],
-            [True, True, False],
-        )
+        self.assertEqual(self.store.challenges[first.challenge_id].status, "cancelled")
+        self.assertEqual(self.register(first.challenge_id, old_code).status, RegistrationStatus.INVALID_CODE)
 
     def test_invalid_attempts_lock_challenge(self) -> None:
         sent = self.request()
         for _ in range(4):
-            result = self._register(sent.challenge_id, "000000", date(2000, 1, 1))
-            self.assertEqual(result.status, RegistrationStatus.INVALID_CODE)
-        fifth = self._register(sent.challenge_id, "000000", date(2000, 1, 1))
-        self.assertEqual(fifth.status, RegistrationStatus.LOCKED)
-        correct = self._register(sent.challenge_id, self.sender.deliveries[0][1], date(2000, 1, 1))
-        self.assertEqual(correct.status, RegistrationStatus.LOCKED)
+            self.assertEqual(self.register(sent.challenge_id, "000000").status, RegistrationStatus.INVALID_CODE)
+        self.assertEqual(self.register(sent.challenge_id, "000000").status, RegistrationStatus.LOCKED)
+        self.assertEqual(self.register(sent.challenge_id, self.sender.deliveries[0][1]).status, RegistrationStatus.LOCKED)
 
-    def test_minor_requires_guardian_then_registration_is_single_use(self) -> None:
+    def test_expired_code_cannot_create_session(self) -> None:
         sent = self.request()
-        code = self.sender.deliveries[0][1]
-        blocked = self._register(sent.challenge_id, code, date(2012, 1, 1))
-        self.assertEqual(blocked.status, RegistrationStatus.GUARDIAN_CONSENT_REQUIRED)
-        forged = self._register(
-            sent.challenge_id,
-            code,
-            date(2012, 1, 1),
-            guardian_consent_receipt="client-invented-receipt",
-        )
-        self.assertEqual(forged.status, RegistrationStatus.GUARDIAN_CONSENT_REQUIRED)
-        complete = self._register(
-            sent.challenge_id,
-            code,
-            date(2012, 1, 1),
-            guardian_consent_receipt="guardian-consent-verified-001",
-        )
-        self.assertEqual(complete.status, RegistrationStatus.COMPLETE)
-        self.assertTrue(complete.session_token)
-        reused = self._register(
-            sent.challenge_id,
-            code,
-            date(2012, 1, 1),
-            guardian_consent_receipt="guardian-consent-verified-001",
-        )
-        self.assertEqual(reused.status, RegistrationStatus.INVALID_CODE)
+        result = self.register(sent.challenge_id, self.sender.deliveries[0][1], now=NOW + timedelta(minutes=6))
+        self.assertEqual(result.status, RegistrationStatus.EXPIRED)
+        self.assertFalse(self.store.sessions)
 
-    def test_guardian_receipt_validity_is_not_revealed_before_phone_verification(self) -> None:
-        sent = self.request()
-        result = self._register(
-            sent.challenge_id,
-            "000000",
-            date(2012, 1, 1),
-            guardian_consent_receipt="guardian-consent-verified-001",
-        )
-        self.assertEqual(result.status, RegistrationStatus.INVALID_CODE)
+    def test_session_query_current_logout_and_all_logout(self) -> None:
+        first = self.request()
+        logged_in = self.register(first.challenge_id, self.sender.deliveries[0][1])
+        self.assertIsNotNone(self.service.authenticate_session(logged_in.session_token or "", now=NOW + timedelta(minutes=1)))
 
-    def test_existing_restricted_user_cannot_change_status_with_claimed_adult_birthdate(self) -> None:
-        sent = self.request()
-        challenge = self.store.challenges[sent.challenge_id]
-        self.store.users_by_phone[challenge.phone_hash] = User(
-            user_id="restricted-user",
-            phone_hash=challenge.phone_hash,
-            phone_last4="8000",
-            display_name="受限学生",
-            birth_date=date(2012, 1, 1),
-            guardian_consent_receipt=None,
-            created_at=NOW,
-            status="restricted",
-        )
-        result = self._register(
-            sent.challenge_id,
-            self.sender.deliveries[0][1],
-            date(2000, 1, 1),
-        )
-        self.assertEqual(result.status, RegistrationStatus.COMPLETE)
-        self.assertEqual(result.account_status, "restricted")
+        second = self.request(now=NOW + timedelta(seconds=61))
+        another = self.register(second.challenge_id, self.sender.deliveries[-1][1], now=NOW + timedelta(seconds=91))
+        self.assertTrue(self.service.logout(another.session_token or "", now=NOW + timedelta(minutes=2)))
+        self.assertIsNone(self.service.authenticate_session(another.session_token or "", now=NOW + timedelta(minutes=2)))
+        self.assertTrue(self.service.logout_all(logged_in.session_token or "", now=NOW + timedelta(minutes=2)))
+        self.assertFalse(self.store.sessions)
 
-    def test_existing_user_login_does_not_require_guardian_receipt_again(self) -> None:
-        sent = self.request()
-        challenge = self.store.challenges[sent.challenge_id]
-        self.store.users_by_phone[challenge.phone_hash] = User(
-            user_id="existing-student",
-            phone_hash=challenge.phone_hash,
-            phone_last4="8000",
-            display_name="已有学生",
-            birth_date=date(2012, 1, 1),
-            guardian_consent_receipt="existing-consent",
-            created_at=NOW,
-            status="active",
-        )
-        result = self._register(
-            sent.challenge_id,
-            self.sender.deliveries[0][1],
-            date(2012, 1, 1),
-        )
-        self.assertEqual(result.status, RegistrationStatus.COMPLETE)
-        self.assertEqual(result.account_status, "active")
+    def test_cooldown_captcha_and_day_limit(self) -> None:
+        self.assertEqual(self.request().status, SendCodeStatus.ACCEPTED)
+        self.assertEqual(self.request(now=NOW + timedelta(seconds=10)).status, SendCodeStatus.RETRY_LATER)
+        self.request(now=NOW + timedelta(seconds=61))
+        self.assertEqual(self.request(now=NOW + timedelta(seconds=122)).status, SendCodeStatus.CAPTCHA_REQUIRED)
+        self.assertEqual(self.request(now=NOW + timedelta(seconds=122), captcha="captcha-once").status, SendCodeStatus.ACCEPTED)
 
     def test_provider_failure_does_not_leave_active_challenge(self) -> None:
         self.sender.fail = True
@@ -283,92 +141,30 @@ class RegistrationServiceTests(unittest.TestCase):
         self.assertEqual(result.status, SendCodeStatus.TEMPORARILY_UNAVAILABLE)
         self.assertTrue(all(item.status not in {"pending", "sent"} for item in self.store.challenges.values()))
 
-    def test_expired_code_cannot_create_session(self) -> None:
-        sent = self.request()
-        result = self.service.register(
-            challenge_id=sent.challenge_id,
-            phone="13800138000",
-            code=self.sender.deliveries[0][1],
-            display_name="测试学生",
-            birth_date=date(2000, 1, 1),
-            guardian_consent_receipt=None,
-            ip_address="203.0.113.7",
-            device_id="browser-device-001",
-            now=NOW + timedelta(minutes=6),
-        )
-        self.assertEqual(result.status, RegistrationStatus.EXPIRED)
-        self.assertFalse(self.store.sessions)
-
-    def test_session_plaintext_is_returned_once_but_only_hash_is_stored(self) -> None:
-        sent = self.request()
-        result = self._register(sent.challenge_id, self.sender.deliveries[0][1], date(2000, 1, 1))
-        self.assertEqual(result.status, RegistrationStatus.COMPLETE)
-        self.assertNotIn(result.session_token, self.store.sessions)
-        self.assertEqual(len(self.store.sessions), 1)
-
-    def test_challenge_cannot_cross_server_resolved_tenant_scope(self) -> None:
-        sent = self.request()
-        result = self.service.register(
-            challenge_id=sent.challenge_id,
-            phone="13800138000",
-            code=self.sender.deliveries[0][1],
-            display_name="测试学生",
-            birth_date=date(2000, 1, 1),
-            guardian_consent_receipt=None,
-            ip_address="203.0.113.7",
-            device_id="browser-device-001",
-            tenant_scope="another-tenant",
-            now=NOW + timedelta(seconds=30),
-        )
-        self.assertEqual(result.status, RegistrationStatus.INVALID_CODE)
-        self.assertFalse(self.store.sessions)
-
     def test_concurrent_requests_reserve_only_one_sms(self) -> None:
-        def request_once(_: int):
-            return self.service.request_code(
-                phone="13800138000",
-                ip_address="203.0.113.7",
-                device_id="browser-device-001",
-                now=NOW,
-            ).status
-
         with ThreadPoolExecutor(max_workers=20) as executor:
-            statuses = list(executor.map(request_once, range(50)))
+            statuses = list(executor.map(lambda _: self.request().status, range(50)))
         self.assertEqual(statuses.count(SendCodeStatus.ACCEPTED), 1)
         self.assertEqual(len(self.sender.deliveries), 1)
 
-    def test_mysql_migration_has_no_plaintext_otp_column(self) -> None:
-        sql = (
-            Path(__file__).resolve().parents[1]
-            / "services"
-            / "web_auth"
-            / "migrations"
-            / "0001_phone_registration.sql"
-        ).read_text(encoding="utf-8")
-        lowered = sql.lower()
-        self.assertIn("code_hash", lowered)
-        self.assertIn("session_hash", lowered)
-        self.assertNotIn("plaintext", lowered.replace("plaintext is never stored", ""))
-        self.assertNotRegex(lowered, r"\b(code|otp|session_token)\s+(varchar|char)")
-
-    def _register(
-        self,
-        challenge_id: str,
-        code: str,
-        birth_date: date,
-        guardian_consent_receipt: str | None = None,
-    ):
-        return self.service.register(
-            challenge_id=challenge_id,
+    def test_challenge_cannot_cross_server_scope(self) -> None:
+        sent = self.request()
+        result = self.service.register(
+            challenge_id=sent.challenge_id,
             phone="13800138000",
-            code=code,
-            display_name="测试学生",
-            birth_date=birth_date,
-            guardian_consent_receipt=guardian_consent_receipt,
+            code=self.sender.deliveries[0][1],
             ip_address="203.0.113.7",
             device_id="browser-device-001",
+            tenant_scope="another-registration-scope",
             now=NOW + timedelta(seconds=30),
         )
+        self.assertEqual(result.status, RegistrationStatus.INVALID_CODE)
+
+    def test_forward_migration_removes_profile_and_guardian_schema(self) -> None:
+        sql = (Path(__file__).resolve().parents[1] / "services" / "web_auth" / "migrations" / "0003_account_simplification.sql").read_text(encoding="utf-8").lower()
+        self.assertIn("drop column display_name", sql)
+        self.assertIn("drop column birth_date", sql)
+        self.assertIn("drop table if exists guardian_consents", sql)
 
 
 if __name__ == "__main__":

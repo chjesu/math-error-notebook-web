@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import unittest
 
@@ -133,10 +133,6 @@ class MySqlRegistrationStoreTests(unittest.TestCase):
             tenant_hash="t" * 64,
             phone_last4="8000",
             code_hash="wrong-hash",
-            display_name="测试学生",
-            birth_date=date(2000, 1, 1),
-            guardian_consent_receipt=None,
-            block_for_guardian=False,
             session_hash="s" * 64,
             session_expires_at=NOW + timedelta(days=30),
             now=NOW,

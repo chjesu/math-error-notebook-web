@@ -16,7 +16,7 @@
 - `POST /v1/auth/otp/request` 与 `POST /v1/auth/otp/verify` 的 ASGI 接口适配器；
 - HTTPS/Host/JSON/请求体边界、安全 Cookie、统一错误响应，并明确不信任客户端 `X-Forwarded-For`。
 
-`registration.py` 不依赖 Web 框架或数据库驱动，`asgi.py` 只实现最小 ASGI 协议，`mysql_store.py` 接受任意 PyMySQL 兼容的连接工厂。`bootstrap.py:create_app` 从服务器环境变量装配 MySQL、瑞成云和 Turnstile，并拒绝远程明文 MySQL；不得使用 `RecordingSmsSender`、`InMemoryCaptchaVerifier`、`InMemoryGuardianConsentVerifier` 或 `InMemoryRegistrationStore` 运行生产服务。数据库骨架见 `migrations/0001_phone_registration.sql`。
+`registration.py` 不依赖 Web 框架或数据库驱动，`asgi.py` 只实现最小 ASGI 协议，`mysql_store.py` 接受任意 PyMySQL 兼容的连接工厂。`bootstrap.py:create_app` 从服务器环境变量装配 MySQL、瑞成云和 Turnstile，并拒绝远程明文 MySQL；不得使用 `RecordingSmsSender`、`InMemoryCaptchaVerifier` 或 `InMemoryRegistrationStore` 运行生产服务。数据库骨架见不可改写的 `migrations/0001_phone_registration.sql`，账号简化由 `migrations/0003_account_simplification.sql` 前向完成。
 
 ## 生产启动
 

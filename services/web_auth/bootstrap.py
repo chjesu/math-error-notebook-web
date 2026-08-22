@@ -14,14 +14,6 @@ from .ruicheng_sms import RuichengSmsSender
 from .turnstile import TurnstileCaptchaVerifier
 
 
-class RejectingGuardianConsentVerifier:
-    """Fail closed until the separate guardian-consent flow issues receipts."""
-
-    def verify(self, receipt: str, *, student_phone_hash: str, birth_date: Any) -> bool:
-        del receipt, student_phone_hash, birth_date
-        return False
-
-
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -85,7 +77,6 @@ def create_app() -> AuthAsgiApp:
         store=MySqlRegistrationStore(_mysql_connection_factory()),
         sms_sender=RuichengSmsSender.from_environment(),
         captcha_verifier=TurnstileCaptchaVerifier.from_environment(),
-        guardian_consent_verifier=RejectingGuardianConsentVerifier(),
         secret_pepper=_pepper(),
     )
     return AuthAsgiApp(service, allowed_hosts=hosts)

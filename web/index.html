@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>李兆霖数学错题本</title>
+  <link rel="icon" href="/assets/branding/favicon-v1.ico">
+  <link rel="stylesheet" href="/web/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="#workbench" aria-label="李兆霖数学错题本首页">
+        <img src="/assets/branding/logo-symbol-color-64-v1.png" alt="">
+        <span>李兆霖数学错题本</span>
+      </a>
+      <nav>
+        <a class="active" href="#workbench">工作台</a>
+        <a href="#errors">错题本</a>
+        <a href="#tasks">任务</a>
+      </nav>
+    </aside>
+
+    <main id="main" tabindex="-1">
+      <section id="auth-view" class="auth-card" hidden>
+        <img class="auth-logo" src="/assets/branding/logo-symbol-color-128-v1.png" alt="李兆霖数学错题本">
+        <h1>开始整理错题</h1>
+        <p>手机号验证后直接进入你的错题本。</p>
+        <form id="phone-form">
+          <label for="phone">手机号</label>
+          <input id="phone" name="phone" inputmode="tel" autocomplete="tel" required placeholder="请输入手机号">
+          <button type="submit">获取验证码</button>
+        </form>
+        <form id="code-form" hidden>
+          <label for="code">验证码</label>
+          <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+          <button type="submit">验证并进入</button>
+        </form>
+        <p id="auth-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="workbench-view" hidden>
+        <header class="page-header">
+          <div><p class="eyebrow">个人错题本</p><h1>今天从哪道题开始？</h1></div>
+          <button id="logout" class="ghost" type="button">退出</button>
+        </header>
+        <div class="grid">
+          <section class="panel upload-panel">
+            <h2>录入一道错题</h2>
+            <p>支持 PDF、PNG、JPG 和 DOCX；上传后先确认题干与作答。</p>
+            <form id="upload-form">
+              <label class="drop-zone" for="file"><span>选择试卷或题目图片</span><small>单个文件不超过 25 MB</small></label>
+              <input id="file" name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" required>
+              <button type="submit">上传并开始识别</button>
+            </form>
+            <p id="upload-status" class="status" role="status" aria-live="polite"></p>
+          </section>
+          <section class="panel stats" aria-label="错题摘要">
+            <div><strong id="error-count">0</strong><span>道错题</span></div>
+            <div><strong id="task-count">0</strong><span>个待处理任务</span></div>
+          </section>
+          <section class="panel recent">
+            <div class="panel-title"><h2>最近错题</h2><a href="#errors">查看全部</a></div>
+            <ol id="error-list" class="error-list"><li class="empty">还没有错题，上传第一道题吧。</li></ol>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="移动端主导航">
+      <a class="active" href="#workbench">工作台</a><a href="#errors">错题本</a><a href="#tasks">任务</a>
+    </nav>
+  </div>
+  <script src="/web/app.js" defer></script>
+</body>
+</html>

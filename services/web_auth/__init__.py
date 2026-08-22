@@ -3,7 +3,6 @@
 from .registration import (
     AuthConfig,
     InMemoryCaptchaVerifier,
-    InMemoryGuardianConsentVerifier,
     InMemoryRegistrationStore,
     RecordingSmsSender,
     RegistrationResult,
@@ -20,7 +19,6 @@ __all__ = [
     "AuthConfig",
     "AuthAsgiApp",
     "InMemoryCaptchaVerifier",
-    "InMemoryGuardianConsentVerifier",
     "InMemoryRegistrationStore",
     "MySqlRegistrationStore",
     "RecordingSmsSender",

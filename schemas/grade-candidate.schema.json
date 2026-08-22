@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lizhaolin.local/schemas/grade-candidate.schema.json",
+  "title": "Math grade candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["attempt_id", "input_version", "verdict", "first_error", "evidence", "confidence"],
+  "properties": {
+    "attempt_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "input_version": {"type": "integer", "minimum": 1},
+    "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]},
+    "first_error": {"type": ["string", "null"]},
+    "evidence": {"type": ["string", "null"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"verdict": {"const": "unclear"}}, "required": ["verdict"]},
+      "then": {"properties": {"first_error": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"verdict": {"enum": ["partial", "incorrect"]}}, "required": ["verdict"]},
+      "then": {"properties": {"first_error": {"type": "string", "minLength": 1}, "evidence": {"type": "string", "minLength": 1}}}
+    }
+  ]
+}

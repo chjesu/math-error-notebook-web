@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date
 import json
+import secrets
 from typing import Any, Awaitable, Callable
 
 from .registration import (
@@ -60,6 +60,9 @@ class AuthAsgiApp:
                 return
             await self._json(send, 200, {"status": "ok"})
             return
+        if path in {"/v1/session", "/v1/sessions"}:
+            await self._session(path, scope.get("method", ""), headers, send)
+            return
         if path not in {"/v1/auth/otp/request", "/v1/auth/otp/verify"}:
             await self._json(send, 404, {"error": "not_found"})
             return
@@ -106,6 +109,8 @@ class AuthAsgiApp:
     async def _request_code(
         self, send: Send, payload: dict[str, Any], client_ip: str, device_id: str
     ) -> None:
+        if set(payload) - {"phone", "captcha_token"}:
+            raise ValueError("unsupported request field")
         result = self.service.request_code(
             phone=str(payload["phone"]),
             captcha_token=(str(payload["captcha_token"]) if payload.get("captcha_token") else None),
@@ -141,24 +146,16 @@ class AuthAsgiApp:
     async def _verify(
         self, send: Send, payload: dict[str, Any], client_ip: str, device_id: str
     ) -> None:
+        if set(payload) - {"challenge_token", "phone", "code"}:
+            raise ValueError("unsupported verification field")
         result = self.service.register(
             challenge_id=str(payload["challenge_token"]),
             phone=str(payload["phone"]),
             code=str(payload["code"]),
-            display_name=str(payload["display_name"]),
-            birth_date=date.fromisoformat(str(payload["birth_date"])),
-            guardian_consent_receipt=(
-                str(payload["guardian_consent_receipt"])
-                if payload.get("guardian_consent_receipt")
-                else None
-            ),
             ip_address=client_ip,
             device_id=device_id,
             tenant_scope=self.tenant_scope,
         )
-        if result.status is RegistrationStatus.GUARDIAN_CONSENT_REQUIRED:
-            await self._json(send, 403, {"error": "guardian_consent_required"})
-            return
         if result.status is not RegistrationStatus.COMPLETE or not result.session_token:
             await self._json(send, 400, {"error": "invalid_or_expired_code"})
             return
@@ -172,16 +169,48 @@ class AuthAsgiApp:
             200,
             {
                 "status": "authenticated",
-                "user_id": result.user_id,
                 "account_status": result.account_status,
-                "next_action": (
-                    "complete_guardian_consent"
-                    if result.account_status == "restricted"
-                    else "create_or_join_family"
-                ),
+                "next_action": "workbench",
             },
             [(b"set-cookie", cookie)],
         )
+
+    async def _session(
+        self,
+        path: str,
+        method: str,
+        headers: dict[str, str],
+        send: Send,
+    ) -> None:
+        allowed = "GET, DELETE" if path == "/v1/session" else "DELETE"
+        if method not in ({"GET", "DELETE"} if path == "/v1/session" else {"DELETE"}):
+            await self._json(send, 405, {"error": "method_not_allowed"}, [(b"allow", allowed.encode("ascii"))])
+            return
+        token = self._cookie(headers.get("cookie", ""), self.session_cookie)
+        user = self.service.authenticate_session(token or "")
+        if user is None:
+            await self._json(send, 401, {"error": "authentication_required"})
+            return
+        if method == "GET":
+            await self._json(send, 200, {"authenticated": True, "account_status": user.status})
+            return
+        if path == "/v1/sessions":
+            self.service.logout_all(token or "")
+        else:
+            self.service.logout(token or "")
+        expired = (
+            f"{self.session_cookie}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+        ).encode("ascii")
+        await send({"type": "http.response.start", "status": 204, "headers": [(b"set-cookie", expired), (b"cache-control", b"no-store")]})
+        await send({"type": "http.response.body", "body": b""})
+
+    @staticmethod
+    def _cookie(header: str, name: str) -> str | None:
+        for item in header.split(";"):
+            key, separator, value = item.strip().partition("=")
+            if separator and key == name:
+                return value
+        return None
 
     async def _json(
         self,
@@ -190,6 +219,16 @@ class AuthAsgiApp:
         payload: dict[str, Any],
         extra_headers: list[tuple[bytes, bytes]] | None = None,
     ) -> None:
+        if isinstance(payload.get("error"), str):
+            code = str(payload["error"])
+            payload = {
+                "error": {
+                    "code": code,
+                    "message": code,
+                    "retryable": code in {"rate_limited", "temporarily_unavailable", "failed_retryable"},
+                    "request_id": secrets.token_hex(8),
+                }
+            }
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         headers = [
             (b"content-type", b"application/json; charset=utf-8"),

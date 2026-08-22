@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import hashlib
 import hmac
@@ -53,14 +53,6 @@ def _normalize_ip_prefix(value: str) -> str:
     return str(ipaddress.ip_network(f"{address}/{prefix}", strict=False))
 
 
-def _is_minor(birth_date: date, today: date) -> bool:
-    try:
-        eighteenth = birth_date.replace(year=birth_date.year + 18)
-    except ValueError:  # 29 February reaches adulthood on 28 February.
-        eighteenth = birth_date.replace(year=birth_date.year + 18, day=28)
-    return today < eighteenth
-
-
 class SendCodeStatus(str, Enum):
     ACCEPTED = "accepted"
     CAPTCHA_REQUIRED = "captcha_required"
@@ -73,7 +65,6 @@ class RegistrationStatus(str, Enum):
     INVALID_CODE = "invalid_code"
     EXPIRED = "expired"
     LOCKED = "locked"
-    GUARDIAN_CONSENT_REQUIRED = "guardian_consent_required"
 
 
 @dataclass(frozen=True)
@@ -130,9 +121,6 @@ class User:
     user_id: str
     phone_hash: str
     phone_last4: str
-    display_name: str
-    birth_date: date
-    guardian_consent_receipt: str | None
     created_at: datetime
     status: str = "active"
 
@@ -175,10 +163,6 @@ class CaptchaVerifier(Protocol):
     def verify(self, token: str, *, ip_hash: str, phone_hash: str) -> bool: ...
 
 
-class GuardianConsentVerifier(Protocol):
-    def verify(self, receipt: str, *, student_phone_hash: str, birth_date: date) -> bool: ...
-
-
 class RegistrationStore(Protocol):
     """Persistence contract; production implements every mutation transactionally."""
 
@@ -208,15 +192,17 @@ class RegistrationStore(Protocol):
         tenant_hash: str,
         phone_last4: str,
         code_hash: str,
-        display_name: str,
-        birth_date: date,
-        guardian_consent_receipt: str | None,
-        block_for_guardian: bool,
         session_hash: str,
         session_expires_at: datetime,
         now: datetime,
         max_attempts: int,
     ) -> tuple[RegistrationStatus, User | None]: ...
+
+    def get_session_user(self, session_hash: str, now: datetime) -> User | None: ...
+
+    def revoke_session(self, session_hash: str, now: datetime) -> bool: ...
+
+    def revoke_user_sessions(self, user_id: str, now: datetime) -> int: ...
 
     def audit(self, event: AuditEvent) -> None: ...
 
@@ -233,17 +219,6 @@ class InMemoryCaptchaVerifier:
             return False
         self._accepted.remove(token)
         return True
-
-
-class InMemoryGuardianConsentVerifier:
-    """Test adapter. Production verifies a server-issued, revocable receipt."""
-
-    def __init__(self, accepted_receipts: set[str] | None = None) -> None:
-        self._accepted = set(accepted_receipts or set())
-
-    def verify(self, receipt: str, *, student_phone_hash: str, birth_date: date) -> bool:
-        del student_phone_hash, birth_date
-        return receipt in self._accepted
 
 
 class RecordingSmsSender:
@@ -350,10 +325,6 @@ class InMemoryRegistrationStore:
         tenant_hash: str,
         phone_last4: str,
         code_hash: str,
-        display_name: str,
-        birth_date: date,
-        guardian_consent_receipt: str | None,
-        block_for_guardian: bool,
         session_hash: str,
         session_expires_at: datetime,
         now: datetime,
@@ -383,22 +354,42 @@ class InMemoryRegistrationStore:
                     return RegistrationStatus.LOCKED, None
                 return RegistrationStatus.INVALID_CODE, None
             user = self.users_by_phone.get(phone_hash)
-            if user is None and block_for_guardian:
-                return RegistrationStatus.GUARDIAN_CONSENT_REQUIRED, None
+            if user is not None and user.status != "active":
+                return RegistrationStatus.LOCKED, None
             challenge.status = "verified"
             if user is None:
                 user = User(
                     user_id=uuid.uuid4().hex,
                     phone_hash=phone_hash,
                     phone_last4=phone_last4,
-                    display_name=display_name,
-                    birth_date=birth_date,
-                    guardian_consent_receipt=guardian_consent_receipt,
                     created_at=now,
                 )
                 self.users_by_phone[phone_hash] = user
             self.sessions[session_hash] = Session(session_hash, user.user_id, session_expires_at)
             return RegistrationStatus.COMPLETE, user
+
+    def get_session_user(self, session_hash: str, now: datetime) -> User | None:
+        with self._lock:
+            session = self.sessions.get(session_hash)
+            if session is None or session.expires_at <= now:
+                return None
+            return next(
+                (user for user in self.users_by_phone.values() if user.user_id == session.user_id),
+                None,
+            )
+
+    def revoke_session(self, session_hash: str, now: datetime) -> bool:
+        del now
+        with self._lock:
+            return self.sessions.pop(session_hash, None) is not None
+
+    def revoke_user_sessions(self, user_id: str, now: datetime) -> int:
+        del now
+        with self._lock:
+            matches = [key for key, value in self.sessions.items() if value.user_id == user_id]
+            for key in matches:
+                del self.sessions[key]
+            return len(matches)
 
     def audit(self, event: AuditEvent) -> None:
         with self._lock:
@@ -414,7 +405,6 @@ class RegistrationService:
         store: RegistrationStore,
         sms_sender: SmsSender,
         captcha_verifier: CaptchaVerifier,
-        guardian_consent_verifier: GuardianConsentVerifier,
         secret_pepper: bytes,
         config: AuthConfig | None = None,
     ) -> None:
@@ -423,7 +413,6 @@ class RegistrationService:
         self.store = store
         self.sms_sender = sms_sender
         self.captcha_verifier = captcha_verifier
-        self.guardian_consent_verifier = guardian_consent_verifier
         self.secret_pepper = secret_pepper
         self.config = config or AuthConfig()
 
@@ -600,9 +589,6 @@ class RegistrationService:
         challenge_id: str,
         phone: str,
         code: str,
-        display_name: str,
-        birth_date: date,
-        guardian_consent_receipt: str | None,
         ip_address: str,
         device_id: str,
         tenant_scope: str = "public-registration",
@@ -613,18 +599,6 @@ class RegistrationService:
         subjects = self._subjects(normalized, ip_address, device_id, tenant_scope)
         if not re.fullmatch(r"\d{6}", code):
             return RegistrationResult(RegistrationStatus.INVALID_CODE, "验证码无效或已过期。")
-        if not display_name.strip() or len(display_name.strip()) > 80:
-            raise ValueError("display_name is required and must not exceed 80 characters")
-        if birth_date > now.date():
-            raise ValueError("birth_date cannot be in the future")
-        consent_valid = bool(
-            guardian_consent_receipt
-            and self.guardian_consent_verifier.verify(
-                guardian_consent_receipt,
-                student_phone_hash=subjects.phone_hash,
-                birth_date=birth_date,
-            )
-        )
         session_token = secrets.token_urlsafe(32)
         status, user = self.store.register(
             challenge_id=challenge_id,
@@ -632,10 +606,6 @@ class RegistrationService:
             tenant_hash=subjects.tenant_hash,
             phone_last4=normalized[-4:],
             code_hash=self._code_hash(challenge_id, code),
-            display_name=display_name.strip(),
-            birth_date=birth_date,
-            guardian_consent_receipt=guardian_consent_receipt,
-            block_for_guardian=_is_minor(birth_date, now.date()) and not consent_valid,
             session_hash=self._hash("session", session_token),
             session_expires_at=now + timedelta(days=self.config.session_ttl_days),
             now=now,
@@ -653,7 +623,6 @@ class RegistrationService:
             RegistrationStatus.INVALID_CODE: "验证码无效或已过期。",
             RegistrationStatus.EXPIRED: "验证码无效或已过期。",
             RegistrationStatus.LOCKED: "验证次数过多，请重新获取验证码。",
-            RegistrationStatus.GUARDIAN_CONSENT_REQUIRED: "未成年人注册需先完成监护人同意。",
         }
         if status is not RegistrationStatus.COMPLETE or user is None:
             return RegistrationResult(status, messages[status])
@@ -664,3 +633,27 @@ class RegistrationService:
             session_token,
             user.status,
         )
+
+    def authenticate_session(
+        self, session_token: str, *, now: datetime | None = None
+    ) -> User | None:
+        if not session_token:
+            return None
+        return self.store.get_session_user(
+            self._hash("session", session_token), now or _utcnow()
+        )
+
+    def logout(self, session_token: str, *, now: datetime | None = None) -> bool:
+        if not session_token:
+            return False
+        return self.store.revoke_session(
+            self._hash("session", session_token), now or _utcnow()
+        )
+
+    def logout_all(self, session_token: str, *, now: datetime | None = None) -> bool:
+        current = now or _utcnow()
+        user = self.authenticate_session(session_token, now=current)
+        if user is None:
+            return False
+        self.store.revoke_user_sessions(user.user_id, current)
+        return True

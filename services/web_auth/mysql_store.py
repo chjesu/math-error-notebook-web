@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import secrets
 from typing import Any, Protocol
@@ -287,10 +287,6 @@ class MySqlRegistrationStore:
         tenant_hash: str,
         phone_last4: str,
         code_hash: str,
-        display_name: str,
-        birth_date: date,
-        guardian_consent_receipt: str | None,
-        block_for_guardian: bool,
         session_hash: str,
         session_expires_at: datetime,
         now: datetime,
@@ -339,48 +335,37 @@ class MySqlRegistrationStore:
                     None,
                 )
             cursor.execute(
-                "SELECT id, phone_last4, display_name, birth_date, "
-                "guardian_consent_receipt, created_at, status FROM web_users "
+                "SELECT id, phone_last4, created_at, status FROM web_users "
                 "WHERE phone_lookup_hash=%s FOR UPDATE",
                 (phone_hash,),
             )
             user_row = cursor.fetchone()
-            if not user_row and block_for_guardian:
-                connection.rollback()
-                return RegistrationStatus.GUARDIAN_CONSENT_REQUIRED, None
             if user_row:
                 user = User(
                     user_id=str(user_row[0]),
                     phone_hash=phone_hash,
                     phone_last4=str(user_row[1]),
-                    display_name=str(user_row[2]),
-                    birth_date=user_row[3],
-                    guardian_consent_receipt=user_row[4],
-                    created_at=user_row[5].replace(tzinfo=timezone.utc),
-                    status=str(user_row[6]),
+                    created_at=user_row[2].replace(tzinfo=timezone.utc),
+                    status=str(user_row[3]),
                 )
+                if user.status != "active":
+                    connection.rollback()
+                    return RegistrationStatus.LOCKED, None
             else:
                 user = User(
                     user_id=uuid.uuid4().hex,
                     phone_hash=phone_hash,
                     phone_last4=phone_last4,
-                    display_name=display_name,
-                    birth_date=birth_date,
-                    guardian_consent_receipt=guardian_consent_receipt,
                     created_at=now,
                 )
                 cursor.execute(
                     "INSERT INTO web_users "
-                    "(id, phone_lookup_hash, phone_last4, display_name, birth_date, "
-                    "guardian_consent_receipt, status, created_at, updated_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, %s)",
+                    "(id, phone_lookup_hash, phone_last4, status, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, 'active', %s, %s)",
                     (
                         user.user_id,
                         phone_hash,
                         phone_last4,
-                        display_name,
-                        birth_date,
-                        guardian_consent_receipt,
                         utc_now,
                         utc_now,
                     ),
@@ -401,6 +386,68 @@ class MySqlRegistrationStore:
             )
             connection.commit()
             return RegistrationStatus.COMPLETE, user
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def get_session_user(self, session_hash: str, now: datetime) -> User | None:
+        connection = self._connect()
+        cursor = connection.cursor()
+        utc_now = now.astimezone(timezone.utc).replace(tzinfo=None)
+        try:
+            cursor.execute(
+                "SELECT u.id, u.phone_lookup_hash, u.phone_last4, u.created_at, u.status "
+                "FROM auth_sessions s JOIN web_users u ON u.id=s.user_id "
+                "WHERE s.session_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s "
+                "AND u.status='active'",
+                (session_hash, utc_now),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return User(
+                user_id=str(row[0]),
+                phone_hash=str(row[1]),
+                phone_last4=str(row[2]),
+                created_at=row[3].replace(tzinfo=timezone.utc),
+                status=str(row[4]),
+            )
+        finally:
+            cursor.close()
+            connection.close()
+
+    def revoke_session(self, session_hash: str, now: datetime) -> bool:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            changed = cursor.execute(
+                "UPDATE auth_sessions SET revoked_at=%s "
+                "WHERE session_hash=%s AND revoked_at IS NULL",
+                (now.astimezone(timezone.utc).replace(tzinfo=None), session_hash),
+            )
+            connection.commit()
+            return changed == 1
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def revoke_user_sessions(self, user_id: str, now: datetime) -> int:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            changed = cursor.execute(
+                "UPDATE auth_sessions SET revoked_at=%s "
+                "WHERE user_id=%s AND revoked_at IS NULL",
+                (now.astimezone(timezone.utc).replace(tzinfo=None), user_id),
+            )
+            connection.commit()
+            return int(changed)
         except Exception:
             connection.rollback()
             raise

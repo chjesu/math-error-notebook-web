@@ -6,8 +6,8 @@ import argparse
 import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
 import json
+import hashlib
 import os
 from pathlib import Path
 import secrets
@@ -34,7 +34,11 @@ PORT = 3307
 DATABASE = "lzlm_web_local"
 APP_USER = "lzlm_app"
 DEFAULT_BASEDIR = Path(r"C:\Program Files\MySQL\MySQL Server 8.4")
-MIGRATION = ROOT / "services" / "web_auth" / "migrations" / "0001_phone_registration.sql"
+MIGRATIONS = (
+    ROOT / "services" / "web_auth" / "migrations" / "0001_phone_registration.sql",
+    ROOT / "services" / "web_domain" / "migrations" / "0002_web_domain.sql",
+    ROOT / "services" / "web_auth" / "migrations" / "0003_account_simplification.sql",
+)
 
 
 def _basedir() -> Path:
@@ -172,13 +176,103 @@ def _bootstrap_local_database() -> None:
         "FLUSH PRIVILEGES;\n"
     )
     _run_sql(bootstrap, root=True, label="local database bootstrap")
+    _apply_migrations()
+
+
+def _apply_migrations() -> None:
     _run_sql(
-        MIGRATION.read_text(encoding="utf-8"),
+        "CREATE TABLE IF NOT EXISTS web_schema_migrations ("
+        "name VARCHAR(128) CHARACTER SET ascii PRIMARY KEY, sha256 CHAR(64) CHARACTER SET ascii NULL, "
+        "applied_at DATETIME(6) NOT NULL"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
         root=True,
         database=True,
-        label="schema migration",
+        label="migration ledger setup",
     )
-    READY.write_text("mysql-schema-v1\n", encoding="utf-8")
+    has_hash = _run_sql(
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() "
+        "AND table_name='web_schema_migrations' AND column_name='sha256';",
+        root=True,
+        database=True,
+        label="migration ledger shape check",
+    )
+    if has_hash.strip() == "0":
+        _run_sql(
+            "ALTER TABLE web_schema_migrations ADD COLUMN sha256 CHAR(64) CHARACTER SET ascii NULL AFTER name;",
+            root=True,
+            database=True,
+            label="migration ledger hash upgrade",
+        )
+    ledger_output = _run_sql(
+        "SELECT name,COALESCE(sha256,'') FROM web_schema_migrations ORDER BY name;",
+        root=True,
+        database=True,
+        label="migration ledger read",
+    )
+    existing = {
+        parts[0]: parts[1] if len(parts) > 1 else ""
+        for line in ledger_output.splitlines()
+        if line.strip()
+        for parts in [line.split("\t", 1)]
+    }
+    for migration in MIGRATIONS:
+        name = migration.name
+        digest = hashlib.sha256(migration.read_bytes()).hexdigest()
+        if name in existing:
+            if name == "0002_web_domain.sql" and not existing[name]:
+                shape = _run_sql(
+                    "SELECT SUM(table_name='intake_items'),SUM(table_name='web_tenants') "
+                    "FROM information_schema.tables WHERE table_schema=DATABASE() "
+                    "AND table_name IN ('intake_items','web_tenants');",
+                    root=True,
+                    database=True,
+                    label="legacy domain schema check",
+                )
+                if shape.strip() != "1\t0":
+                    raise RuntimeError(
+                        "0002 ledger exists with the retired domain schema; rebuild the local database from a backup"
+                    )
+            if existing[name] and existing[name] != digest:
+                raise RuntimeError(f"applied migration hash mismatch: {name}")
+            if not existing[name]:
+                _run_sql(
+                    f"UPDATE web_schema_migrations SET sha256='{digest}' WHERE name='{name}' AND sha256 IS NULL;",
+                    root=True,
+                    database=True,
+                    label=f"backfill {name} hash",
+                )
+            continue
+        if name == "0001_phone_registration.sql":
+            legacy = _run_sql(
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_schema=DATABASE() AND table_name='web_users';",
+                root=True,
+                database=True,
+                label="legacy schema check",
+            )
+            if legacy.strip() == "1":
+                _run_sql(
+                    f"INSERT INTO web_schema_migrations (name, sha256, applied_at) VALUES ('{name}', '{digest}', UTC_TIMESTAMP(6));",
+                    root=True,
+                    database=True,
+                    label=f"record existing {name}",
+                )
+                existing[name] = digest
+                continue
+        _run_sql(
+            migration.read_text(encoding="utf-8"),
+            root=True,
+            database=True,
+            label=f"apply {name}",
+        )
+        _run_sql(
+            f"INSERT INTO web_schema_migrations (name, sha256, applied_at) VALUES ('{name}', '{digest}', UTC_TIMESTAMP(6));",
+            root=True,
+            database=True,
+            label=f"record {name}",
+        )
+        existing[name] = digest
+    READY.write_text("\n".join(migration.name for migration in MIGRATIONS) + "\n", encoding="utf-8")
 
 
 def _is_running() -> bool:
@@ -251,8 +345,7 @@ def init() -> None:
         _write_config()
         _write_client_configs()
         start()
-        if not READY.is_file():
-            _bootstrap_local_database()
+        _apply_migrations()
         return
 
     _write_config()
@@ -308,7 +401,6 @@ def _clear_test_data() -> None:
     try:
         for table in (
             "auth_sessions",
-            "guardian_consents",
             "auth_sms_challenges",
             "auth_sms_send_events",
             "auth_rate_limit_buckets",
@@ -361,7 +453,6 @@ async def _asgi_call(app: Any, path: str, payload: dict[str, Any]) -> tuple[int,
 def _service():
     from services.web_auth import (
         InMemoryCaptchaVerifier,
-        InMemoryGuardianConsentVerifier,
         MySqlRegistrationStore,
         RecordingSmsSender,
         RegistrationService,
@@ -372,7 +463,6 @@ def _service():
         store=MySqlRegistrationStore(_connection_factory()),
         sms_sender=sender,
         captcha_verifier=InMemoryCaptchaVerifier({"local-captcha"}),
-        guardian_consent_verifier=InMemoryGuardianConsentVerifier(),
         secret_pepper=base64.b64decode(_load_secrets()["auth_pepper_b64"]),
     )
     return service, sender
@@ -398,8 +488,6 @@ def smoke() -> dict[str, Any]:
                 "challenge_token": requested[2]["challenge_token"],
                 "phone": phone,
                 "code": sender.deliveries[0][1],
-                "display_name": "本地测试用户",
-                "birth_date": date(2000, 1, 1).isoformat(),
             },
         )
     )
@@ -413,8 +501,6 @@ def smoke() -> dict[str, Any]:
                 "challenge_token": requested[2]["challenge_token"],
                 "phone": phone,
                 "code": sender.deliveries[0][1],
-                "display_name": "本地测试用户",
-                "birth_date": date(2000, 1, 1).isoformat(),
             },
         )
     )
@@ -482,7 +568,6 @@ def serve(host: str, port: int) -> None:
     from services.web_auth import (
         AuthAsgiApp,
         InMemoryCaptchaVerifier,
-        InMemoryGuardianConsentVerifier,
         MySqlRegistrationStore,
         RegistrationService,
     )
@@ -492,7 +577,6 @@ def serve(host: str, port: int) -> None:
         store=MySqlRegistrationStore(_connection_factory()),
         sms_sender=ConsoleSmsSender(),
         captcha_verifier=InMemoryCaptchaVerifier({"local-captcha"}),
-        guardian_consent_verifier=InMemoryGuardianConsentVerifier(),
         secret_pepper=base64.b64decode(_load_secrets()["auth_pepper_b64"]),
     )
     app = AuthAsgiApp(
@@ -504,12 +588,13 @@ def serve(host: str, port: int) -> None:
 
 
 def doctor() -> dict[str, Any]:
+    ready_migrations = set(READY.read_text(encoding="utf-8").splitlines()) if READY.is_file() else set()
     checks = {
         "mysqld": _binary("mysqld").is_file(),
         "mysql": _binary("mysql").is_file(),
-        "migration": MIGRATION.is_file(),
+        "migration": all(migration.is_file() for migration in MIGRATIONS),
         "initialized": DATA.is_dir() and any(DATA.iterdir()),
-        "schema_ready": READY.is_file(),
+        "schema_ready": {migration.name for migration in MIGRATIONS} <= ready_migrations,
         "secrets": SECRETS.is_file(),
         "client_configs": ROOT_CLIENT.is_file() and APP_CLIENT.is_file(),
         "running": _is_running(),
@@ -526,7 +611,7 @@ def doctor() -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage the localhost-only Web registration environment")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("doctor", "init", "start", "stop", "status", "smoke"):
+    for name in ("doctor", "init", "migrate", "start", "stop", "status", "smoke"):
         sub.add_parser(name)
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--host", default="127.0.0.1")
@@ -536,6 +621,10 @@ def main() -> int:
         if args.command == "init":
             init()
             result: Any = doctor()
+        elif args.command == "migrate":
+            start()
+            _apply_migrations()
+            result = doctor()
         elif args.command == "start":
             start()
             result = doctor()
