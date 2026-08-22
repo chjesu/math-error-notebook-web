@@ -17,6 +17,8 @@ class LocalEnvironmentTests(unittest.TestCase):
         args = local_env._client_args(root=True)
         self.assertTrue(any(item.startswith("--defaults-extra-file=") for item in args))
         self.assertFalse(any(item.startswith("--password=") for item in args))
+        self.assertIn("--batch", args)
+        self.assertIn("--skip-column-names", args)
 
     def test_local_environment_applies_auth_and_domain_migrations(self) -> None:
         self.assertEqual(

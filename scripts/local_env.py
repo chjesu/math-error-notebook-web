@@ -116,6 +116,8 @@ def _client_args(*, root: bool, database: bool = False, password: bool = True) -
             "--host=127.0.0.1",
             f"--port={PORT}",
             "--default-character-set=utf8mb4",
+            "--batch",
+            "--skip-column-names",
             f"--user={'root' if root else APP_USER}",
         ]
     )
