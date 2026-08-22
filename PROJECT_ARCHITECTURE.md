@@ -30,6 +30,7 @@ flowchart LR
 | `services/web_auth/migrations/` | MySQL 迁移 |
 | `scripts/project_workflow.py` | 任务领取、租约、证据和断点 |
 | `scripts/codex_task_router.py` | Luna/Terra/Sol 分层只读审查 |
+| `scripts/local_env.py` | localhost MySQL、模拟短信/CAPTCHA 与端到端验收 |
 | `config/model-routing.json` | 模型路由策略 |
 | `schemas/engineering-review-result.schema.json` | 结构化审查输出 |
 | `docs/` | 产品、架构、实施、验收和运维基线 |
@@ -63,3 +64,6 @@ sequenceDiagram
 
 单元测试和启动烟雾测试只证明代码可运行。生产完成还要求：真实 MySQL/RDS TLS 集成、并发限流、真实短信测试号、小流量费用验证、WAF 可信代理配置、监护人同意服务、Sol 安全复核和人工部署批准。
 
+## 本地模拟边界
+
+本地模拟复用同一注册状态机、MySQL 适配器、迁移和 ASGI 边界，仅替换短信与 CAPTCHA 外部适配器。MySQL 固定绑定 `127.0.0.1:3307`；模拟服务固定绑定 localhost，不能作为生产启动入口。

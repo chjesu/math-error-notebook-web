@@ -12,6 +12,24 @@ python -X utf8 -B -m unittest discover -s tests -p "test_*.py"
 python -X utf8 -B scripts/codex_task_router.py route --task web-security-review --json
 ```
 
+## 本地模拟环境
+
+本地环境使用真实 MySQL 8，但短信和 CAPTCHA 均为模拟实现，不连接供应商、不产生费用：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py init
+.\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py smoke
+.\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py serve
+```
+
+服务仅监听 `127.0.0.1:8000`。请求验证码后，模拟验证码显示在当前终端。测试 CAPTCHA token 为 `local-captcha`。停止数据库使用：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py stop
+```
+
+随机本地密码、数据文件和日志只保存在 Git 忽略的 `.runtime/local-mysql/`，禁止复制到生产环境。
+
 需要模型审查时，先用 `scripts/prepare_review_packet.py --file <显式文件>` 生成冻结、限长、密钥检查过的 JSON，再在确认外发内容后运行路由器的 `run --authorize-external-send`。
 
 ## 生产启动

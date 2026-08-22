@@ -19,10 +19,18 @@
 
 ## 自动化验证
 
-- `python -X utf8 -B -m unittest discover -s tests -p "test_*.py"`：51 项通过。
+- `.venv\\Scripts\\python.exe -X utf8 -B -m unittest discover -s tests -p "test_*.py"`：53 项通过。
 - `python -X utf8 -B scripts/project_workflow.py doctor --json`：`status=ok`，无缺失文件。
 - 使用虚构环境变量调用 `services.web_auth.bootstrap:create_app`：成功创建 `AuthAsgiApp`，未连接真实 MySQL、Turnstile 或短信网关。
 - Codex 路由预览：需求为 Luna/low，普通实现为 Terra/medium；认证风险提升为 Sol/high。
+
+## 本地集成验证
+
+- Oracle MySQL Server 8.4.9 仅监听 `127.0.0.1:3307`，正式迁移已执行；应用使用专用低权限账号。
+- `scripts/local_env.py smoke` 使用真实 MySQL、模拟短信与模拟 CAPTCHA 完成验证码请求、注册、Secure Cookie、验证码单次消费验证。
+- 50 个同手机号并发请求仅产生 1 次模拟短信；同 IP 一分钟 11 个请求仅产生 10 次模拟短信。
+- 本地 Uvicorn 真实监听 `127.0.0.1:8000`，`GET /healthz` 返回 `200`、`Cache-Control: no-store`。
+- 本地模拟不连接瑞成云或 Turnstile，不产生短信费用，也不代表生产网络与供应商验收通过。
 
 ## 尚未完成，禁止据此上线
 
