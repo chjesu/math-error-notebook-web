@@ -1,0 +1,185 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "李兆霖数学错题本 Web API",
+    "version": "0.3.2"
+  },
+  "paths": {
+    "/v1/auth/otp/request": {
+      "post": {
+        "operationId": "requestOtp",
+        "requestBody": {"$ref": "#/components/requestBodies/OtpRequest"},
+        "responses": {
+          "202": {"$ref": "#/components/responses/OtpAccepted"},
+          "400": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/auth/otp/verify": {
+      "post": {
+        "operationId": "verifyOtp",
+        "requestBody": {"$ref": "#/components/requestBodies/OtpVerify"},
+        "responses": {
+          "200": {"$ref": "#/components/responses/Authenticated"},
+          "400": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/session": {
+      "get": {
+        "operationId": "getSession",
+        "security": [{"sessionCookie": []}],
+        "responses": {"200": {"$ref": "#/components/responses/Session"}, "401": {"$ref": "#/components/responses/Error"}}
+      },
+      "delete": {
+        "operationId": "logoutCurrentSession",
+        "security": [{"sessionCookie": []}],
+        "responses": {"204": {"description": "当前会话已撤销"}, "401": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/sessions": {
+      "delete": {
+        "operationId": "logoutAllSessions",
+        "security": [{"sessionCookie": []}],
+        "responses": {"204": {"description": "全部会话已撤销"}, "401": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/workbench": {
+      "get": {
+        "operationId": "getWorkbench",
+        "security": [{"sessionCookie": []}],
+        "responses": {"200": {"$ref": "#/components/responses/Workbench"}, "401": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/files": {
+      "post": {
+        "operationId": "uploadFile",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"$ref": "#/components/requestBodies/FileUpload"},
+        "responses": {"201": {"$ref": "#/components/responses/File"}, "401": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/tasks/{task_id}": {
+      "get": {
+        "operationId": "getTask",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/TaskId"}],
+        "responses": {"200": {"$ref": "#/components/responses/Task"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/intakes": {
+      "post": {
+        "operationId": "createIntake",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"$ref": "#/components/requestBodies/CreateIntake"},
+        "responses": {"202": {"$ref": "#/components/responses/TaskAccepted"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/intakes/{intake_id}": {
+      "patch": {
+        "operationId": "reviseIntake",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IntakeId"}],
+        "requestBody": {"$ref": "#/components/requestBodies/IntakeRevision"},
+        "responses": {"200": {"$ref": "#/components/responses/Intake"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/intakes/{intake_id}/confirm": {
+      "post": {
+        "operationId": "confirmIntake",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IntakeId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"$ref": "#/components/requestBodies/Version"},
+        "responses": {"202": {"$ref": "#/components/responses/TaskAccepted"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/grade-results/{result_id}": {
+      "get": {
+        "operationId": "getGradeResult",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/ResultId"}],
+        "responses": {"200": {"$ref": "#/components/responses/GradeCandidate"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/grade-results/{result_id}/commit": {
+      "post": {
+        "operationId": "commitGradeResult",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/ResultId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"$ref": "#/components/requestBodies/Version"},
+        "responses": {"201": {"$ref": "#/components/responses/ErrorEntry"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/errors": {
+      "get": {
+        "operationId": "listErrors",
+        "security": [{"sessionCookie": []}],
+        "responses": {"200": {"$ref": "#/components/responses/ErrorList"}, "401": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/errors/{error_id}": {
+      "get": {
+        "operationId": "getError",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/ErrorId"}],
+        "responses": {"200": {"$ref": "#/components/responses/ErrorEntry"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "sessionCookie": {"type": "apiKey", "in": "cookie", "name": "__Host-lzlm_session"}
+    },
+    "parameters": {
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 64}},
+      "TaskId": {"name": "task_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
+      "IntakeId": {"name": "intake_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
+      "ResultId": {"name": "result_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
+      "ErrorId": {"name": "error_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}}
+    },
+    "requestBodies": {
+      "OtpRequest": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OtpRequest"}}}},
+      "OtpVerify": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OtpVerify"}}}},
+      "FileUpload": {"required": true, "content": {"multipart/form-data": {"schema": {"$ref": "#/components/schemas/FileUpload"}}}},
+      "CreateIntake": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateIntake"}}}},
+      "IntakeRevision": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IntakeRevision"}}}},
+      "Version": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Version"}}}}
+    },
+    "responses": {
+      "OtpAccepted": {"description": "统一受理响应", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OtpAccepted"}}}},
+      "Authenticated": {"description": "设置安全 Cookie 并进入工作台", "headers": {"Set-Cookie": {"schema": {"type": "string"}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthResult"}}}},
+      "Session": {"description": "当前会话", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Session"}}}},
+      "Workbench": {"description": "工作台摘要", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Workbench"}}}},
+      "File": {"description": "隔离区文件", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/File"}}}},
+      "Task": {"description": "任务与检查点", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Task"}}}},
+      "TaskAccepted": {"description": "任务已创建", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TaskAccepted"}}}},
+      "Intake": {"description": "识别候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Intake"}}}},
+      "GradeCandidate": {"description": "判题候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GradeCandidate"}}}},
+      "ErrorEntry": {"description": "正式错题", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEntry"}}}},
+      "ErrorList": {"description": "错题列表", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/ErrorEntry"}}}}}}},
+      "Error": {"description": "稳定错误结构", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}
+    },
+    "schemas": {
+      "Id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+      "OtpRequest": {"type": "object", "additionalProperties": false, "required": ["phone"], "properties": {"phone": {"type": "string"}, "captcha_token": {"type": ["string", "null"]}}},
+      "OtpVerify": {"type": "object", "additionalProperties": false, "required": ["phone", "challenge_token", "code"], "properties": {"phone": {"type": "string"}, "challenge_token": {"type": "string"}, "code": {"type": "string", "pattern": "^[0-9]{6}$"}}},
+      "OtpAccepted": {"type": "object", "required": ["status", "message", "challenge_token", "captcha_required"], "properties": {"status": {"const": "accepted"}, "message": {"type": "string"}, "challenge_token": {"type": ["string", "null"]}, "retry_after_seconds": {"type": ["integer", "null"], "minimum": 1}, "captcha_required": {"type": "boolean"}}},
+      "AuthResult": {"type": "object", "required": ["status", "account_status", "next_action"], "properties": {"status": {"const": "authenticated"}, "account_status": {"const": "active"}, "next_action": {"const": "workbench"}}},
+      "Session": {"type": "object", "required": ["authenticated", "account_status"], "properties": {"authenticated": {"const": true}, "account_status": {"const": "active"}}},
+      "Workbench": {"type": "object", "required": ["error_count", "pending_task_count", "recent_errors"], "properties": {"error_count": {"type": "integer", "minimum": 0}, "pending_task_count": {"type": "integer", "minimum": 0}, "recent_errors": {"type": "array", "items": {"$ref": "#/components/schemas/ErrorEntry"}}}},
+      "FileUpload": {"type": "object", "required": ["purpose", "file"], "properties": {"purpose": {"enum": ["exam", "answer_photo", "question_image"]}, "file": {"type": "string", "contentMediaType": "application/octet-stream"}}},
+      "File": {"type": "object", "required": ["file_id", "status", "content_sha256"], "properties": {"file_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["quarantined", "ready", "rejected"]}, "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+      "CreateIntake": {"type": "object", "additionalProperties": false, "required": ["file_id"], "properties": {"file_id": {"$ref": "#/components/schemas/Id"}}},
+      "IntakeRevision": {"type": "object", "additionalProperties": false, "required": ["input_version", "question_text", "answer_text"], "properties": {"input_version": {"type": "integer", "minimum": 1}, "question_text": {"type": "string", "minLength": 1}, "answer_text": {"type": "string"}}},
+      "Version": {"type": "object", "additionalProperties": false, "required": ["input_version"], "properties": {"input_version": {"type": "integer", "minimum": 1}}},
+      "TaskAccepted": {"type": "object", "required": ["resource_id", "task_id"], "properties": {"resource_id": {"$ref": "#/components/schemas/Id"}, "task_id": {"$ref": "#/components/schemas/Id"}}},
+      "Task": {"type": "object", "required": ["task_id", "type", "status"], "properties": {"task_id": {"$ref": "#/components/schemas/Id"}, "type": {"enum": ["extract", "grade", "import", "practice_pdf"]}, "status": {"enum": ["queued", "running", "waiting_confirmation", "completed", "failed_retryable", "failed_final", "cancelled"]}, "checkpoint": {"type": ["object", "null"]}, "last_error_code": {"type": ["string", "null"]}}},
+      "Intake": {"type": "object", "required": ["intake_id", "input_version", "status", "question_text", "answer_text"], "properties": {"intake_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "status": {"enum": ["extracting", "waiting_confirmation", "confirmed", "cancelled"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}}},
+      "GradeCandidate": {"type": "object", "required": ["result_id", "input_version", "verdict", "status"], "properties": {"result_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "status": {"enum": ["candidate", "committed", "superseded", "rejected"]}, "first_error": {"type": ["string", "null"]}, "evidence": {"type": ["string", "null"]}}},
+      "ErrorEntry": {"type": "object", "required": ["error_id", "status", "question_text", "created_at"], "properties": {"error_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["open", "reviewing", "mastered", "removed"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}, "first_error": {"type": ["string", "null"]}, "created_at": {"type": "string", "format": "date-time"}}},
+      "ErrorEnvelope": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["code", "message", "retryable", "request_id"], "properties": {"code": {"enum": ["invalid_request", "authentication_required", "forbidden", "not_found", "conflict", "input_version_changed", "waiting_confirmation", "rate_limited", "captcha_required", "temporarily_unavailable", "failed_retryable", "failed_final"]}, "message": {"type": "string"}, "retryable": {"type": "boolean"}, "request_id": {"type": "string"}}}}}
+    }
+  }
+}

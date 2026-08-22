@@ -2,7 +2,7 @@
 
 > 文档基线：v0.3.2
 > 基线日期：2026-08-22
-> 当前状态：单一用户产品基线和核心 UE/UI/交互设计已确认；注册服务可运行，直接进入错题本和完整学习闭环待实现
+> 当前状态：单一用户产品、核心 UE/UI/交互和 v0.3.2 架构/API 契约已冻结；工程闭环实施中
 
 ## 当前产品口径
 
@@ -21,7 +21,7 @@
 |---|---|---:|---|
 | [01-DISCUSSION-MINUTES.md](./01-DISCUSSION-MINUTES.md) | 当前决策、范围和被替代决策 | v0.3.2 | 已确认 |
 | [02-PRODUCT-REQUIREMENTS.md](./02-PRODUCT-REQUIREMENTS.md) | 活跃需求、验收标准、指标和暂缓需求 | v0.3.2 | 已确认 |
-| [03-TECHNICAL-ARCHITECTURE.md](./03-TECHNICAL-ARCHITECTURE.md) | 系统架构、注册状态机、MySQL 与安全边界 | v0.2.0 | 待按 v0.3.2 修订 |
+| [03-TECHNICAL-ARCHITECTURE.md](./03-TECHNICAL-ARCHITECTURE.md) | 最小系统架构、状态、迁移与安全边界 | v0.3.2 | 已冻结 |
 | [04-IMPLEMENTATION-PLAN.md](./04-IMPLEMENTATION-PLAN.md) | 分批实施、迁移和完成证据 | v0.3.2 | 待验收 |
 | [05-TEST-ACCEPTANCE-OPERATIONS.md](./05-TEST-ACCEPTANCE-OPERATIONS.md) | 安全与学习闭环验收 | v0.3.2 | 已确认 |
 | [06-WORKBREAKDOWN-CODEX-WORKFLOW.md](./06-WORKBREAKDOWN-CODEX-WORKFLOW.md) | 角色、任务领取与模型路由 | v0.2.0 | 待按 v0.3.2 修订 |
@@ -30,6 +30,8 @@
 | [09-PRODUCT-FUNCTION-DESIGN.md](./09-PRODUCT-FUNCTION-DESIGN.md) | 页面、流程、异常恢复和产品事件 | v0.3.2 | 已确认 |
 | [10-UX-UI-INTERACTION-DESIGN.md](./10-UX-UI-INTERACTION-DESIGN.md) | 信息架构、线框、视觉规范、交互状态和前端顺序 | v0.3.2 | 核心流程可评审 |
 | [11-REMAINING-FUNCTION-WBS.md](./11-REMAINING-FUNCTION-WBS.md) | 剩余功能任务、依赖、并行线、验收证据和完成定义 | v0.3.2 | 可执行基线 |
+| [12-ARCHITECTURE-DATA-API-CONTRACT.md](./12-ARCHITECTURE-DATA-API-CONTRACT.md) | 权限矩阵、user_id Schema、候选/正式记录、API 错误与迁移契约 | v0.3.2 | 已冻结 |
+| [`../openapi/web-v1.json`](../openapi/web-v1.json) | 首题闭环机器可校验 API 契约 | v0.3.2 | 已冻结 |
 
 ## 活跃需求
 
