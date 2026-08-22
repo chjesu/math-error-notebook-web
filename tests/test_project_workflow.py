@@ -26,7 +26,7 @@ class ProjectWorkflowTests(unittest.TestCase):
     def test_order_role_review_separation_and_human_gate(self) -> None:
         started = workflow.start("WEB-AUTH-001", "registration")
         self.assertEqual(started["next_step"], "requirements")
-        with self.assertRaisesRegex(ValueError, "previous"):
+        with self.assertRaisesRegex(ValueError, "dependencies"):
             workflow.claim("WEB-AUTH-001", "implementation", "BE", "builder", 60)
         with self.assertRaisesRegex(ValueError, "requires role"):
             workflow.claim("WEB-AUTH-001", "requirements", "BE", "builder", 60)
@@ -81,7 +81,70 @@ class ProjectWorkflowTests(unittest.TestCase):
                 "WEB-AUTH-002", "terra_implementation_review", "ARCH", "same-agent", 60
             )
 
+    def test_project_template_exposes_parallel_ready_work_and_routes(self) -> None:
+        started = workflow.start("WEB-PROJECT-001", "full web project", "project")
+        self.assertEqual(started["ready_steps"], ["product_baseline"])
+        workflow.claim("WEB-PROJECT-001", "product_baseline", "PO", "product", 60)
+        workflow.update(
+            "WEB-PROJECT-001", "product_baseline", "product", "completed", "prd.md", None, None
+        )
+        workflow.claim("WEB-PROJECT-001", "architecture_and_contract", "ARCH", "architect", 60)
+        result = workflow.update(
+            "WEB-PROJECT-001",
+            "architecture_and_contract",
+            "architect",
+            "completed",
+            "architecture.md",
+            None,
+            None,
+        )
+        self.assertEqual(
+            result["ready_steps"], ["identity_and_sms", "domain_data", "file_pipeline"]
+        )
+        manifest = workflow.read("WEB-PROJECT-001")
+        identity = workflow.step(manifest, "identity_and_sms")[1]
+        self.assertEqual(identity["model_task"], "web-implementation")
+
+    def test_project_security_reviewer_is_separate_from_implementation(self) -> None:
+        workflow.start("WEB-PROJECT-002", "full web project", "project")
+        payload = workflow.read("WEB-PROJECT-002")
+        for item in payload["steps"]:
+            if item["name"] == "system_security_review":
+                item["dependencies"] = []
+            if item["name"] == "identity_and_sms":
+                item["owner"] = "same-agent"
+        workflow.write("WEB-PROJECT-002", payload)
+        with self.assertRaisesRegex(ValueError, "cannot be the only reviewer"):
+            workflow.claim(
+                "WEB-PROJECT-002", "system_security_review", "SEC", "same-agent", 60
+            )
+
+    def test_legacy_registration_manifest_keeps_sequential_dependencies(self) -> None:
+        payload = {
+            "schema": "web-registration-workflow/v1",
+            "id": "WEB-LEGACY-001",
+            "label": "legacy",
+            "steps": [
+                {
+                    "name": name,
+                    "role": role,
+                    "human_only": human_only,
+                    "status": "pending",
+                    "owner": None,
+                    "lease_expires_at": None,
+                    "artifacts": [],
+                    "note": "",
+                }
+                for name, role, human_only, *_ in workflow.REGISTRATION_STEPS
+            ],
+        }
+        workflow.write("WEB-LEGACY-001", payload)
+        loaded = workflow.read("WEB-LEGACY-001")
+        implementation = workflow.step(loaded, "implementation")[1]
+        self.assertEqual(implementation["dependencies"], ["architecture"])
+        with self.assertRaisesRegex(ValueError, "dependencies"):
+            workflow.claim("WEB-LEGACY-001", "implementation", "BE", "builder", 60)
+
 
 if __name__ == "__main__":
     unittest.main()
-

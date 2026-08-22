@@ -8,6 +8,7 @@
 
 ```powershell
 python -X utf8 -B scripts/project_workflow.py doctor --json
+python -X utf8 -B scripts/project_workflow.py status WEB-PROJECT-001 --json
 python -X utf8 -B -m unittest discover -s tests -p "test_*.py"
 python -X utf8 -B scripts/codex_task_router.py route --task web-security-review --json
 ```
@@ -32,7 +33,9 @@ python -X utf8 -B scripts/codex_task_router.py route --task web-security-review 
 
 需要模型审查时，先用 `scripts/prepare_review_packet.py --file <显式文件>` 生成冻结、限长、密钥检查过的 JSON，再在确认外发内容后运行路由器的 `run --authorize-external-send`。
 
-## 生产启动
+## 后续生产部署（当前不执行）
+
+当前先在 localhost + MySQL 8 的模拟环境跑通全部功能。只有本地端到端验收和系统安全复核完成，并获得人工批准后，才执行以下阿里云生产步骤。
 
 1. 在 MySQL 8 执行 `services/web_auth/migrations/0001_phone_registration.sql`。
 2. 从密钥管理服务注入 `services/web_auth/README.md` 列出的环境变量。

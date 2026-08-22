@@ -144,16 +144,28 @@ flowchart TD
 
 ## 7. 可恢复工作流
 
-注册交付使用项目内的确定性清单：
+项目内置两套确定性清单：`registration` 用于单独注册模块，`project` 用于整个 Web 项目。全项目模板按依赖图开放可并行领取的 `ready_steps`，不是简单按文件顺序串行。
+
+注册模块：
 
 ```powershell
 python -X utf8 -B scripts\project_workflow.py start `
-  --id WEB-AUTH-001 --label "手机验证码注册" --json
+  --id WEB-AUTH-001 --label "手机验证码注册" --template registration --json
 python -X utf8 -B scripts\project_workflow.py claim WEB-AUTH-001 `
   --step requirements --role PO --owner <负责人> --json
 ```
 
-固定顺序为 `requirements → architecture → implementation → deterministic_tests → luna_requirements_review → terra_implementation_review → sol_security_review → integration_test → deploy_approval`。完成步骤必须附证据文件；实现者不能成为唯一实现/安全复核人；最后一步必须记录人工批准者。中断后通过 `status` 返回的 `next_step` 恢复。
+全项目：
+
+```powershell
+python -X utf8 -B scripts\project_workflow.py start `
+  --id WEB-PROJECT-001 --label "李兆霖数学错题本 Web" --template project --json
+python -X utf8 -B scripts\project_workflow.py status WEB-PROJECT-001 --json
+```
+
+`project` 模板覆盖产品基线、架构契约、身份短信、领域数据、文件管道、迁移、可恢复任务、Codex 路由、质量门、业务流程、运维验收、安全复核和云部署批准。`model_task` 只表示应由哪个 Codex 路由做离线只读辅助，不授权自动外发；调用仍须显式数据发送授权。
+
+每个完成步骤必须附证据文件；高风险实现者不能成为系统安全复核的唯一复核人；最后一步必须记录人工批准者。中断后通过 `status` 返回的 `ready_steps` 继续领取。当前用户已将阿里云部署后置，因此 `cloud_deploy_approval` 必须保持未领取，直到本地全链路验收完成。
 
 ### 7.1 运行模型
 

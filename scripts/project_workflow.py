@@ -22,17 +22,68 @@ REQUIRED_FILES = (
     "services/web_auth/registration.py",
     "services/web_auth/migrations/0001_phone_registration.sql",
 )
-STEPS = (
-    ("requirements", "PO", False),
-    ("architecture", "ARCH", False),
-    ("implementation", "BE", False),
-    ("deterministic_tests", "QA", False),
-    ("luna_requirements_review", "PO", False),
-    ("terra_implementation_review", "ARCH", False),
-    ("sol_security_review", "SEC", False),
-    ("integration_test", "QA", False),
-    ("deploy_approval", "DM", True),
+REGISTRATION_STEPS = (
+    ("requirements", "PO", False, (), None, ()),
+    ("architecture", "ARCH", False, ("requirements",), None, ()),
+    ("implementation", "BE", False, ("architecture",), None, ()),
+    ("deterministic_tests", "QA", False, ("implementation",), None, ()),
+    (
+        "luna_requirements_review",
+        "PO",
+        False,
+        ("deterministic_tests",),
+        "web-requirements",
+        (),
+    ),
+    (
+        "terra_implementation_review",
+        "ARCH",
+        False,
+        ("luna_requirements_review",),
+        "web-implementation",
+        ("implementation",),
+    ),
+    (
+        "sol_security_review",
+        "SEC",
+        False,
+        ("terra_implementation_review",),
+        "web-security-review",
+        ("implementation",),
+    ),
+    ("integration_test", "QA", False, ("sol_security_review",), None, ()),
+    ("deploy_approval", "DM", True, ("integration_test",), None, ()),
 )
+PROJECT_STEPS = (
+    ("product_baseline", "PO", False, (), "web-requirements", ()),
+    ("architecture_and_contract", "ARCH", False, ("product_baseline",), None, ()),
+    ("identity_and_sms", "BE", False, ("architecture_and_contract",), "web-implementation", ()),
+    ("domain_data", "DATA", False, ("architecture_and_contract",), "web-implementation", ()),
+    ("file_pipeline", "BE", False, ("architecture_and_contract",), "web-implementation", ()),
+    ("sqlite_migration", "DATA", False, ("domain_data",), "web-implementation", ()),
+    ("recoverable_jobs", "BE", False, ("domain_data", "file_pipeline"), "web-implementation", ()),
+    ("codex_routing", "AI", False, ("recoverable_jobs",), "web-implementation", ()),
+    ("quality_gates", "AI", False, ("codex_routing",), "web-security-review", ()),
+    (
+        "business_flows",
+        "MATH",
+        False,
+        ("identity_and_sms", "sqlite_migration", "quality_gates"),
+        "web-implementation",
+        (),
+    ),
+    ("operations_acceptance", "SRE", False, ("business_flows",), None, ()),
+    (
+        "system_security_review",
+        "SEC",
+        False,
+        ("operations_acceptance",),
+        "web-security-review",
+        ("identity_and_sms", "domain_data", "file_pipeline", "recoverable_jobs", "quality_gates"),
+    ),
+    ("cloud_deploy_approval", "DM", True, ("system_security_review",), None, ()),
+)
+TEMPLATES = {"registration": REGISTRATION_STEPS, "project": PROJECT_STEPS}
 ID_RE = re.compile(r"^WEB-[A-Z0-9][A-Z0-9._-]{2,63}$")
 
 
@@ -54,7 +105,22 @@ def read(workflow_id: str) -> dict:
     path = path_for(workflow_id)
     if not path.is_file():
         raise ValueError(f"workflow not found: {workflow_id}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return normalize(json.loads(path.read_text(encoding="utf-8")))
+
+
+def normalize(payload: dict) -> dict:
+    """Upgrade v1 registration manifests in memory without losing progress."""
+    definitions = {item[0]: item for item in REGISTRATION_STEPS}
+    for index, item in enumerate(payload.get("steps", ())):
+        definition = definitions.get(item.get("name"))
+        fallback_dependencies = () if index == 0 else (payload["steps"][index - 1]["name"],)
+        item.setdefault("dependencies", list(definition[3] if definition else fallback_dependencies))
+        item.setdefault("model_task", definition[4] if definition else None)
+        item.setdefault("separation_from", list(definition[5] if definition else ()))
+    payload.setdefault("template", "registration")
+    if payload.get("schema") == "web-registration-workflow/v1":
+        payload["schema"] = "web-project-workflow/v2"
+    return payload
 
 
 def write(workflow_id: str, payload: dict) -> None:
@@ -93,18 +159,21 @@ def doctor() -> dict:
         "project_root": str(ROOT),
         "missing": missing,
         "routes": sorted(routing.get("tasks", {})),
-        "database": "MySQL 8 (external; no local user database)",
+        "database": "MySQL 8 (localhost simulator now; external managed instance for production)",
     }
 
 
-def start(workflow_id: str, label: str) -> dict:
+def start(workflow_id: str, label: str, template: str = "registration") -> dict:
     path = path_for(workflow_id)
     if path.exists():
         raise ValueError(f"workflow already exists: {workflow_id}")
+    if template not in TEMPLATES:
+        raise ValueError(f"unknown workflow template: {template}")
     payload = {
-        "schema": "web-registration-workflow/v1",
+        "schema": "web-project-workflow/v2",
         "id": workflow_id,
         "label": label,
+        "template": template,
         "created_at": timestamp(),
         "updated_at": timestamp(),
         "steps": [
@@ -112,13 +181,16 @@ def start(workflow_id: str, label: str) -> dict:
                 "name": name,
                 "role": role,
                 "human_only": human_only,
+                "dependencies": list(dependencies),
+                "model_task": model_task,
+                "separation_from": list(separation_from),
                 "status": "pending",
                 "owner": None,
                 "lease_expires_at": None,
                 "artifacts": [],
                 "note": "",
             }
-            for name, role, human_only in STEPS
+            for name, role, human_only, dependencies, model_task, separation_from in TEMPLATES[template]
         ],
     }
     write(workflow_id, payload)
@@ -132,24 +204,30 @@ def step(payload: dict, name: str) -> tuple[int, dict]:
     raise ValueError(f"unknown workflow step: {name}")
 
 
+def dependencies_completed(payload: dict, item: dict) -> bool:
+    statuses = {candidate["name"]: candidate["status"] for candidate in payload["steps"]}
+    return all(statuses.get(name) == "completed" for name in item.get("dependencies", ()))
+
+
 def claim(workflow_id: str, step_name: str, role: str, owner: str, lease_minutes: int) -> dict:
     if not owner.strip() or not 1 <= lease_minutes <= 240:
         raise ValueError("owner and a 1-240 minute lease are required")
     with Lock(workflow_id):
         payload = read(workflow_id)
-        index, item = step(payload, step_name)
-        if any(previous["status"] != "completed" for previous in payload["steps"][:index]):
-            raise ValueError("previous workflow steps are incomplete")
+        _, item = step(payload, step_name)
+        if not dependencies_completed(payload, item):
+            raise ValueError("workflow step dependencies are incomplete")
         if role != item["role"]:
             raise ValueError(f"step requires role {item['role']}")
         expires = item.get("lease_expires_at")
         active = expires and datetime.fromisoformat(expires) > now()
         if active and item.get("owner") != owner:
             raise ValueError("step has an active owner lease")
-        implementation_owner = payload["steps"][2].get("owner")
-        if step_name in {"terra_implementation_review", "sol_security_review"}:
-            if implementation_owner and implementation_owner == owner:
-                raise ValueError("implementation owner cannot be the only reviewer")
+        separated_owners = {
+            step(payload, name)[1].get("owner") for name in item.get("separation_from", ())
+        }
+        if owner in separated_owners:
+            raise ValueError("implementation owner cannot be the only reviewer")
         item.update(
             status="in_progress",
             owner=owner,
@@ -173,11 +251,11 @@ def update(
         raise ValueError("unsupported status")
     with Lock(workflow_id):
         payload = read(workflow_id)
-        index, item = step(payload, step_name)
+        _, item = step(payload, step_name)
         if item.get("owner") != owner:
             raise ValueError("only the current owner may update the step")
-        if any(previous["status"] != "completed" for previous in payload["steps"][:index]):
-            raise ValueError("previous workflow steps are incomplete")
+        if not dependencies_completed(payload, item):
+            raise ValueError("workflow step dependencies are incomplete")
         if status == "completed" and not artifact:
             raise ValueError("completed step requires an evidence artifact")
         if item["human_only"] and status == "completed" and not human_approved_by:
@@ -197,13 +275,22 @@ def update(
 
 
 def summary(payload: dict) -> dict:
-    next_item = next((item for item in payload["steps"] if item["status"] != "completed"), None)
+    ready = [
+        item
+        for item in payload["steps"]
+        if item["status"] in {"pending", "blocked"} and dependencies_completed(payload, item)
+    ]
+    next_item = ready[0] if ready else next(
+        (item for item in payload["steps"] if item["status"] != "completed"), None
+    )
+    complete = all(item["status"] == "completed" for item in payload["steps"])
     return {
         "workflow_id": payload["id"],
         "label": payload["label"],
         "next_step": next_item["name"] if next_item else None,
         "next_role": next_item["role"] if next_item else None,
-        "complete": next_item is None,
+        "ready_steps": [item["name"] for item in ready],
+        "complete": complete,
         "manifest": str(path_for(payload["id"]).resolve()),
     }
 
@@ -223,6 +310,7 @@ def parser() -> argparse.ArgumentParser:
     command = sub.add_parser("start")
     command.add_argument("--id", required=True)
     command.add_argument("--label", required=True)
+    command.add_argument("--template", choices=sorted(TEMPLATES), default="registration")
     command.add_argument("--json", action="store_true")
     command = sub.add_parser("claim")
     command.add_argument("workflow_id")
@@ -249,7 +337,7 @@ def main() -> int:
         if args.command == "doctor":
             result = doctor()
         elif args.command == "start":
-            result = start(args.id, args.label)
+            result = start(args.id, args.label, args.template)
         elif args.command == "claim":
             result = claim(args.workflow_id, args.step, args.role, args.owner, args.lease_minutes)
         elif args.command == "update":
@@ -274,4 +362,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

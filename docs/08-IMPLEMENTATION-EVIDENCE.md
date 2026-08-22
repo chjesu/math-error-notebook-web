@@ -14,13 +14,14 @@
 | 安全 HTTP 边界 | HTTPS、Host、JSON、请求体限制、可信代理 IP、安全 Cookie |
 | 系统架构图 | `PROJECT_ARCHITECTURE.md`、`docs/03-TECHNICAL-ARCHITECTURE.md` |
 | 功能分解和角色 | `docs/04-IMPLEMENTATION-PLAN.md`、`docs/06-WORKBREAKDOWN-CODEX-WORKFLOW.md` |
-| 任务领取与断点恢复 | `scripts/project_workflow.py` |
+| 任务领取与断点恢复 | `scripts/project_workflow.py`；注册模板与全项目依赖图模板 |
 | Codex CLI 分层路由 | `scripts/codex_task_router.py`、`config/model-routing.json` |
 
 ## 自动化验证
 
-- `.venv\\Scripts\\python.exe -X utf8 -B -m unittest discover -s tests -p "test_*.py"`：53 项通过。
+- `python -X utf8 -B -m unittest discover -s tests -p "test_*.py"`：56 项通过。
 - `python -X utf8 -B scripts/project_workflow.py doctor --json`：`status=ok`，无缺失文件。
+- `WEB-PROJECT-001` 已登记产品与架构证据；下一批可并行领取 `identity_and_sms`、`domain_data`、`file_pipeline`，`cloud_deploy_approval` 保持未领取。
 - 使用虚构环境变量调用 `services.web_auth.bootstrap:create_app`：成功创建 `AuthAsgiApp`，未连接真实 MySQL、Turnstile 或短信网关。
 - Codex 路由预览：需求为 Luna/low，普通实现为 Terra/medium；认证风险提升为 Sol/high。
 
