@@ -87,6 +87,15 @@ class MySqlRegistrationStoreTests(unittest.TestCase):
                 for query, _ in connection.cursor_instance.executed
             )
         )
+        rolling_queries = [
+            query
+            for query, _ in connection.cursor_instance.executed
+            if query.startswith("SELECT COUNT(*) FROM auth_sms_send_events")
+        ]
+        self.assertEqual(len(rolling_queries), 3)
+        self.assertTrue(any("phone_lookup_hash=%s" in query for query in rolling_queries))
+        self.assertTrue(any("ip_hash=%s" in query for query in rolling_queries))
+        self.assertTrue(any("device_hash=%s" in query for query in rolling_queries))
 
     def test_rolling_phone_day_limit_cannot_reset_at_bucket_boundary(self) -> None:
         connection = FakeConnection(
