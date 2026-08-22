@@ -24,9 +24,9 @@
 | [03-TECHNICAL-ARCHITECTURE.md](./03-TECHNICAL-ARCHITECTURE.md) | 最小系统架构、状态、迁移与安全边界 | v0.3.2 | 已冻结 |
 | [04-IMPLEMENTATION-PLAN.md](./04-IMPLEMENTATION-PLAN.md) | 分批实施、迁移和完成证据 | v0.3.2 | 待验收 |
 | [05-TEST-ACCEPTANCE-OPERATIONS.md](./05-TEST-ACCEPTANCE-OPERATIONS.md) | 安全与学习闭环验收 | v0.3.2 | 已确认 |
-| [06-WORKBREAKDOWN-CODEX-WORKFLOW.md](./06-WORKBREAKDOWN-CODEX-WORKFLOW.md) | 角色、任务领取与模型路由 | v0.2.0 | 待按 v0.3.2 修订 |
+| [06-WORKBREAKDOWN-CODEX-WORKFLOW.md](./06-WORKBREAKDOWN-CODEX-WORKFLOW.md) | 角色、任务领取、恢复与模型路由 | v0.3.2 | 已对齐核心边界 |
 | [07-SMS-PROVIDER-RUICHENG.md](./07-SMS-PROVIDER-RUICHENG.md) | 短信适配、密钥和网络约束 | v0.2.0 | 待验收 |
-| [08-IMPLEMENTATION-EVIDENCE.md](./08-IMPLEMENTATION-EVIDENCE.md) | 当前实现证据与剩余门禁 | v0.2.0 | 待按 v0.3.2 更新 |
+| [08-IMPLEMENTATION-EVIDENCE.md](./08-IMPLEMENTATION-EVIDENCE.md) | 当前实现、测试、提交、本地环境与剩余门禁 | v0.3.2 | 已更新 |
 | [09-PRODUCT-FUNCTION-DESIGN.md](./09-PRODUCT-FUNCTION-DESIGN.md) | 页面、流程、异常恢复和产品事件 | v0.3.2 | 已确认 |
 | [10-UX-UI-INTERACTION-DESIGN.md](./10-UX-UI-INTERACTION-DESIGN.md) | 信息架构、线框、视觉规范、交互状态和前端顺序 | v0.3.2 | 核心流程可评审 |
 | [11-REMAINING-FUNCTION-WBS.md](./11-REMAINING-FUNCTION-WBS.md) | 剩余功能任务、依赖、并行线、验收证据和完成定义 | v0.3.2 | 可执行基线 |

@@ -134,9 +134,9 @@ flowchart TD
 | 工作包 | 关键任务 | 难度路线 | 完成证据 |
 |---|---|---|---|
 | WEB-P0 | OpenAPI、环境、CI、密钥注入、ADR | Terra；架构争议升 Sol | 契约测试、部署记录、ADR |
-| WEB-AUTH | 用户/家庭/学生/角色/会话 | Terra；权限模型升 Sol | API E2E、跨租户负向测试 |
+| WEB-AUTH | 最小账号、OTP、会话查询与撤销 | Terra；权限模型升 Sol | API E2E、跨用户负向测试 |
 | WEB-SMS | 验证码状态机、五层限流、挑战、熔断 | Sol | 并发消费、轰炸、枚举、重放报告 |
-| WEB-DATA | MySQL Schema、约束、审计表 | Terra；迁移设计升 Sol | migration up/down、约束测试 |
+| WEB-DATA | `user_id` MySQL Schema、约束、审计表 | Terra；迁移设计升 Sol | 前向迁移、失败恢复、约束测试 |
 | WEB-MIGRATE | 抽取、映射、导入、哈希对账 | Terra；冲突修复升 Sol | 双次迁移一致、对账报告 |
 | WEB-FILE | OSS 签名上传、扫描、规范化 | Terra | 越权、恶意文件、大小限制测试 |
 | WEB-WF | 队列、幂等、检查点、重试、死信 | Sol | 崩溃恢复、重复投递、超时演练 |
@@ -175,11 +175,11 @@ python -X utf8 -B scripts\project_workflow.py status WEB-PROJECT-001 --json
 
 每个长任务由 `workflow_run`、`workflow_step` 和 `artifact` 三类记录组成：
 
-- `workflow_run`：业务类型、租户、输入快照哈希、状态、当前检查点、幂等键；
+- `workflow_run`：业务类型、服务端会话 `user_id`、输入快照哈希、状态、当前检查点、幂等键；
 - `workflow_step`：步骤版本、尝试号、租约、开始/结束时间、输入/输出摘要、错误分类；
 - `artifact`：OSS 对象键、内容哈希、Schema 版本、产生者和保留期。
 
-状态至少包含 `queued/running/waiting_review/succeeded/failed/dead_letter/cancelled`。Worker 用短租约领取步骤并周期续租；进程失联后由其他 Worker 接管。队列允许至少一次投递，但 `(tenant_id, workflow_type, idempotency_key, step_version)` 必须唯一。
+状态至少包含 `queued/running/waiting_confirmation/completed/failed_retryable/failed_final/cancelled`。Worker 用短租约领取步骤并周期续租；进程失联后由其他 Worker 接管。队列允许至少一次投递，但 `(user_id, workflow_type, idempotency_key)` 必须唯一。
 
 ### 7.2 检查点
 
@@ -254,7 +254,7 @@ Codex 输出只落入候选区，并至少包含 `schema_version/task_id/status/
 - 标签：经 `annotate` 规则校验；
 - 注册：验证码和风控状态机的数据库事务，不调用模型写入。
 
-质量门负责重新校验租户归属、输入版本、Schema、置信度、来源、验证状态、重复项和幂等键。任何一项变化或缺失都拒绝提交并要求重新生成候选。
+质量门负责重新校验当前会话 `user_id` 归属、输入版本、Schema、置信度、来源、验证状态、重复项和幂等键。任何一项变化或缺失都拒绝提交并要求重新生成候选。
 
 ## 9. Token、耗时与成本审计
 
@@ -265,7 +265,7 @@ Codex 输出只落入候选区，并至少包含 `schema_version/task_id/status/
   "trace_id": "...",
   "task_id": "WEB-CODEX-...",
   "workflow_run_id": "...",
-  "tenant_pseudonym": "...",
+  "user_scope_hash": "...",
   "task_type": "verify-simplified",
   "model": "gpt-5.6-luna",
   "reasoning_effort": "medium",
