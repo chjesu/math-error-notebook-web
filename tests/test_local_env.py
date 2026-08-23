@@ -41,9 +41,11 @@ class LocalEnvironmentTests(unittest.TestCase):
     def test_domain_smoke_cleanup_never_deletes_the_shared_question_bank(self) -> None:
         general_cleanup = inspect.getsource(local_env._clear_test_data)
         scoped_cleanup = inspect.getsource(local_env._clear_domain_smoke_data)
+        domain_smoke = inspect.getsource(local_env._domain_smoke)
         self.assertNotIn("question_sources", general_cleanup)
         self.assertIn("WHERE user_id=%s", scoped_cleanup)
         self.assertIn("DELETE FROM question_sources WHERE id=%s", scoped_cleanup)
+        self.assertIn("if not recommendations or len(reviews) != 1", domain_smoke)
 
     def test_live_schema_check_requires_matching_ledger_and_tables(self) -> None:
         ledger = "\n".join(

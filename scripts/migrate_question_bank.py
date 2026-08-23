@@ -13,10 +13,14 @@ from typing import Any
 
 
 def _run_notebook(source_root: Path, *arguments: str) -> Any:
-    script = source_root / "scripts" / "notebook.py"
     database = source_root / "data" / "math_notebook.db"
-    if not script.is_file() or not database.is_file():
-        raise RuntimeError("source root must contain scripts/notebook.py and data/math_notebook.db")
+    scripts = (
+        source_root / "scripts" / "notebook.py",
+        source_root / ".agents" / "skills" / "math-error-notebook" / "scripts" / "notebook.py",
+    )
+    script = next((candidate for candidate in scripts if candidate.is_file()), None)
+    if script is None or not database.is_file():
+        raise RuntimeError("source root must contain the canonical notebook skill and data/math_notebook.db")
     result = subprocess.run(
         [sys.executable, "-X", "utf8", "-B", str(script), "--db", str(database), *arguments, "--json"],
         cwd=source_root,

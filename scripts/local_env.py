@@ -638,7 +638,7 @@ def _domain_smoke(service: Any, sender: Any, session_cookie: str, phone: str) ->
             connection.close()
         recommendations, _ = store.assign_recommendations(user_id=user.user_id, error_id=error_id)
         reviews = store.list_due_reviews(user_id=user.user_id)
-        if len(recommendations) != 1 or len(reviews) != 1:
+        if not recommendations or len(reviews) != 1:
             raise RuntimeError("domain recommendation or review smoke test failed")
         store.complete_review(user_id=user.user_id, task_id=reviews[0].task_id, result="correct", idempotency_key="smoke-review")
         pdf_job = notebook.create_practice_pdf(user_id=user.user_id, error_ids=[error_id], idempotency_key="smoke-pdf")
@@ -708,7 +708,7 @@ def smoke() -> dict[str, Any]:
                 "challenge_token": requested[2]["challenge_token"],
                 "phone": phone,
                 "code": sender.deliveries[0][1],
-                "password": "local-smoke-password1",
+                "password": "local-smoke-pass1",
                 "terms_version": "2026-08-23",
                 "privacy_version": "2026-08-23",
             },

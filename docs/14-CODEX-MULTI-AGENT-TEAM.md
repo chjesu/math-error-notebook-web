@@ -168,4 +168,4 @@ python -X utf8 -B scripts/local_env.py smoke
 python -X utf8 -B scripts/project_workflow.py doctor --json
 ```
 
-最终结果：全量测试 134/134、前端脚本语法检查、localhost MySQL smoke、浏览器注册/移动视口与 doctor 均通过；smoke 使用模拟短信/CAPTCHA，验证个人注册/登录、上传幂等、手工学习链路、跨用户拒绝、导出/注销和 PDF。生产真实供应商、Worker、题库导入、压测/灾备/观测和部署仍需另行验收。
+最终结果：全量测试、前端脚本语法检查、localhost MySQL smoke、浏览器注册/移动视口与 doctor 均通过；smoke 使用模拟短信/CAPTCHA，验证个人注册/登录、上传幂等、手工学习链路、跨用户拒绝、导出/注销和 PDF。权威题库已完成本地同步；生产真实供应商、Worker、压测/灾备/观测、恢复和部署仍需另行验收。

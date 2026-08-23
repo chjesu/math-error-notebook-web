@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+from tempfile import TemporaryDirectory
 from unittest import mock
 import unittest
 
@@ -25,6 +27,21 @@ QUESTION = {
 
 
 class QuestionBankMigrationTests(unittest.TestCase):
+    def test_current_project_skill_layout_is_supported(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / ".agents" / "skills" / "math-error-notebook" / "scripts" / "notebook.py"
+            database = root / "data" / "math_notebook.db"
+            script.parent.mkdir(parents=True)
+            database.parent.mkdir(parents=True)
+            script.touch()
+            database.touch()
+            result = subprocess.CompletedProcess([], 0, stdout='{"status":"ok"}', stderr="")
+            with mock.patch.object(migrate_question_bank.subprocess, "run", return_value=result) as run:
+                self.assertEqual(migrate_question_bank._run_notebook(root, "bank-info"), {"status": "ok"})
+            command = run.call_args.args[0]
+            self.assertEqual((Path(command[4]), Path(command[6])), (script, database))
+
     def test_mapping_is_stable_and_preserves_verified_only_with_rights(self) -> None:
         authorized = migrate_question_bank.map_question(QUESTION, {"rights_confirmed": 1})
         repeated = migrate_question_bank.map_question(dict(QUESTION), {"rights_confirmed": 1})

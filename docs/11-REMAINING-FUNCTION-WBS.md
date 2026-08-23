@@ -32,7 +32,7 @@
 | 在建内容 | 当前文件 | 必须处理的问题 |
 |---|---|---|
 | 注册状态机 | `services/web_auth/registration.py` 等 | 当前正确执行单入口自动建号/登录；必须拆分login/register、密码、协议和目标错误 |
-| 领域 Schema | `services/web_domain/migrations/0002_web_domain.sql` 及后续迁移 | 个人 `user_id` 模型、迁移和跨用户隔离已本地验收；权威题库导入与生产回滚待完成 |
+| 领域 Schema | `services/web_domain/migrations/0002_web_domain.sql` 及后续迁移 | 个人 `user_id` 模型、迁移、跨用户隔离及权威题库本地同步已验收；生产回滚待完成 |
 | 领域 Store | `services/web_domain/mysql_store.py` | 仍提供家庭与学生方法；保留事务骨架，替换授权模型 |
 | 文件入口 | `services/web_files/intake.py` | 已有文件名、魔数、大小、DOCX 安全和哈希检查；尚未接 user_id、持久化和任务流程 |
 | 迁移账本 | `scripts/local_env.py`、`tests/test_local_env.py` | 已开始支持多迁移；尚未验证失败恢复、幂等和新版领域 Schema |
