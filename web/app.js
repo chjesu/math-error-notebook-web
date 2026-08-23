@@ -84,7 +84,7 @@ function refreshAuthControls() {
   $("#agreement").disabled = authSubmitting;
   $("#toggle-password").disabled = authSubmitting;
   $("#otp-button").disabled = !phoneIsValid || otpRequesting || countdown > 0;
-  $("#auth-submit").disabled = !challenge || !phoneIsValid || !validCode() || !$("#agreement").checked || !passwordIsValid || authSubmitting;
+  $("#auth-submit").disabled = !challenge || !phoneIsValid || !validCode() || !$("#agreement").checked || authSubmitting;
   $("#password").setAttribute("aria-invalid", String(authMode === "register" && $("#password").value && !passwordIsValid));
   $("#password-error").hidden = authMode !== "register" || !$("#password").value || passwordIsValid;
   if (!$("#password-error").hidden) $("#password-error").textContent = "密码需为 8—20 位，并同时包含字母和数字。";
