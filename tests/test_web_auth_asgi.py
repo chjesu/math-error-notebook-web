@@ -2,28 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 import unittest
+from unittest.mock import patch
 
-from services.web_auth import (
-    AuthAsgiApp,
-    InMemoryCaptchaVerifier,
-    InMemoryRegistrationStore,
-    RecordingSmsSender,
-    RegistrationService,
-)
+from services.web_auth import AuthAsgiApp, AuthConfig, InMemoryCaptchaVerifier, InMemoryRegistrationStore, RecordingSmsSender, RegistrationService
+
+
+PROTOCOL = "2026-08-23"
 
 
 class AuthAsgiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = InMemoryRegistrationStore()
         self.sender = RecordingSmsSender()
-        self.service = RegistrationService(
-            store=self.store,
-            sms_sender=self.sender,
-            captcha_verifier=InMemoryCaptchaVerifier(),
-            secret_pepper=b"p" * 32,
-        )
+        self.service = RegistrationService(store=self.store, sms_sender=self.sender, captcha_verifier=InMemoryCaptchaVerifier(), secret_pepper=b"p" * 32, config=AuthConfig(resend_cooldown_seconds=0, captcha_after_phone_day=99, captcha_after_ip_hour=99))
         self.app = AuthAsgiApp(self.service, allowed_hosts={"example.test"})
 
     def call(
@@ -31,146 +23,227 @@ class AuthAsgiTests(unittest.TestCase):
         path: str,
         payload: dict | None = None,
         *,
-        method: str = "POST",
         cookie: str | None = None,
-        client_ip: str = "203.0.113.7",
-        extra_headers: list[tuple[bytes, bytes]] | None = None,
+        method: str = "POST",
         scheme: str = "https",
         host: str = "example.test",
-    ) -> tuple[int, dict[str, str], dict | None]:
-        body = json.dumps(payload or {}).encode("utf-8")
-        messages = [{"type": "http.request", "body": body, "more_body": False}]
+        origin: str | None = None,
+        client_ip: str = "203.0.113.7",
+        extra_headers: list[tuple[bytes, bytes]] | None = None,
+        body: bytes | None = None,
+    ):
+        messages = [{"type": "http.request", "body": body if body is not None else json.dumps(payload or {}).encode(), "more_body": False}]
         output: list[dict] = []
-
-        async def receive():
-            return messages.pop(0)
-
-        async def send(message):
-            output.append(message)
-
-        headers = [(b"host", host.encode("ascii")), (b"content-type", b"application/json"), (b"x-device-id", b"browser-device-001")]
-        if cookie:
-            headers.append((b"cookie", cookie.encode("ascii")))
+        async def receive(): return messages.pop(0)
+        async def send(message): output.append(message)
+        headers = [(b"host", host.encode()), (b"content-type", b"application/json"), (b"x-device-id", b"browser-device-001")]
+        if cookie: headers.append((b"cookie", cookie.encode()))
+        if origin: headers.append((b"origin", origin.encode()))
         headers.extend(extra_headers or [])
-        scope = {"type": "http", "method": method, "path": path, "scheme": scheme, "client": (client_ip, 12345), "headers": headers}
-        asyncio.run(self.app(scope, receive, send))
-        started, finished = output
-        response_headers = {key.decode("ascii"): value.decode("ascii") for key, value in started["headers"]}
-        parsed = json.loads(finished["body"]) if finished["body"] else None
-        return started["status"], response_headers, parsed
+        asyncio.run(self.app({"type":"http", "method":method, "path":path, "scheme":scheme, "client":(client_ip, 1), "headers":headers}, receive, send))
+        start, body = output
+        return start["status"], {k.decode():v.decode() for k,v in start["headers"]}, json.loads(body["body"]) if body["body"] else None
 
-    def login(self, phone: str = "13800138000") -> str:
-        requested = self.call("/v1/auth/otp/request", {"phone": phone})
-        status, headers, payload = self.call(
-            "/v1/auth/otp/verify",
-            {"challenge_token": requested[2]["challenge_token"], "phone": phone, "code": self.sender.deliveries[-1][1]},
-        )
+    def register(self) -> str:
+        request = self.call("/v1/auth/register/otp/request", {"phone":"13800138000"})
+        status, headers, value = self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":self.sender.deliveries[-1][1], "password":"safe123", "terms_version":PROTOCOL, "privacy_version":PROTOCOL})
         self.assertEqual(status, 200)
-        self.assertEqual(payload, {"status": "authenticated", "account_status": "active", "next_action": "workbench"})
+        self.assertEqual(value["next_action"], "workbench")
         return headers["set-cookie"].split(";", 1)[0]
 
-    def test_request_endpoint_keeps_accepted_and_limited_shapes_equal(self) -> None:
-        first = self.call("/v1/auth/otp/request", {"phone": "13800138000"})
-        second = self.call("/v1/auth/otp/request", {"phone": "13800138000"})
-        self.assertEqual((first[0], second[0]), (202, 202))
-        self.assertEqual(set(first[2]), set(second[2]))
-        self.assertEqual(first[2]["message"], second[2]["message"])
+    def test_target_endpoints_enforce_account_state_and_agreement(self) -> None:
+        self.assertEqual(self.call("/v1/auth/login/otp/request", {"phone":"13800138000"})[2]["error"]["code"], "phone_not_registered")
+        request = self.call("/v1/auth/register/otp/request", {"phone":"13800138000"})
+        missing = self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":self.sender.deliveries[-1][1], "password":"safe123"})
+        self.assertEqual(missing[2]["error"]["code"], "agreement_required")
+        self.assertEqual(self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":self.sender.deliveries[-1][1], "password":"safe123", "terms_version":PROTOCOL, "privacy_version":PROTOCOL})[0], 200)
+        self.assertEqual(self.call("/v1/auth/register/otp/request", {"phone":"13800138000"})[2]["error"]["code"], "phone_already_registered")
 
-    def test_registration_work_runs_outside_the_event_loop_thread(self) -> None:
-        caller_thread = threading.get_ident()
-        worker_threads: list[int] = []
-        original = self.service.request_code
+    def test_login_and_sensitive_request_are_session_bound(self) -> None:
+        cookie = self.register()
+        request = self.call("/v1/auth/login/otp/request", {"phone":"13800138000"})
+        login = self.call("/v1/auth/login/otp/verify", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":self.sender.deliveries[-1][1], "terms_version":PROTOCOL, "privacy_version":PROTOCOL})
+        self.assertEqual(login[0], 200)
+        self.assertEqual(self.call("/v1/auth/sensitive/otp/request", {"phone":"13800138000", "action":"export"}, origin="https://example.test")[0], 401)
+        sensitive = self.call("/v1/auth/sensitive/otp/request", {"phone":"13800138000", "action":"export"}, cookie=cookie, origin="https://example.test")
+        self.assertEqual((sensitive[0], self.store.challenges[sensitive[2]["challenge_token"]].purpose), (202, "sensitive_export"))
 
-        def wrapped(**kwargs):
-            worker_threads.append(threading.get_ident())
-            return original(**kwargs)
+    def test_legacy_endpoints_are_not_product_contract(self) -> None:
+        self.assertEqual(self.call("/v1/auth/otp/request", {"phone":"13800138000"})[0], 404)
 
-        self.service.request_code = wrapped
-        try:
-            self.assertEqual(self.call("/v1/auth/otp/request", {"phone": "13800138000"})[0], 202)
-        finally:
-            self.service.request_code = original
-        self.assertEqual(len(worker_threads), 1)
-        self.assertNotEqual(worker_threads[0], caller_thread)
+    def test_host_https_body_limit_and_forwarded_for_boundary(self) -> None:
+        self.assertEqual(self.call("/healthz", method="GET", host="evil.test")[0], 400)
+        self.assertEqual(self.call("/healthz", method="GET", host="example.test:443@evil.test")[0], 400)
+        self.assertEqual(self.call("/healthz", method="GET", host="example.test:bad")[0], 400)
+        self.assertEqual(self.call("/healthz", method="GET", scheme="http")[0], 400)
+        self.app.max_body_bytes = 8
+        self.assertEqual(
+            self.call("/v1/auth/register/otp/request", body=b'{"phone":"13800138000"}')[0],
+            413,
+        )
+        self.app.max_body_bytes = 16_384
+        status, _, value = self.call(
+            "/v1/auth/register/otp/request",
+            {"phone": "13800138000"},
+            extra_headers=[(b"x-forwarded-for", b"198.51.100.99")],
+        )
+        self.assertEqual(status, 202)
+        challenge = self.store.challenges[value["challenge_token"]]
+        self.assertEqual(challenge.phone_hash, self.service._hash("phone", "13800138000"))
+        self.assertEqual(
+            self.store.audit_events[-1].ip_hash,
+            self.service._hash("ip", "203.0.113.7"),
+        )
 
-    def test_provider_failure_has_same_public_shape(self) -> None:
-        accepted = self.call("/v1/auth/otp/request", {"phone": "13800138000"})
+    def test_blocking_service_work_is_offloaded(self) -> None:
+        calls = []
+
+        async def run_in_thread(function, *args, **kwargs):
+            calls.append(function)
+            return function(*args, **kwargs)
+
+        with patch("services.web_auth.asgi.asyncio.to_thread", side_effect=run_in_thread):
+            self.call("/v1/auth/login/otp/request", {"phone": "13800138000"})
+        self.assertEqual(calls, [self.service.request_code])
+
+    def test_provider_failure_unknown_fields_and_invalid_code_fail_closed(self) -> None:
         self.sender.fail = True
-        failed = self.call("/v1/auth/otp/request", {"phone": "13900139000"})
-        self.assertEqual((accepted[0], failed[0]), (202, 202))
-        self.assertEqual(set(accepted[2]), set(failed[2]))
-
-    def test_success_needs_no_profile_and_uses_secure_cookie(self) -> None:
-        cookie = self.login()
-        self.assertIn("__Host-lzlm_session=", cookie)
-        requested = self.call("/v1/auth/otp/request", {"phone": "13900139000"})
-        status, headers, _ = self.call(
-            "/v1/auth/otp/verify",
-            {"challenge_token": requested[2]["challenge_token"], "phone": "13900139000", "code": self.sender.deliveries[-1][1]},
-        )
-        self.assertEqual(status, 200)
-        self.assertIn("HttpOnly", headers["set-cookie"])
-        self.assertIn("Secure", headers["set-cookie"])
-        self.assertIn("SameSite=Lax", headers["set-cookie"])
-
-    def test_session_query_current_logout_and_all_logout(self) -> None:
-        cookie = self.login()
-        status, _, payload = self.call("/v1/session", method="GET", cookie=cookie)
-        self.assertEqual((status, payload), (200, {"authenticated": True, "account_status": "active"}))
-        status, headers, payload = self.call("/v1/session", method="DELETE", cookie=cookie)
-        self.assertEqual((status, payload), (204, None))
-        self.assertIn("Max-Age=0", headers["set-cookie"])
-        self.assertEqual(self.call("/v1/session", method="GET", cookie=cookie)[0], 401)
-
-        cookie = self.login("13700137000")
-        self.assertEqual(self.call("/v1/sessions", method="DELETE", cookie=cookie)[0], 204)
-        self.assertEqual(self.call("/v1/session", method="GET", cookie=cookie)[0], 401)
-
-    def test_invalid_code_has_stable_error_envelope_and_no_cookie(self) -> None:
-        requested = self.call("/v1/auth/otp/request", {"phone": "13800138000"})
-        status, headers, payload = self.call(
-            "/v1/auth/otp/verify",
-            {"challenge_token": requested[2]["challenge_token"], "phone": "13800138000", "code": "000000"},
-        )
-        self.assertEqual(status, 400)
-        self.assertEqual(payload["error"]["code"], "invalid_or_expired_code")
-        self.assertFalse(payload["error"]["retryable"])
-        self.assertNotIn("set-cookie", headers)
-
-    def test_legacy_profile_fields_are_rejected_not_silently_stored(self) -> None:
-        requested = self.call("/v1/auth/otp/request", {"phone": "13800138000"})
         status, _, payload = self.call(
-            "/v1/auth/otp/verify",
+            "/v1/auth/register/otp/request", {"phone": "13800138000"}
+        )
+        self.assertEqual((status, payload["error"]["code"]), (503, "temporarily_unavailable"))
+        self.sender.fail = False
+        self.assertEqual(
+            self.call(
+                "/v1/auth/register/otp/request",
+                {"phone": "13900139000", "unexpected": True},
+            )[2]["error"]["code"],
+            "invalid_request",
+        )
+        requested = self.call(
+            "/v1/auth/register/otp/request", {"phone": "13900139000"}
+        )
+        wrong = "000001" if self.sender.deliveries[-1][1] == "000000" else "000000"
+        invalid = self.call(
+            "/v1/auth/register/complete",
             {
                 "challenge_token": requested[2]["challenge_token"],
-                "phone": "13800138000",
-                "code": self.sender.deliveries[0][1],
-                "display_name": "不应接收",
+                "phone": "13900139000",
+                "code": wrong,
+                "password": "safe123",
+                "terms_version": PROTOCOL,
+                "privacy_version": PROTOCOL,
             },
         )
-        self.assertEqual(status, 400)
-        self.assertEqual(payload["error"]["code"], "invalid_request")
-        self.assertFalse(self.store.users_by_phone)
+        self.assertEqual((invalid[0], invalid[2]["error"]["code"]), (400, "invalid_code"))
 
-    def test_forwarded_for_header_is_not_trusted(self) -> None:
-        self.call("/v1/auth/otp/request", {"phone": "13800138000"}, extra_headers=[(b"x-forwarded-for", b"198.51.100.8")])
-        result = self.call("/v1/auth/otp/request", {"phone": "13800138000"}, extra_headers=[(b"x-forwarded-for", b"192.0.2.99")])
-        self.assertEqual(result[0], 202)
-        self.assertEqual(len(self.sender.deliveries), 1)
+    def test_rate_limits_include_retry_after_header_and_json(self) -> None:
+        self.service.config = AuthConfig(
+            resend_cooldown_seconds=0,
+            ip_minute_limit=1,
+            captcha_after_phone_day=99,
+            captcha_after_ip_hour=99,
+        )
+        self.call("/v1/auth/login/otp/request", {"phone": "13800138000"})
+        status, headers, payload = self.call(
+            "/v1/auth/login/otp/request", {"phone": "13900139000"}
+        )
+        self.assertEqual(status, 429)
+        self.assertGreaterEqual(payload["retry_after_seconds"], 1)
+        self.assertEqual(headers["retry-after"], str(payload["retry_after_seconds"]))
 
-    def test_host_https_health_and_body_boundaries(self) -> None:
-        payload = {"phone": "13800138000"}
-        self.assertEqual(self.call("/v1/auth/otp/request", payload, host="evil.test")[0], 400)
-        self.assertEqual(self.call("/v1/auth/otp/request", payload, scheme="http")[0], 400)
-        self.assertEqual(self.call("/healthz", method="GET")[0], 200)
-        original = self.app
-        self.app = AuthAsgiApp(self.service, allowed_hosts={"example.test"}, max_body_bytes=8)
-        try:
-            status, _, response = self.call("/v1/auth/otp/request", payload)
-        finally:
-            self.app = original
-        self.assertEqual(status, 413)
-        self.assertEqual(response["error"]["code"], "request_too_large")
+    def test_sensitive_rate_limit_has_retry_metadata_too(self) -> None:
+        cookie = self.register()
+        self.service.config = AuthConfig(
+            resend_cooldown_seconds=0,
+            ip_minute_limit=1,
+            captcha_after_phone_day=99,
+            captcha_after_ip_hour=99,
+        )
+        status, headers, payload = self.call(
+            "/v1/auth/sensitive/otp/request",
+            {"phone": "13800138000", "action": "export"},
+            cookie=cookie,
+            origin="https://example.test",
+        )
+        self.assertEqual(status, 429)
+        self.assertEqual(headers["retry-after"], str(payload["retry_after_seconds"]))
+
+    def test_sensitive_and_session_mutations_require_strict_same_origin(self) -> None:
+        cookie = self.register()
+        sensitive_payload = {"phone": "13800138000", "action": "export"}
+        self.assertEqual(
+            self.call("/v1/auth/sensitive/otp/request", sensitive_payload, cookie=cookie)[0],
+            403,
+        )
+        self.assertEqual(
+            self.call(
+                "/v1/auth/sensitive/otp/request",
+                sensitive_payload,
+                cookie=cookie,
+                origin="https://evil.test",
+            )[0],
+            403,
+        )
+        self.assertEqual(
+            self.call(
+                "/v1/auth/sensitive/otp/request",
+                sensitive_payload,
+                cookie=cookie,
+                origin="https://example.test",
+            )[0],
+            202,
+        )
+        self.assertEqual(self.call("/v1/session", cookie=cookie, method="GET")[0], 200)
+        self.assertEqual(self.call("/v1/session", cookie=cookie, method="DELETE")[0], 403)
+        self.assertEqual(
+            self.call(
+                "/v1/session",
+                cookie=cookie,
+                method="DELETE",
+                origin="https://evil.test",
+            )[0],
+            403,
+        )
+        self.assertEqual(self.call("/v1/sessions", cookie=cookie, method="DELETE")[0], 403)
+        self.assertEqual(
+            self.call(
+                "/v1/sessions",
+                cookie=cookie,
+                method="DELETE",
+                origin="https://example.test",
+            )[0],
+            204,
+        )
+
+    def test_secure_cookie_and_session_logout(self) -> None:
+        request = self.call("/v1/auth/register/otp/request", {"phone":"13800138000"})
+        status, headers, _ = self.call(
+            "/v1/auth/register/complete",
+            {
+                "challenge_token": request[2]["challenge_token"],
+                "phone": "13800138000",
+                "code": self.sender.deliveries[-1][1],
+                "password": "safe123",
+                "terms_version": PROTOCOL,
+                "privacy_version": PROTOCOL,
+            },
+        )
+        self.assertEqual(status, 200)
+        cookie_header = headers["set-cookie"]
+        for attribute in ("Path=/", "HttpOnly", "Secure", "SameSite=Lax"):
+            self.assertIn(attribute, cookie_header)
+        self.assertNotIn("Domain=", cookie_header)
+        cookie = cookie_header.split(";", 1)[0]
+        logout = self.call(
+            "/v1/session",
+            cookie=cookie,
+            method="DELETE",
+            origin="https://example.test",
+        )
+        self.assertEqual(logout[0], 204)
+        self.assertIn("Max-Age=0", logout[1]["set-cookie"])
+        self.assertEqual(self.call("/v1/session", cookie=cookie, method="GET")[0], 401)
 
 
 if __name__ == "__main__":

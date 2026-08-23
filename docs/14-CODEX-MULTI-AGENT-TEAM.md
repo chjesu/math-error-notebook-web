@@ -152,3 +152,20 @@ python -X utf8 -B scripts\project_workflow.py status WEB-TEAM-001 --json
 - 工作流支持依赖、并行、租约、证据和实现/复核分离；
 - 全量单元测试通过，团队建设工作流完成并有 Git 提交证据；
 - 真实项目数据批量外发、不可伪造的审批身份和生产发布账本继续保持阻断，直到另行完成安全设计与验收。
+
+## 9. 本次 v0.4.0 本地测试版协作记录
+
+本次协作按产品/UX、实现、安全与文档岗位复核，结论统一为：产品是个人错题本，不收集昵称、年级、身份、家庭、成员、学生档案、监护或实名信息；认证目标为登录验证码申请/验证、注册验证码申请、注册完成四接口；本地学习链路采用人工上传、手工识别候选、确认、手工判题候选、确认入本、已验证推荐、复习和 PDF。导出与注销必须敏感 OTP 二次验证并验证会话、任务和下载失效。
+
+产品/UX 审查确认 v0.4.0 候选已具备独立认证状态、个人页面、任务恢复和异常分类；后端/接口/浏览器 E2E、真实 MySQL smoke、133 项测试和独立安全复核已完成。本地手工闭环不等于生产完成；自动 OCR/AI 判题 Worker、权威题库迁移、PWA、运营后台、生产恢复和云部署明确延期。
+
+本地交付前由根代理执行并保存实际结果（不预填通过）：
+
+```powershell
+python -X utf8 -B -m unittest discover -s tests -p "test_*.py"
+node --check web/app.js
+python -X utf8 -B scripts/local_env.py smoke
+python -X utf8 -B scripts/project_workflow.py doctor --json
+```
+
+最终结果：全量测试 133/133、前端脚本语法检查、localhost MySQL smoke、浏览器注册/移动视口与 doctor 均通过；smoke 使用模拟短信/CAPTCHA，验证个人注册/登录、上传幂等、手工学习链路、跨用户拒绝、导出/注销和 PDF。生产真实供应商、Worker、题库导入、压测/灾备/观测和部署仍需另行验收。

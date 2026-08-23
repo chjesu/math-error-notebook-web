@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass, is_dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 import hashlib
@@ -47,25 +47,39 @@ class InMemoryNotebookStore:
         self.recommendations: dict[str, Recommendation] = {}
         self.review_tasks: dict[str, ReviewTask] = {}
         self.review_attempts: dict[tuple[str, str], dict[str, Any]] = {}
+        self.account_deletions: dict[str, dict[str, Any]] = {}
+        self.audit_events: list[dict[str, Any]] = []
         self._file_keys: dict[tuple[str, str, str], str] = {}
+        self._upload_keys: dict[tuple[str, str], tuple[str, tuple[Any, ...]]] = {}
         self._job_keys: dict[tuple[str, str, str], str] = {}
         self._attempt_keys: dict[tuple[str, str], str] = {}
         self._review_keys: dict[tuple[str, str, int], str] = {}
         self._practice_inputs: dict[tuple[str, str, str], str] = {}
 
-    def create_file(self, *, user_id: str, purpose: str, original_name: str, object_key: str, content_sha256: str, media_type: str, byte_size: int, status: str = "ready") -> FileRecord:
+    def create_file(self, *, user_id: str, purpose: str, original_name: str, object_key: str, content_sha256: str, media_type: str, byte_size: int, status: str = "ready", idempotency_key: str | None = None) -> FileRecord:
+        signature = (purpose, original_name, content_sha256, media_type, byte_size)
+        upload_key = (user_id, idempotency_key) if idempotency_key else None
+        if upload_key and upload_key in self._upload_keys:
+            file_id, original_signature = self._upload_keys[upload_key]
+            if original_signature != signature:
+                raise RuntimeError("conflict")
+            return self.files[file_id]
         key = (user_id, purpose, content_sha256)
         existing = self._file_keys.get(key)
         if existing:
+            if upload_key:
+                self._upload_keys[upload_key] = (existing, signature)
             return self.files[existing]
-        record = FileRecord(uuid.uuid4().hex, user_id, purpose, object_key, content_sha256, media_type, byte_size, status)
+        record = FileRecord(uuid.uuid4().hex, user_id, purpose, object_key, content_sha256, media_type, byte_size, status, original_name)
         self.files[record.file_id] = record
         self._file_keys[key] = record.file_id
+        if upload_key:
+            self._upload_keys[upload_key] = (record.file_id, signature)
         return record
 
     def get_file(self, *, user_id: str, file_id: str) -> FileRecord | None:
         value = self.files.get(file_id)
-        return value if value and value.user_id == user_id else None
+        return value if value and value.user_id == user_id and value.status != "deleted" else None
 
     def create_intake(self, *, user_id: str, file_id: str, idempotency_key: str) -> tuple[IntakeItem, Job]:
         if not self.get_file(user_id=user_id, file_id=file_id):
@@ -309,6 +323,129 @@ class InMemoryNotebookStore:
         self.jobs[job_id] = completed
         return completed
 
+    def create_export_job(self, *, user_id: str, idempotency_key: str, expires_at: datetime) -> Job:
+        key = (user_id, "export", idempotency_key)
+        existing = self._job_keys.get(key)
+        if existing:
+            return self.jobs[existing]
+        job = Job(uuid.uuid4().hex, user_id, "export", "export", "queued", {"expires_at": expires_at.isoformat()}, None)
+        self.jobs[job.job_id] = job
+        self._job_keys[key] = job.job_id
+        return job
+
+    def complete_export_job(self, *, user_id: str, job_id: str, file_id: str, expires_at: datetime) -> Job:
+        job = self.get_job(user_id=user_id, job_id=job_id)
+        if not job or job.job_type != "export":
+            raise LookupError("export not found")
+        completed = Job(job.job_id, user_id, "export", job.resource_id, "completed", {"file_id": file_id, "expires_at": expires_at.isoformat()}, None)
+        self.jobs[job_id] = completed
+        return completed
+
+    def claim_export_download(self, *, user_id: str, job_id: str, maximum: int) -> bool:
+        job = self.get_job(user_id=user_id, job_id=job_id)
+        if not job or job.job_type != "export":
+            raise LookupError("export not found")
+        completed = sum(1 for event in self.audit_events if event["user_id"] == user_id and event["resource_id"] == job_id and event["event_type"] == "export.downloaded")
+        allowed = completed < maximum
+        self.audit_events.append({"user_id": user_id, "event_type": "export.downloaded" if allowed else "export.download_denied", "resource_type": "export", "resource_id": job_id, "outcome": "allowed" if allowed else "download_limit"})
+        return allowed
+
+    def export_data(self, *, user_id: str) -> dict[str, Any]:
+        files = [self._file_export(item) for item in self.files.values() if item.user_id == user_id]
+        intakes = [self._intake_export(item) for item in self.intakes.values() if item.user_id == user_id]
+        attempts = [self._attempt_export(item) for item in self.attempts.values() if item.user_id == user_id]
+        candidates = [self._candidate_export(item) for item in self.candidates.values() if (attempt := self.attempts.get(item.attempt_id)) and attempt.user_id == user_id]
+        errors = [self._error_export(item) for item in self.errors.values() if item.user_id == user_id]
+        recommendations = [self._recommendation_export(item) for item in self.recommendations.values() if item.user_id == user_id]
+        reviews = [self._review_export(item) for item in self.review_tasks.values() if item.user_id == user_id]
+        review_attempts = [dict(item) for (owner, _), item in self.review_attempts.items() if owner == user_id]
+        jobs = [self._job_export(item) for item in self.jobs.values() if item.user_id == user_id and item.job_type != "export"]
+        return {"schema_version": 2, "files": files, "intakes": intakes, "attempts": attempts, "grade_candidates": candidates, "errors": errors, "recommendations": recommendations, "review_tasks": reviews, "review_attempts": review_attempts, "jobs": jobs}
+
+    def deactivate_user_data(self, *, user_id: str) -> None:
+        for file_id, item in list(self.files.items()):
+            if item.user_id == user_id and item.status != "deleted":
+                self.files[file_id] = FileRecord(item.file_id, item.user_id, item.purpose, item.object_key, item.content_sha256, item.media_type, item.byte_size, "deleted", item.original_name)
+        for job_id, item in list(self.jobs.items()):
+            if item.user_id == user_id and item.status not in {"completed", "cancelled", "failed_final"}:
+                self.jobs[job_id] = Job(item.job_id, item.user_id, item.job_type, item.resource_id, "cancelled", item.checkpoint, item.last_error_code)
+        for intake_id, item in list(self.intakes.items()):
+            if item.user_id == user_id and item.status in {"extracting", "waiting_confirmation", "confirmed"}:
+                self.intakes[intake_id] = IntakeItem(item.intake_id, item.user_id, item.file_id, item.input_version, "cancelled", item.question_text, item.answer_text)
+        for attempt_id, item in list(self.attempts.items()):
+            if item.user_id == user_id and item.status in {"grading", "grade_ready"}:
+                self.attempts[attempt_id] = Attempt(item.attempt_id, item.user_id, item.intake_id, item.input_version, item.question_text, item.answer_text, "cancelled")
+        for task_id, item in list(self.review_tasks.items()):
+            if item.user_id == user_id and item.status in {"pending", "ready"}:
+                self.review_tasks[task_id] = ReviewTask(item.task_id, item.user_id, item.error_id, item.stage, item.due_at, "cancelled")
+        for recommendation_id, item in list(self.recommendations.items()):
+            if item.user_id == user_id and item.status in {"candidate", "assigned", "completed"}:
+                self.recommendations[recommendation_id] = Recommendation(item.recommendation_id, item.user_id, item.error_id, item.question, item.reason, "withdrawn")
+        for error_id, item in list(self.errors.items()):
+            if item.user_id == user_id and item.status != "removed":
+                self.errors[error_id] = ErrorEntry(item.error_id, item.user_id, item.attempt_id, item.question_text, item.answer_text, item.first_error, "removed", item.created_at)
+
+    @staticmethod
+    def _file_export(item: FileRecord) -> dict[str, Any]:
+        return {"file_id": item.file_id, "purpose": item.purpose, "original_name": item.original_name, "media_type": item.media_type, "byte_size": item.byte_size, "status": item.status}
+
+    @staticmethod
+    def _intake_export(item: IntakeItem) -> dict[str, Any]:
+        return {"intake_id": item.intake_id, "file_id": item.file_id, "input_version": item.input_version, "status": item.status, "question_text": item.question_text, "answer_text": item.answer_text}
+
+    @staticmethod
+    def _attempt_export(item: Attempt) -> dict[str, Any]:
+        return {"attempt_id": item.attempt_id, "intake_id": item.intake_id, "input_version": item.input_version, "question_text": item.question_text, "answer_text": item.answer_text, "status": item.status}
+
+    @staticmethod
+    def _candidate_export(item: GradeCandidate) -> dict[str, Any]:
+        return {"candidate_id": item.candidate_id, "attempt_id": item.attempt_id, "input_version": item.input_version, "verdict": item.verdict, "first_error": item.first_error, "evidence": item.evidence, "status": item.status}
+
+    @staticmethod
+    def _error_export(item: ErrorEntry) -> dict[str, Any]:
+        return {"error_id": item.error_id, "attempt_id": item.attempt_id, "question_text": item.question_text, "answer_text": item.answer_text, "first_error": item.first_error, "status": item.status, "created_at": item.created_at}
+
+    @staticmethod
+    def _recommendation_export(item: Recommendation) -> dict[str, Any]:
+        return {"recommendation_id": item.recommendation_id, "error_id": item.error_id, "question_id": item.question.question_id, "reason": item.reason, "status": item.status}
+
+    @staticmethod
+    def _review_export(item: ReviewTask) -> dict[str, Any]:
+        return {"review_id": item.task_id, "error_id": item.error_id, "stage": item.stage, "due_at": item.due_at, "status": item.status}
+
+    @staticmethod
+    def _job_export(item: Job) -> dict[str, Any]:
+        return {"job_id": item.job_id, "job_type": item.job_type, "resource_id": item.resource_id, "status": item.status}
+
+    def begin_user_deletion(self, *, user_id: str) -> dict[str, Any]:
+        value = self.account_deletions.get(user_id)
+        if value:
+            return dict(value)
+        value = {"status": "pending", "updated_at": _now(), "last_error_code": None}
+        self.account_deletions[user_id] = value
+        return dict(value)
+
+    def deletion_status(self, *, user_id: str) -> dict[str, Any] | None:
+        value = self.account_deletions.get(user_id)
+        return dict(value) if value else None
+
+    def deletion_file_keys(self, *, user_id: str) -> list[str]:
+        return [item.object_key for item in self.files.values() if item.user_id == user_id and item.status == "deleted"]
+
+    def pending_deletion_user_ids(self) -> list[str]:
+        return sorted(user_id for user_id, value in self.account_deletions.items() if value["status"] == "pending")
+
+    def complete_user_deletion(self, *, user_id: str) -> dict[str, Any]:
+        value = self.begin_user_deletion(user_id=user_id)
+        if value["status"] != "completed":
+            value = {"status": "completed", "updated_at": _now(), "last_error_code": None}
+            self.account_deletions[user_id] = value
+        return dict(value)
+
+    def record_deletion_error(self, *, user_id: str, code: str) -> None:
+        self.begin_user_deletion(user_id=user_id)
+        self.account_deletions[user_id] = {"status": "pending", "updated_at": _now(), "last_error_code": code[:64]}
+
     def get_job(self, *, user_id: str, job_id: str) -> Job | None:
         value = self.jobs.get(job_id)
         return value if value and value.user_id == user_id else None
@@ -344,21 +481,32 @@ class InMemoryNotebookStore:
 
 
 class NotebookService:
+    EXPORT_TTL = timedelta(hours=24)
+    EXPORT_MAX_DOWNLOADS = 3
+
     def __init__(self, store: Any, quarantine_root: Path) -> None:
         self.store = store
         self.files = FileIntake(quarantine_root)
 
-    def upload(self, *, user_id: str, purpose: str, original_name: str, content: bytes) -> FileRecord:
+    def upload(self, *, user_id: str, purpose: str, original_name: str, content: bytes, idempotency_key: str | None = None) -> FileRecord:
         candidate = self.files.quarantine(user_id=user_id, original_name=original_name, content=content)
-        return self.store.create_file(
-            user_id=user_id,
-            purpose=purpose,
-            original_name=candidate.original_name,
-            object_key=candidate.object_key,
-            content_sha256=candidate.content_sha256,
-            media_type=candidate.media_type,
-            byte_size=candidate.byte_size,
-        )
+        try:
+            record = self.store.create_file(
+                user_id=user_id,
+                purpose=purpose,
+                original_name=candidate.original_name,
+                object_key=candidate.object_key,
+                content_sha256=candidate.content_sha256,
+                media_type=candidate.media_type,
+                byte_size=candidate.byte_size,
+                idempotency_key=idempotency_key,
+            )
+        except Exception:
+            candidate.local_path.unlink(missing_ok=True)
+            raise
+        if record.object_key != candidate.object_key:
+            candidate.local_path.unlink(missing_ok=True)
+        return record
 
     def create_practice_pdf(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool = False) -> Job:
         job = self.store.create_practice_job(user_id=user_id, error_ids=error_ids, idempotency_key=idempotency_key, include_answers=include_answers)
@@ -391,3 +539,106 @@ class NotebookService:
         if hashlib.sha256(content).hexdigest() != record.content_sha256:
             raise RuntimeError("file_integrity_failed")
         return f"practice-{job.job_id[:8]}.pdf", content
+
+    def create_export(self, *, user_id: str, idempotency_key: str, now: datetime | None = None) -> Job:
+        created_at = now or _now()
+        expires_at = created_at + self.EXPORT_TTL
+        job = self.store.create_export_job(user_id=user_id, idempotency_key=idempotency_key, expires_at=expires_at)
+        if job.status == "completed":
+            return job
+        data = self.store.export_data(user_id=user_id)
+        content = json.dumps(
+            {"schema_version": 1, "exported_at": created_at.isoformat(), "data": self._export_value(data)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        record = self._store_export(user_id=user_id, job_id=job.job_id, content=content)
+        return self.store.complete_export_job(user_id=user_id, job_id=job.job_id, file_id=record.file_id, expires_at=expires_at)
+
+    def download_export(self, *, user_id: str, job_id: str, now: datetime | None = None) -> tuple[str, bytes]:
+        job = self.store.get_job(user_id=user_id, job_id=job_id)
+        if not job or job.job_type != "export" or job.status != "completed" or not job.checkpoint:
+            raise LookupError("export not found")
+        expires_at = datetime.fromisoformat(str(job.checkpoint["expires_at"]))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= (now or _now()):
+            raise LookupError("export expired")
+        record = self.store.get_file(user_id=user_id, file_id=str(job.checkpoint["file_id"]))
+        if not record or record.purpose != "export":
+            raise LookupError("export not found")
+        content = self.files.read(record.object_key)
+        if hashlib.sha256(content).hexdigest() != record.content_sha256:
+            raise RuntimeError("file_integrity_failed")
+        if not self.store.claim_export_download(user_id=user_id, job_id=job_id, maximum=self.EXPORT_MAX_DOWNLOADS):
+            raise LookupError("export download limit reached")
+        return f"export-{job.job_id[:8]}.json", content
+
+    def deactivate_user_data(self, *, user_id: str) -> None:
+        self.prepare_user_deletion(user_id=user_id)
+
+    def prepare_user_deletion(self, *, user_id: str) -> dict[str, Any]:
+        """Persist pending, then make business rows inaccessible; safe to retry after auth failure."""
+        self.store.begin_user_deletion(user_id=user_id)
+        try:
+            self.store.deactivate_user_data(user_id=user_id)
+        except Exception:
+            self.store.record_deletion_error(user_id=user_id, code="domain_cleanup_failed")
+            raise
+        return self.deletion_status(user_id=user_id) or {"status": "pending", "updated_at": None, "last_error_code": None}
+
+    def deletion_status(self, *, user_id: str) -> dict[str, Any] | None:
+        return self.store.deletion_status(user_id=user_id)
+
+    def pending_deletion_user_ids(self) -> list[str]:
+        return self.store.pending_deletion_user_ids()
+
+    def record_deletion_error(self, *, user_id: str, code: str) -> None:
+        self.store.record_deletion_error(user_id=user_id, code=code)
+
+    def complete_user_deletion(self, *, user_id: str) -> dict[str, Any]:
+        try:
+            for object_key in self.store.deletion_file_keys(user_id=user_id):
+                target = (self.files.root / object_key).resolve()
+                if self.files.root not in target.parents:
+                    raise ValueError("unsafe deletion path")
+                target.unlink(missing_ok=True)
+            return self.store.complete_user_deletion(user_id=user_id)
+        except Exception:
+            self.store.record_deletion_error(user_id=user_id, code="file_purge_failed")
+            raise
+
+    def _store_export(self, *, user_id: str, job_id: str, content: bytes) -> FileRecord:
+        namespace = hashlib.sha256(user_id.encode("ascii")).hexdigest()[:16]
+        object_key = f"quarantine/{namespace}/export-{job_id}.json"
+        target = (self.files.root / object_key).resolve()
+        if self.files.root not in target.parents:
+            raise ValueError("unsafe export path")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with target.open("xb") as handle:
+                handle.write(content)
+        except FileExistsError:
+            if target.read_bytes() != content:
+                raise RuntimeError("export object collision")
+        return self.store.create_file(
+            user_id=user_id,
+            purpose="export",
+            original_name=f"export-{job_id[:8]}.json",
+            object_key=object_key,
+            content_sha256=hashlib.sha256(content).hexdigest(),
+            media_type="application/json",
+            byte_size=len(content),
+        )
+
+    @staticmethod
+    def _export_value(value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if is_dataclass(value):
+            return {key: NotebookService._export_value(item) for key, item in asdict(value).items()}
+        if isinstance(value, dict):
+            return {str(key): NotebookService._export_value(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [NotebookService._export_value(item) for item in value]
+        return value

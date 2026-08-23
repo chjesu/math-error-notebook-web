@@ -106,10 +106,25 @@ class MySqlRegistrationStore:
             cursor.close()
             connection.close()
 
+    def find_user(self, phone_hash: str) -> User | None:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT id, phone_last4, created_at, status FROM web_users WHERE phone_lookup_hash=%s",
+                (phone_hash,),
+            )
+            row = cursor.fetchone()
+            return User(str(row[0]), phone_hash, str(row[1]), row[2].replace(tzinfo=timezone.utc), str(row[3])) if row else None
+        finally:
+            cursor.close()
+            connection.close()
+
     def reserve_send(
         self,
         *,
         phone_hash: str,
+        cooldown_hash: str,
         ip_hash: str,
         ip_prefix_hash: str,
         device_hash: str,
@@ -157,12 +172,12 @@ class MySqlRegistrationStore:
             cursor.execute(
                 "INSERT INTO auth_send_cooldowns (phone_lookup_hash, next_send_at, updated_at) "
                 "VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE updated_at=updated_at",
-                (phone_hash, utc_now, utc_now),
+                (cooldown_hash, utc_now, utc_now),
             )
             cursor.execute(
                 "SELECT next_send_at FROM auth_send_cooldowns "
                 "WHERE phone_lookup_hash=%s FOR UPDATE",
-                (phone_hash,),
+                (cooldown_hash,),
             )
             row = cursor.fetchone()
             next_send_at = row[0] if row else utc_now
@@ -202,7 +217,7 @@ class MySqlRegistrationStore:
                 (
                     utc_now + timedelta(seconds=config.resend_cooldown_seconds),
                     utc_now,
-                    phone_hash,
+                    cooldown_hash,
                 ),
             )
             cursor.execute(
@@ -226,24 +241,25 @@ class MySqlRegistrationStore:
         try:
             connection.begin()
             cursor.execute(
-                "SELECT id FROM auth_sms_challenges WHERE phone_lookup_hash=%s "
+                "SELECT id FROM auth_sms_challenges WHERE phone_lookup_hash=%s AND purpose=%s "
                 "AND status IN ('pending','sent') FOR UPDATE",
-                (challenge.phone_hash,),
+                (challenge.phone_hash, challenge.purpose),
             )
             cursor.execute(
                 "UPDATE auth_sms_challenges SET status='cancelled' "
-                "WHERE phone_lookup_hash=%s AND status IN ('pending','sent')",
-                (challenge.phone_hash,),
+                "WHERE phone_lookup_hash=%s AND purpose=%s AND status IN ('pending','sent')",
+                (challenge.phone_hash, challenge.purpose),
             )
             cursor.execute(
                 "INSERT INTO auth_sms_challenges "
                 "(id, phone_lookup_hash, tenant_scope_hash, purpose, code_hash, status, "
                 "attempt_count, expires_at, created_at) "
-                "VALUES (%s, %s, %s, 'register', %s, 'pending', 0, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s, 'pending', 0, %s, %s)",
                 (
                     challenge.challenge_id,
                     challenge.phone_hash,
                     challenge.tenant_hash,
+                    challenge.purpose,
                     challenge.code_hash,
                     challenge.expires_at.astimezone(timezone.utc).replace(tzinfo=None),
                     challenge.created_at.astimezone(timezone.utc).replace(tzinfo=None),
@@ -279,16 +295,84 @@ class MySqlRegistrationStore:
             cursor.close()
             connection.close()
 
-    def register(
+    def prevalidate_code(
         self,
         *,
         challenge_id: str,
+        purpose: str,
+        phone_hash: str,
+        tenant_hash: str,
+        code_hash: str,
+        now: datetime,
+        max_attempts: int,
+    ) -> RegistrationStatus:
+        """Atomically reject invalid OTPs before the caller performs scrypt."""
+
+        connection = self._connect()
+        cursor = connection.cursor()
+        utc_now = now.astimezone(timezone.utc).replace(tzinfo=None)
+        try:
+            connection.begin()
+            cursor.execute(
+                "SELECT phone_lookup_hash, tenant_scope_hash, purpose, code_hash, status, "
+                "attempt_count, expires_at FROM auth_sms_challenges WHERE id=%s FOR UPDATE",
+                (challenge_id,),
+            )
+            row = cursor.fetchone()
+            if not row or row[0] != phone_hash or row[1] != tenant_hash or row[2] != purpose:
+                connection.rollback()
+                return RegistrationStatus.INVALID_CODE
+            stored_hash, status, attempts, expires_at = row[3], str(row[4]), int(row[5]), row[6]
+            if status == "locked" or attempts >= max_attempts:
+                connection.rollback()
+                return RegistrationStatus.LOCKED
+            if status != "sent":
+                connection.rollback()
+                return RegistrationStatus.INVALID_CODE
+            if utc_now >= expires_at:
+                cursor.execute(
+                    "UPDATE auth_sms_challenges SET status='expired' WHERE id=%s",
+                    (challenge_id,),
+                )
+                connection.commit()
+                return RegistrationStatus.EXPIRED
+            if not secrets.compare_digest(str(stored_hash), code_hash):
+                attempts += 1
+                next_status = "locked" if attempts >= max_attempts else "sent"
+                cursor.execute(
+                    "UPDATE auth_sms_challenges SET attempt_count=%s, status=%s WHERE id=%s",
+                    (attempts, next_status, challenge_id),
+                )
+                connection.commit()
+                return (
+                    RegistrationStatus.LOCKED
+                    if next_status == "locked"
+                    else RegistrationStatus.INVALID_CODE
+                )
+            connection.rollback()
+            return RegistrationStatus.COMPLETE
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def complete(
+        self,
+        *,
+        challenge_id: str,
+        purpose: str,
         phone_hash: str,
         tenant_hash: str,
         phone_last4: str,
         code_hash: str,
-        session_hash: str,
-        session_expires_at: datetime,
+        session_hash: str | None,
+        session_expires_at: datetime | None,
+        password_salt: bytes | None,
+        password_hash: bytes | None,
+        password_params: str | None,
+        agreement_version: str | None,
         now: datetime,
         max_attempts: int,
     ) -> tuple[RegistrationStatus, User | None]:
@@ -298,15 +382,15 @@ class MySqlRegistrationStore:
         try:
             connection.begin()
             cursor.execute(
-                "SELECT phone_lookup_hash, tenant_scope_hash, code_hash, status, "
+                "SELECT phone_lookup_hash, tenant_scope_hash, purpose, code_hash, status, "
                 "attempt_count, expires_at FROM auth_sms_challenges WHERE id=%s FOR UPDATE",
                 (challenge_id,),
             )
             row = cursor.fetchone()
-            if not row or row[0] != phone_hash or row[1] != tenant_hash:
+            if not row or row[0] != phone_hash or row[1] != tenant_hash or row[2] != purpose:
                 connection.rollback()
                 return RegistrationStatus.INVALID_CODE, None
-            stored_hash, status, attempts, expires_at = row[2], str(row[3]), int(row[4]), row[5]
+            stored_hash, status, attempts, expires_at = row[3], str(row[4]), int(row[5]), row[6]
             if status == "locked" or attempts >= max_attempts:
                 connection.rollback()
                 return RegistrationStatus.LOCKED, None
@@ -348,10 +432,13 @@ class MySqlRegistrationStore:
                     created_at=user_row[2].replace(tzinfo=timezone.utc),
                     status=str(user_row[3]),
                 )
-                if user.status != "active":
+                if user.status != "active" or purpose == "register":
                     connection.rollback()
                     return RegistrationStatus.LOCKED, None
-            else:
+            elif purpose == "register":
+                if None in {password_salt, password_hash, password_params, agreement_version}:
+                    connection.rollback()
+                    return RegistrationStatus.INVALID_CODE, None
                 user = User(
                     user_id=uuid.uuid4().hex,
                     phone_hash=phone_hash,
@@ -370,20 +457,27 @@ class MySqlRegistrationStore:
                         utc_now,
                     ),
                 )
+                cursor.execute(
+                    "INSERT INTO auth_password_credentials (user_id, salt, password_hash, parameters, created_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s)",
+                    (user.user_id, password_salt, password_hash, password_params, utc_now, utc_now),
+                )
+            else:
+                connection.rollback()
+                return RegistrationStatus.LOCKED, None
+            if agreement_version:
+                cursor.execute(
+                    "INSERT INTO auth_agreement_acceptances (id, user_id, agreement_version, accepted_at) VALUES (%s,%s,%s,%s)",
+                    (uuid.uuid4().hex, user.user_id, agreement_version, utc_now),
+                )
             cursor.execute(
                 "UPDATE auth_sms_challenges SET status='verified', consumed_at=%s WHERE id=%s",
                 (utc_now, challenge_id),
             )
-            cursor.execute(
-                "INSERT INTO auth_sessions (session_hash, user_id, expires_at, created_at) "
-                "VALUES (%s, %s, %s, %s)",
-                (
-                    session_hash,
-                    user.user_id,
-                    session_expires_at.astimezone(timezone.utc).replace(tzinfo=None),
-                    utc_now,
-                ),
-            )
+            if session_hash and session_expires_at:
+                cursor.execute(
+                    "INSERT INTO auth_sessions (session_hash, user_id, expires_at, created_at) VALUES (%s, %s, %s, %s)",
+                    (session_hash, user.user_id, session_expires_at.astimezone(timezone.utc).replace(tzinfo=None), utc_now),
+                )
             connection.commit()
             return RegistrationStatus.COMPLETE, user
         except Exception:
@@ -448,6 +542,32 @@ class MySqlRegistrationStore:
             )
             connection.commit()
             return int(changed)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def deactivate_user(self, user_id: str, now: datetime) -> bool:
+        connection = self._connect()
+        cursor = connection.cursor()
+        utc_now = now.astimezone(timezone.utc).replace(tzinfo=None)
+        try:
+            connection.begin()
+            cursor.execute("SELECT status FROM web_users WHERE id=%s FOR UPDATE", (user_id,))
+            row = cursor.fetchone()
+            if not row or str(row[0]) not in {"active", "deleted"}:
+                connection.rollback()
+                return False
+            if str(row[0]) == "active":
+                cursor.execute("UPDATE web_users SET status='deleted', updated_at=%s WHERE id=%s", (utc_now, user_id))
+            cursor.execute(
+                "UPDATE auth_sessions SET revoked_at=%s WHERE user_id=%s AND revoked_at IS NULL",
+                (utc_now, user_id),
+            )
+            connection.commit()
+            return True
         except Exception:
             connection.rollback()
             raise

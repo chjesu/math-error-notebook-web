@@ -28,6 +28,24 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(":focus-visible", css)
         self.assertNotIn("min-width:720px", css)
 
+    def test_auth_flow_handles_captcha_retry_and_browser_history(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        script = (root / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="captcha-token"', html)
+        self.assertIn("local-captcha", html)
+        self.assertIn("captcha_required", script)
+        self.assertIn("error.retryAfter", script)
+        self.assertIn("button.disabled = countdown > 0", script)
+        self.assertIn("function routePage()", script)
+        self.assertIn("showLegal", script)
+        self.assertIn('$("#password").type = "password"', script)
+        self.assertIn("resetOtp()", script)
+        self.assertIn('challenge = result.challenge_token;\n    $("#code").value = "";', script)
+        self.assertIn('$("#agreement-fields").hidden = false', script)
+        self.assertIn('if (!$("#agreement").checked)', script)
+        self.assertNotIn('authMode === "register" && !$("#agreement").checked', script)
+
 
 if __name__ == "__main__":
     unittest.main()

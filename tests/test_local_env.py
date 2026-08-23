@@ -29,6 +29,11 @@ class LocalEnvironmentTests(unittest.TestCase):
                 "0002_web_domain.sql",
                 "0003_account_simplification.sql",
                 "0004_learning_loop.sql",
+                "0005_auth_v040.sql",
+                "0006_privacy.sql",
+                "0007_auth_security.sql",
+                "0008_privacy_recovery.sql",
+                "0009_file_upload_idempotency.sql",
             ],
         )
         self.assertTrue(all(path.is_file() for path in local_env.MIGRATIONS))
@@ -39,6 +44,20 @@ class LocalEnvironmentTests(unittest.TestCase):
         self.assertNotIn("question_sources", general_cleanup)
         self.assertIn("WHERE user_id=%s", scoped_cleanup)
         self.assertIn("DELETE FROM question_sources WHERE id=%s", scoped_cleanup)
+
+    def test_live_schema_check_requires_matching_ledger_and_tables(self) -> None:
+        ledger = "\n".join(
+            f"{path.name}\t{__import__('hashlib').sha256(path.read_bytes()).hexdigest()}"
+            for path in local_env.MIGRATIONS
+        )
+        with mock.patch.object(local_env, "_is_running", return_value=True), mock.patch.object(
+            local_env, "_run_sql", side_effect=[ledger, "6", "3"]
+        ):
+            self.assertTrue(local_env._live_schema_ready())
+        with mock.patch.object(local_env, "_is_running", return_value=True), mock.patch.object(
+            local_env, "_run_sql", side_effect=[ledger, "5", "3"]
+        ):
+            self.assertFalse(local_env._live_schema_ready())
 
     def test_failed_migration_is_not_recorded_and_can_resume(self) -> None:
         labels: list[str] = []
@@ -74,6 +93,63 @@ class LocalEnvironmentTests(unittest.TestCase):
         with mock.patch.object(local_env, "_run_sql", side_effect=run_sql):
             with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
                 local_env._apply_migrations()
+
+    def test_partially_applied_0005_resumes_with_idempotent_0007(self) -> None:
+        migration = local_env.ROOT / "services" / "web_auth" / "migrations" / "0005_auth_v040.sql"
+        partial = False
+        labels: list[str] = []
+
+        def run_sql(sql, *, label, **kwargs):
+            nonlocal partial
+            del kwargs
+            labels.append(label)
+            if label == "migration ledger shape check":
+                return "1"
+            if label == "migration ledger read":
+                return ""
+            if label == "0005 partial schema check":
+                return "1" if partial else "0"
+            if label == "apply 0005_auth_v040.sql" and not partial:
+                partial = True
+                raise RuntimeError("simulated middle DDL failure")
+            if label == "apply 0005_auth_v040.sql":
+                self.assertIn("CREATE TABLE IF NOT EXISTS", sql)
+            return ""
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            local_env, "MIGRATIONS", (migration,)
+        ), mock.patch.object(local_env, "_run_sql", side_effect=run_sql), mock.patch.object(
+            local_env, "READY", Path(directory) / "ready"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "middle DDL failure"):
+                local_env._apply_migrations()
+            local_env._apply_migrations()
+        self.assertEqual(labels.count("record 0005_auth_v040.sql"), 1)
+
+    def test_unledgered_atomic_0008_is_detected_and_recorded(self) -> None:
+        migration = local_env.ROOT / "services" / "web_domain" / "migrations" / "0008_privacy_recovery.sql"
+        labels: list[str] = []
+
+        def run_sql(sql, *, label, **kwargs):
+            del kwargs
+            labels.append(label)
+            if label == "migration ledger shape check":
+                return "1"
+            if label == "migration ledger read":
+                return ""
+            if label == "0008 recovery schema check":
+                return "3"
+            if label == "apply 0008_privacy_recovery.sql":
+                self.assertEqual(sql, "SELECT 1;")
+            return ""
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            local_env, "MIGRATIONS", (migration,)
+        ), mock.patch.object(local_env, "_run_sql", side_effect=run_sql), mock.patch.object(
+            local_env, "READY", Path(directory) / "ready"
+        ):
+            local_env._apply_migrations()
+        self.assertIn("record 0008_privacy_recovery.sql", labels)
 
 
 if __name__ == "__main__":

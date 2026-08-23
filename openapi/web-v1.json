@@ -2,27 +2,49 @@
   "openapi": "3.1.0",
   "info": {
     "title": "李兆霖数学错题本 Web API",
-    "version": "0.3.3"
+    "version": "0.4.0"
   },
   "paths": {
-    "/v1/auth/otp/request": {
+    "/v1/auth/login/otp/request": {
       "post": {
-        "operationId": "requestOtp",
+        "operationId": "requestLoginOtp",
         "requestBody": {"$ref": "#/components/requestBodies/OtpRequest"},
-        "responses": {
-          "202": {"$ref": "#/components/responses/OtpAccepted"},
-          "400": {"$ref": "#/components/responses/Error"}
-        }
+        "responses": {"202": {"$ref": "#/components/responses/OtpAccepted"}, "400": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "428": {"$ref": "#/components/responses/Error"}, "429": {"$ref": "#/components/responses/RetryLater"}, "503": {"$ref": "#/components/responses/Error"}}
       }
     },
-    "/v1/auth/otp/verify": {
+    "/v1/auth/login/otp/verify": {
       "post": {
-        "operationId": "verifyOtp",
-        "requestBody": {"$ref": "#/components/requestBodies/OtpVerify"},
+        "operationId": "verifyLoginOtp",
+        "requestBody": {"$ref": "#/components/requestBodies/LoginVerify"},
         "responses": {
           "200": {"$ref": "#/components/responses/Authenticated"},
           "400": {"$ref": "#/components/responses/Error"}
         }
+      }
+    },
+    "/v1/auth/register/otp/request": {
+      "post": {
+        "operationId": "requestRegisterOtp",
+        "requestBody": {"$ref": "#/components/requestBodies/OtpRequest"},
+        "responses": {"202": {"$ref": "#/components/responses/OtpAccepted"}, "400": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "428": {"$ref": "#/components/responses/Error"}, "429": {"$ref": "#/components/responses/RetryLater"}, "503": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/auth/register/complete": {
+      "post": {
+        "operationId": "completeRegistration",
+        "requestBody": {"$ref": "#/components/requestBodies/RegisterComplete"},
+        "responses": {
+          "200": {"$ref": "#/components/responses/Authenticated"},
+          "400": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/auth/sensitive/otp/request": {
+      "post": {
+        "operationId": "requestSensitiveOtp",
+        "security": [{"sessionCookie": []}],
+        "requestBody": {"$ref": "#/components/requestBodies/SensitiveOtpRequest"},
+        "responses": {"202": {"$ref": "#/components/responses/OtpAccepted"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "428": {"$ref": "#/components/responses/Error"}, "429": {"$ref": "#/components/responses/RetryLater"}, "503": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/session": {
@@ -34,14 +56,14 @@
       "delete": {
         "operationId": "logoutCurrentSession",
         "security": [{"sessionCookie": []}],
-        "responses": {"204": {"description": "当前会话已撤销"}, "401": {"$ref": "#/components/responses/Error"}}
+        "responses": {"204": {"description": "当前会话已撤销"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/sessions": {
       "delete": {
         "operationId": "logoutAllSessions",
         "security": [{"sessionCookie": []}],
-        "responses": {"204": {"description": "全部会话已撤销"}, "401": {"$ref": "#/components/responses/Error"}}
+        "responses": {"204": {"description": "全部会话已撤销"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/workbench": {
@@ -57,7 +79,7 @@
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
         "requestBody": {"$ref": "#/components/requestBodies/FileUpload"},
-        "responses": {"201": {"$ref": "#/components/responses/File"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "413": {"$ref": "#/components/responses/Error"}}
+        "responses": {"201": {"$ref": "#/components/responses/File"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "413": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/tasks/{task_id}": {
@@ -74,7 +96,7 @@
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
         "requestBody": {"$ref": "#/components/requestBodies/CreateIntake"},
-        "responses": {"202": {"$ref": "#/components/responses/TaskAccepted"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+        "responses": {"202": {"$ref": "#/components/responses/TaskAccepted"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/intakes/{intake_id}": {
@@ -83,7 +105,7 @@
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/IntakeId"}],
         "requestBody": {"$ref": "#/components/requestBodies/IntakeRevision"},
-        "responses": {"200": {"$ref": "#/components/responses/Intake"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+        "responses": {"200": {"$ref": "#/components/responses/Intake"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/intakes/{intake_id}/confirm": {
@@ -92,7 +114,7 @@
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/IntakeId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
         "requestBody": {"$ref": "#/components/requestBodies/Version"},
-        "responses": {"202": {"$ref": "#/components/responses/TaskAccepted"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+        "responses": {"202": {"$ref": "#/components/responses/TaskAccepted"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/intakes/{intake_id}/manual-candidate": {
@@ -102,7 +124,7 @@
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/IntakeId"}],
         "requestBody": {"$ref": "#/components/requestBodies/ManualIntakeCandidate"},
-        "responses": {"201": {"$ref": "#/components/responses/Intake"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+        "responses": {"201": {"$ref": "#/components/responses/Intake"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/attempts/{attempt_id}/manual-grade": {
@@ -112,7 +134,7 @@
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/AttemptId"}],
         "requestBody": {"$ref": "#/components/requestBodies/ManualGradeCandidate"},
-        "responses": {"201": {"$ref": "#/components/responses/GradeCandidate"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+        "responses": {"201": {"$ref": "#/components/responses/GradeCandidate"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/grade-results/{result_id}": {
@@ -129,7 +151,7 @@
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/ResultId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
         "requestBody": {"$ref": "#/components/requestBodies/Version"},
-        "responses": {"201": {"$ref": "#/components/responses/ErrorEntry"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}}
+        "responses": {"201": {"$ref": "#/components/responses/ErrorEntry"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/errors": {
@@ -158,7 +180,7 @@
         "operationId": "assignVerifiedRecommendations",
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/ErrorId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
-        "responses": {"200": {"$ref": "#/components/responses/RecommendationList"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+        "responses": {"200": {"$ref": "#/components/responses/RecommendationList"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/reviews/today": {
@@ -174,7 +196,7 @@
         "security": [{"sessionCookie": []}],
         "parameters": [{"name": "review_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}}, {"$ref": "#/components/parameters/IdempotencyKey"}],
         "requestBody": {"$ref": "#/components/requestBodies/ReviewResult"},
-        "responses": {"200": {"$ref": "#/components/responses/ReviewCompleted"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+        "responses": {"200": {"$ref": "#/components/responses/ReviewCompleted"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/progress": {
@@ -190,7 +212,7 @@
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
         "requestBody": {"$ref": "#/components/requestBodies/PracticePdf"},
-        "responses": {"201": {"$ref": "#/components/responses/PracticeJob"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+        "responses": {"201": {"$ref": "#/components/responses/PracticeJob"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/practice-pdfs/{task_id}": {
@@ -208,6 +230,39 @@
         "parameters": [{"$ref": "#/components/parameters/TaskId"}],
         "responses": {"200": {"description": "当前用户的 A4 PDF", "content": {"application/pdf": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
       }
+    },
+    "/v1/exports": {
+      "post": {
+        "operationId": "createPersonalDataExport",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"$ref": "#/components/requestBodies/SensitiveProof"},
+        "responses": {"201": {"$ref": "#/components/responses/ExportCreated"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/exports/{job_id}": {
+      "get": {
+        "operationId": "getPersonalDataExport",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/JobId"}],
+        "responses": {"200": {"$ref": "#/components/responses/ExportJob"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/exports/{job_id}/download": {
+      "get": {
+        "operationId": "downloadPersonalDataExport",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/JobId"}],
+        "responses": {"200": {"description": "当前用户的短时个人数据 JSON", "content": {"application/json": {"schema": {"type": "object"}}}}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/account": {
+      "delete": {
+        "operationId": "deleteCurrentAccount",
+        "security": [{"sessionCookie": []}],
+        "requestBody": {"$ref": "#/components/requestBodies/DeleteAccount"},
+        "responses": {"204": {"description": "账号已注销，全部会话已撤销"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
+      }
     }
   },
   "components": {
@@ -220,11 +275,16 @@
       "IntakeId": {"name": "intake_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
       "AttemptId": {"name": "attempt_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
       "ResultId": {"name": "result_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
-      "ErrorId": {"name": "error_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}}
+      "ErrorId": {"name": "error_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
+      "JobId": {"name": "job_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}}
     },
     "requestBodies": {
       "OtpRequest": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OtpRequest"}}}},
-      "OtpVerify": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OtpVerify"}}}},
+      "LoginVerify": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginVerify"}}}},
+      "RegisterComplete": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RegisterComplete"}}}},
+      "SensitiveOtpRequest": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SensitiveOtpRequest"}}}},
+      "SensitiveProof": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SensitiveProof"}}}},
+      "DeleteAccount": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeleteAccount"}}}},
       "FileUpload": {"required": true, "content": {"multipart/form-data": {"schema": {"$ref": "#/components/schemas/FileUpload"}}}},
       "CreateIntake": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateIntake"}}}},
       "IntakeRevision": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IntakeRevision"}}}},
@@ -251,12 +311,19 @@
       "ReviewCompleted": {"description": "复习阶段结果", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewCompleted"}}}},
       "Progress": {"description": "当前用户学习进度", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Progress"}}}},
       "PracticeJob": {"description": "练习 PDF 任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PracticeJob"}}}},
+      "ExportJob": {"description": "当前用户的短时导出任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExportJob"}}}},
+      "ExportCreated": {"description": "已创建并可立即下载的个人数据导出", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExportCreated"}}}},
+      "RetryLater": {"description": "请求被限流；按 Retry-After 后重试", "headers": {"Retry-After": {"required": true, "schema": {"type": "integer", "minimum": 1}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
       "Error": {"description": "稳定错误结构", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}
     },
     "schemas": {
       "Id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
       "OtpRequest": {"type": "object", "additionalProperties": false, "required": ["phone"], "properties": {"phone": {"type": "string"}, "captcha_token": {"type": ["string", "null"]}}},
-      "OtpVerify": {"type": "object", "additionalProperties": false, "required": ["phone", "challenge_token", "code"], "properties": {"phone": {"type": "string"}, "challenge_token": {"type": "string"}, "code": {"type": "string", "pattern": "^[0-9]{6}$"}}},
+      "LoginVerify": {"type": "object", "additionalProperties": false, "required": ["phone", "challenge_token", "code", "terms_version", "privacy_version"], "properties": {"phone": {"type": "string"}, "challenge_token": {"type": "string"}, "code": {"type": "string", "pattern": "^[0-9]{6}$"}, "terms_version": {"const": "2026-08-23"}, "privacy_version": {"const": "2026-08-23"}}},
+      "RegisterComplete": {"type": "object", "additionalProperties": false, "required": ["phone", "challenge_token", "code", "password", "terms_version", "privacy_version"], "properties": {"phone": {"type": "string"}, "challenge_token": {"type": "string"}, "code": {"type": "string", "pattern": "^[0-9]{6}$"}, "password": {"type": "string", "minLength": 6, "maxLength": 20}, "terms_version": {"const": "2026-08-23"}, "privacy_version": {"const": "2026-08-23"}}},
+      "SensitiveOtpRequest": {"type": "object", "additionalProperties": false, "required": ["phone", "action"], "properties": {"phone": {"type": "string"}, "action": {"enum": ["export", "delete"]}, "captcha_token": {"type": ["string", "null"]}}},
+      "SensitiveProof": {"type": "object", "additionalProperties": false, "required": ["phone", "challenge_token", "code"], "properties": {"phone": {"type": "string"}, "challenge_token": {"type": "string"}, "code": {"type": "string", "pattern": "^[0-9]{6}$"}}},
+      "DeleteAccount": {"type": "object", "additionalProperties": false, "required": ["phone", "challenge_token", "code", "confirmation"], "properties": {"phone": {"type": "string"}, "challenge_token": {"type": "string"}, "code": {"type": "string", "pattern": "^[0-9]{6}$"}, "confirmation": {"const": "DELETE"}}},
       "OtpAccepted": {"type": "object", "required": ["status", "message", "challenge_token", "captcha_required"], "properties": {"status": {"const": "accepted"}, "message": {"type": "string"}, "challenge_token": {"type": ["string", "null"]}, "retry_after_seconds": {"type": ["integer", "null"], "minimum": 1}, "captcha_required": {"type": "boolean"}}},
       "AuthResult": {"type": "object", "required": ["status", "account_status", "next_action"], "properties": {"status": {"const": "authenticated"}, "account_status": {"const": "active"}, "next_action": {"const": "workbench"}}},
       "Session": {"type": "object", "required": ["authenticated", "account_status"], "properties": {"authenticated": {"const": true}, "account_status": {"const": "active"}}},
@@ -269,7 +336,7 @@
       "ManualGradeCandidate": {"type": "object", "additionalProperties": false, "required": ["input_version", "verdict"], "properties": {"input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "first_error": {"type": "string"}, "evidence": {"type": "string"}}},
       "Version": {"type": "object", "additionalProperties": false, "required": ["input_version"], "properties": {"input_version": {"type": "integer", "minimum": 1}}},
       "TaskAccepted": {"type": "object", "required": ["resource_id", "task_id"], "properties": {"resource_id": {"$ref": "#/components/schemas/Id"}, "task_id": {"$ref": "#/components/schemas/Id"}}},
-      "Task": {"type": "object", "required": ["task_id", "type", "status"], "properties": {"task_id": {"$ref": "#/components/schemas/Id"}, "type": {"enum": ["extract", "grade", "import", "practice_pdf"]}, "status": {"enum": ["queued", "running", "waiting_confirmation", "completed", "failed_retryable", "failed_final", "cancelled"]}, "checkpoint": {"type": ["object", "null"]}, "last_error_code": {"type": ["string", "null"]}}},
+      "Task": {"type": "object", "required": ["task_id", "type", "status"], "properties": {"task_id": {"$ref": "#/components/schemas/Id"}, "type": {"enum": ["extract", "grade", "import", "practice_pdf", "export"]}, "status": {"enum": ["queued", "running", "waiting_confirmation", "completed", "failed_retryable", "failed_final", "cancelled"]}, "checkpoint": {"type": ["object", "null"]}, "last_error_code": {"type": ["string", "null"]}}},
       "Intake": {"type": "object", "required": ["intake_id", "input_version", "status", "question_text", "answer_text"], "properties": {"intake_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "status": {"enum": ["extracting", "waiting_confirmation", "confirmed", "cancelled"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}}},
       "GradeCandidate": {"type": "object", "required": ["result_id", "input_version", "verdict", "status"], "properties": {"result_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "status": {"enum": ["candidate", "committed", "superseded", "rejected"]}, "first_error": {"type": ["string", "null"]}, "evidence": {"type": ["string", "null"]}}},
       "ErrorEntry": {"type": "object", "required": ["error_id", "status", "question_text", "created_at"], "properties": {"error_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["open", "reviewing", "mastered", "removed"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}, "first_error": {"type": ["string", "null"]}, "created_at": {"type": "string", "format": "date-time"}}},
@@ -282,7 +349,9 @@
       "Progress": {"type": "object", "required": ["error_count", "mastered_count", "due_review_count", "recommendation_gap_count", "sample_sufficient"], "properties": {"error_count": {"type": "integer", "minimum": 0}, "mastered_count": {"type": "integer", "minimum": 0}, "due_review_count": {"type": "integer", "minimum": 0}, "recommendation_gap_count": {"type": "integer", "minimum": 0}, "sample_sufficient": {"type": "boolean"}}},
       "PracticePdfRequest": {"type": "object", "additionalProperties": false, "required": ["error_ids"], "properties": {"error_ids": {"type": "array", "minItems": 1, "maxItems": 12, "uniqueItems": true, "items": {"$ref": "#/components/schemas/Id"}}, "include_answers": {"type": "boolean", "default": false}}},
       "PracticeJob": {"allOf": [{"$ref": "#/components/schemas/Task"}, {"type": "object", "properties": {"download_url": {"type": "string"}}}]},
-      "ErrorEnvelope": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["code", "message", "retryable", "request_id"], "properties": {"code": {"enum": ["invalid_request", "invalid_or_expired_code", "request_too_large", "invalid_host", "https_required", "method_not_allowed", "authentication_required", "forbidden", "not_found", "conflict", "input_version_changed", "waiting_confirmation", "rate_limited", "captcha_required", "temporarily_unavailable", "failed_retryable", "failed_final"]}, "message": {"type": "string"}, "retryable": {"type": "boolean"}, "request_id": {"type": "string"}}}}}
+      "ExportJob": {"type": "object", "additionalProperties": false, "required": ["job_id", "status", "expires_at"], "properties": {"job_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["queued", "running", "completed", "failed_final", "cancelled"]}, "expires_at": {"type": "string", "format": "date-time"}, "download_url": {"type": "string"}}},
+      "ExportCreated": {"type": "object", "additionalProperties": false, "required": ["job_id", "download_url", "expires_at"], "properties": {"job_id": {"$ref": "#/components/schemas/Id"}, "download_url": {"type": "string"}, "expires_at": {"type": "string", "format": "date-time"}}},
+      "ErrorEnvelope": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["code", "message", "retryable", "request_id"], "properties": {"code": {"enum": ["invalid_request", "invalid_code", "code_expired", "too_many_attempts", "weak_password", "agreement_required", "phone_not_registered", "phone_already_registered", "request_too_large", "invalid_host", "https_required", "method_not_allowed", "authentication_required", "sensitive_verification_failed", "forbidden", "not_found", "conflict", "input_version_changed", "waiting_confirmation", "rate_limited", "captcha_required", "temporarily_unavailable", "failed_retryable", "failed_final"]}, "message": {"type": "string"}, "retryable": {"type": "boolean"}, "request_id": {"type": "string"}, "retry_after_seconds": {"type": "integer", "minimum": 1}}}}}
     }
   }
 }

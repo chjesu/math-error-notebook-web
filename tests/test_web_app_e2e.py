@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from services.web_app import NotebookAsgiApp
-from services.web_auth import InMemoryCaptchaVerifier, InMemoryRegistrationStore, RecordingSmsSender, RegistrationService
+from services.web_auth import AuthConfig, InMemoryCaptchaVerifier, InMemoryRegistrationStore, RecordingSmsSender, RegistrationService
 from services.web_domain import InMemoryNotebookStore, NotebookService, Question
 
 
@@ -21,6 +21,7 @@ class NotebookE2ETests(unittest.TestCase):
             sms_sender=self.sender,
             captcha_verifier=InMemoryCaptchaVerifier(),
             secret_pepper=b"p" * 32,
+            config=AuthConfig(resend_cooldown_seconds=0),
         )
         self.domain_store = InMemoryNotebookStore()
         self.notebook = NotebookService(self.domain_store, Path(self.temp.name))
@@ -29,7 +30,7 @@ class NotebookE2ETests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def call(self, path: str, *, method: str = "GET", payload: dict | None = None, body: bytes | None = None, content_type: str = "application/json", cookie: str | None = None, idempotency_key: str | None = None):
+    def call(self, path: str, *, method: str = "GET", payload: dict | None = None, body: bytes | None = None, content_type: str = "application/json", cookie: str | None = None, origin: str | None = "https://example.test", idempotency_key: str | None = None):
         raw = body if body is not None else json.dumps(payload or {}).encode("utf-8")
         requests = [{"type": "http.request", "body": raw, "more_body": False}]
         responses: list[dict] = []
@@ -42,7 +43,9 @@ class NotebookE2ETests(unittest.TestCase):
 
         headers = [(b"host", b"example.test"), (b"content-type", content_type.encode("latin-1")), (b"x-device-id", b"browser-device-001")]
         if cookie:
-            headers.extend([(b"cookie", cookie.encode("ascii")), (b"origin", b"https://example.test")])
+            headers.append((b"cookie", cookie.encode("ascii")))
+            if origin is not None:
+                headers.append((b"origin", origin.encode("ascii")))
         if idempotency_key:
             headers.append((b"idempotency-key", idempotency_key.encode("ascii")))
         scope = {"type": "http", "method": method, "path": path, "scheme": "https", "client": ("203.0.113.7", 12345), "headers": headers}
@@ -56,6 +59,8 @@ class NotebookE2ETests(unittest.TestCase):
         home = self.call("/")
         self.assertEqual(home[0], 200)
         self.assertIn("李兆霖数学错题本".encode("utf-8"), home[2])
+        for route in ("/login", "/register", "/legal/terms", "/legal/privacy"):
+            self.assertEqual(self.call(route)[0], 200)
         logo = self.call("/assets/branding/logo-symbol-color-64-v1.png")
         self.assertEqual(logo[1]["content-type"], "image/png")
         self.assertEqual(self.call("/assets/branding/../README.md")[0], 401)
@@ -66,9 +71,65 @@ class NotebookE2ETests(unittest.TestCase):
         response = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="upload-internal")
         self.assertEqual(response[0], 400)
 
+    def test_upload_requires_the_declared_idempotency_key(self) -> None:
+        cookie = self.login("13400134000")
+        content_type, body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nimage")
+        response = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie)
+        self.assertEqual((response[0], response[2]["error"]["code"]), (400, "invalid_request"))
+
+    def test_upload_idempotency_key_binds_one_exact_request(self) -> None:
+        cookie = self.login("13300133000")
+        content_type, body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nimage")
+        first = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="upload-replay-key")
+        replay = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="upload-replay-key")
+        changed_type, changed_body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nchanged")
+        changed = self.call("/v1/files", method="POST", body=changed_body, content_type=changed_type, cookie=cookie, idempotency_key="upload-replay-key")
+        self.assertEqual((first[0], replay[0], changed[0]), (201, 201, 409))
+        self.assertEqual(first[2]["file_id"], replay[2]["file_id"])
+        self.assertEqual(len(self.domain_store.files), 1)
+        self.assertEqual(len([path for path in Path(self.temp.name).rglob("*") if path.is_file()]), 1)
+
+    def test_cookie_writes_require_exact_same_origin(self) -> None:
+        cookie = self.login("13500135000")
+        cases = (
+            ("/v1/auth/sensitive/otp/request", "POST", {"phone": "13500135000", "action": "export"}),
+            ("/v1/session", "DELETE", {}),
+            ("/v1/sessions", "DELETE", {}),
+            ("/v1/exports", "POST", {}),
+            ("/v1/account", "DELETE", {}),
+        )
+        for path, method, payload in cases:
+            with self.subTest(path=path, origin="missing"):
+                response = self.call(path, method=method, payload=payload, cookie=cookie, origin=None)
+                self.assertEqual((response[0], response[2]["error"]["code"]), (403, "forbidden"))
+            with self.subTest(path=path, origin="wrong"):
+                response = self.call(path, method=method, payload=payload, cookie=cookie, origin="https://evil.example")
+                self.assertEqual((response[0], response[2]["error"]["code"]), (403, "forbidden"))
+
+    def test_deletion_keeps_durable_pending_state_when_domain_cleanup_fails(self) -> None:
+        phone = "13400134000"
+        cookie = self.login(phone)
+        user_id = self.auth_service.authenticate_session(cookie.split("=", 1)[1]).user_id
+        requested = self.call("/v1/auth/sensitive/otp/request", method="POST", payload={"phone": phone, "action": "delete"}, cookie=cookie)
+        self.assertEqual(requested[0], 202)
+        original = self.notebook.complete_user_deletion
+
+        def fail_cleanup(*, user_id: str) -> dict:
+            raise OSError("disk unavailable")
+
+        self.notebook.complete_user_deletion = fail_cleanup  # type: ignore[method-assign]
+        try:
+            response = self.call("/v1/account", method="DELETE", payload={"phone": phone, "challenge_token": requested[2]["challenge_token"], "code": self.sender.deliveries[-1][1], "confirmation": "DELETE"}, cookie=cookie)
+        finally:
+            self.notebook.complete_user_deletion = original  # type: ignore[method-assign]
+        self.assertEqual((response[0], response[2]["error"]["code"]), (503, "failed_retryable"))
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        self.assertIsNone(user)
+        self.assertEqual(self.notebook.deletion_status(user_id=user_id)["status"], "pending")
+
     def login(self, phone: str) -> str:
-        requested = self.call("/v1/auth/otp/request", method="POST", payload={"phone": phone})
-        verified = self.call("/v1/auth/otp/verify", method="POST", payload={"phone": phone, "challenge_token": requested[2]["challenge_token"], "code": self.sender.deliveries[-1][1]})
+        requested = self.call("/v1/auth/register/otp/request", method="POST", payload={"phone": phone})
+        verified = self.call("/v1/auth/register/complete", method="POST", payload={"phone": phone, "challenge_token": requested[2]["challenge_token"], "code": self.sender.deliveries[-1][1], "password": "safe123", "terms_version": "2026-08-23", "privacy_version": "2026-08-23"})
         self.assertEqual(verified[0], 200)
         return verified[1]["set-cookie"].split(";", 1)[0]
 
@@ -148,7 +209,7 @@ class NotebookE2ETests(unittest.TestCase):
         original = self.app
         self.app = limited
         try:
-            too_large = self.call("/v1/files", method="POST", body=b"012345678", content_type="multipart/form-data; boundary=x", cookie=cookie)
+            too_large = self.call("/v1/files", method="POST", body=b"012345678", content_type="multipart/form-data; boundary=x", cookie=cookie, idempotency_key="upload-too-large")
         finally:
             self.app = original
         self.assertEqual((too_large[0], too_large[2]["error"]["code"]), (413, "request_too_large"))

@@ -4,7 +4,7 @@
 >
 > 分解日期：2026-08-23
 >
-> 状态：可执行基线；任务完成状态以项目工作流和证据为准
+> 状态：可执行基线；v0.4.0 本地手工闭环已验收，剩余任务聚焦生产化门禁与延期能力
 >
 > 上游：02-PRODUCT-REQUIREMENTS.md、04-IMPLEMENTATION-PLAN.md、05-TEST-ACCEPTANCE-OPERATIONS.md、10-UX-UI-INTERACTION-DESIGN.md
 
@@ -20,19 +20,19 @@
 
 | 能力 | 当前证据 | 判断 |
 |---|---|---|
-| 产品范围 | PRD、功能设计、测试验收文档 v0.4.0 | 已确认，认证实现待迁移 |
+| 产品范围 | PRD、功能设计、测试验收文档 v0.4.0 | 已确认，认证与本地闭环已实现 |
 | UE/UI/交互 | 核心流程、响应式规范、正式品牌资产 | 已确认 |
-| 手机验证码基础 | v0.3.3注册状态机、MySQL Store、ASGI、短信和CAPTCHA适配器 | 单入口旧实现可运行；v0.4.0待重构 |
+| 认证基础 | v0.4.0 状态机、MySQL Store、ASGI、模拟短信和 CAPTCHA 适配器 | 四接口、密码、协议和场景隔离已本地验收；真实供应商与安全门禁未完成 |
 | 本地 MySQL 模拟 | localhost MySQL、模拟短信/CAPTCHA、HTTP smoke | 已运行 |
 | 工程工作流 | 任务领取、租约、证据、模型路由 | 已实现 |
-| 自动化测试 | 85项通过 | v0.3.3当前回归基线，不代表v0.4.0完成 |
+| 自动化测试 | 125项通过 | v0.4.0 当前回归证据；生产变更后仍需重跑 |
 
 ### 2.2 已开工但未完成
 
 | 在建内容 | 当前文件 | 必须处理的问题 |
 |---|---|---|
 | 注册状态机 | `services/web_auth/registration.py` 等 | 当前正确执行单入口自动建号/登录；必须拆分login/register、密码、协议和目标错误 |
-| 领域 Schema | `services/web_domain/migrations/0002_web_domain.sql` | 仍包含 tenant、家庭、成员和学生档案；在首次应用前改为 user_id 模型 |
+| 领域 Schema | `services/web_domain/migrations/0002_web_domain.sql` 及后续迁移 | 个人 `user_id` 模型、迁移和跨用户隔离已本地验收；权威题库导入与生产回滚待完成 |
 | 领域 Store | `services/web_domain/mysql_store.py` | 仍提供家庭与学生方法；保留事务骨架，替换授权模型 |
 | 文件入口 | `services/web_files/intake.py` | 已有文件名、魔数、大小、DOCX 安全和哈希检查；尚未接 user_id、持久化和任务流程 |
 | 迁移账本 | `scripts/local_env.py`、`tests/test_local_env.py` | 已开始支持多迁移；尚未验证失败恢复、幂等和新版领域 Schema |
@@ -56,7 +56,7 @@
 
 ```mermaid
 flowchart LR
-    BASE[已完成：v0.4.0产品输入、品牌、v0.3.3认证基础] --> C[里程碑 C：v0.4.0认证契约收敛]
+    BASE[已完成：v0.4.0产品输入、品牌、本地认证候选] --> C[里程碑 C：v0.4.0认证契约收敛]
     C --> A[并行线 A：账号与会话]
     C --> D[并行线 B：user_id 领域数据]
     C --> F[并行线 C：文件与存储]
@@ -76,7 +76,7 @@ flowchart LR
 
 ## 5. 里程碑 C：v0.4.0 架构与认证契约收敛
 
-此里程碑完成前，不继续扩展旧 tenant/student/guardian 模型，也不应用当前 0002 领域迁移。
+此里程碑完成前，不继续扩展旧 tenant/student/guardian 设计；任何迁移必须以个人 `user_id` 模型、审查记录和可回滚证据为准。
 
 | ID | 任务 | 角色 | 依赖 | 交付物 | 完成证据 |
 |---|---|---|---|---|---|
@@ -107,7 +107,7 @@ flowchart LR
 
 | ID | 任务 | 角色 | 依赖 | 允许落点 | 完成证据 |
 |---|---|---|---|---|---|
-| DATA-101 | 重构未应用的 0002 领域迁移 | DATA | ARCH-002、ARCH-005 | `services/web_domain/migrations/0002_web_domain.sql` | 删除家庭/成员/学生产品表；个人表全部 user_id；公共题库边界明确；SQL 审查 |
+| DATA-101 | 对齐个人领域迁移 | DATA | ARCH-002、ARCH-005 | `services/web_domain/migrations/0002_web_domain.sql` 及后续迁移 | 个人表全部 user_id；旧 tenant/家庭/成员/学生设计不成为产品或授权依赖；公共题库边界明确；SQL 审查 |
 | DATA-102 | 重构领域 Store | DATA + BE | DATA-101 | `services/web_domain/mysql_store.py` | 移除 create_family/create_student；所有个人查询从会话 user_id 注入 |
 | DATA-103 | 建立领域约束与幂等键 | DATA | DATA-101 | Schema/Store | 重复上传、重复作答、重复正式入本和重复复习任务不产生重复记录 |
 | DATA-104 | 建立跨用户隔离矩阵 | QA + SEC | DATA-102 | tests | 用户 A 通过 ID、URL、对象键、任务和导出均不能访问用户 B 数据 |
@@ -139,7 +139,7 @@ flowchart LR
 | ENV-101 | 完成多迁移账本 | DATA + SRE | ARCH-005 | `scripts/local_env.py`、对应测试 | 已存在 0001 可登记；新迁移一次执行；失败不错误记账；再次运行幂等 |
 | ENV-102 | 扩展本地环境验收 | SRE + QA | AUTH-107、DATA-105、FILE-104 | local_env smoke | 独立登录/注册、密码/协议事务、建会话、上传和user_id查询使用真实MySQL/HTTP跑通 |
 
-基础完成门：四条并行线的目标任务通过复核，且本地环境能以新 Schema 启动；旧 tenant/student/guardian 不再是产品或授权前置条件。
+基础完成门：四条并行线的目标任务通过复核，且本地环境能以个人 Schema 启动；旧 tenant/student/guardian 不再是产品或授权前置条件。
 
 ## 7. 里程碑 V：首个可验证纵向闭环
 
@@ -192,8 +192,8 @@ flowchart LR
 
 | ID | 任务 | 角色 | 依赖 | 交付物 | 完成证据 |
 |---|---|---|---|---|---|
-| PRIV-501 | 数据导出 | BE + SEC | DATA-105、JOB-202 | 二次验证、异步导出、短时下载 | 不含其他用户/内部字段；过期、重试和审计有效 |
-| PRIV-502 | 账号注销与数据处置 | BE + DATA + SEC | PRIV-501 | 会话撤销、任务取消、删除/匿名化/保留分类 | 注销后登录、恢复和下载失败；分类处置可证明 |
+| PRIV-501 | 数据导出 | BE + SEC | DATA-105、JOB-202 | 敏感 OTP 二次验证、异步导出、短时下载 | 不含其他用户/内部字段；过期、重试和审计有效 |
+| PRIV-502 | 账号注销与数据处置 | BE + DATA + SEC | PRIV-501 | 敏感 OTP 二次验证、会话撤销、任务取消、删除/匿名化/保留分类 | 注销后登录、恢复和下载失败；分类处置可证明 |
 | OPS-501 | 最小运营与复核后台 | OPS + FE + SEC | REVIEW-301、JOB-202 | 风控、任务、内容质量和隐私工单 | 默认脱敏；敏感访问有理由、时限、审批和审计 |
 | OPS-502 | 日志、指标、追踪与成本 | SRE + AI | JOB-202、RECO-402 | trace_id、SLO、模型 token/耗时/成本和告警 | 日志无敏感正文；关键告警可演练；候选审计不可变 |
 | OPS-503 | 备份、恢复与降级 | SRE + DATA | E2E-401、PRIV-502 | MySQL/对象恢复、供应商失败、只读和回滚手册 | RPO/RTO 演练；恢复后哈希、权限和任务状态一致 |
@@ -264,7 +264,7 @@ flowchart LR
 
 1. 本文 ARCH、AUTH、DATA、FILE、ENV、JOB、INTAKE、AI、GRADE、ERROR、WORKBENCH、MIG、CONTENT、RECO、REVIEW、PDF、PROGRESS、PRIV、OPS、PERF、SEC 和 E2E 任务证据齐全；
 2. 所有活跃 P0 需求可追溯到实现、测试和演练；
-3. 新用户完成注册并自动登录后直接使用，不出现资料、身份、家庭、学生、监护或实名流程；
+3. 新用户完成注册并自动登录后直接使用，不出现资料、身份、家庭、学生、监护、实名、昵称或年级流程；
 4. user_id 隔离覆盖 API、数据库、对象键、任务、导出和运营访问；
 5. 至少一次生产等价流程从注册运行到复习 PDF、导出和注销；
 6. 备份恢复、验证码攻击、恶意文件、Worker 中断、重复投递和跨用户访问演练通过；

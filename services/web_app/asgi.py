@@ -46,6 +46,24 @@ class NotebookAsgiApp:
             "/assets/branding/logo-symbol-color-128-v1.png": (root / "assets" / "branding" / "logo-symbol-color-128-v1.png", "image/png", True),
         }
 
+    def resume_pending_deletions(self) -> int:
+        """Complete only accounts whose authoritative auth state is disabled."""
+        resumed = 0
+        for user_id in self.notebook.pending_deletion_user_ids():
+            try:
+                if not self.auth_service.deactivate_account(user_id):
+                    self.notebook.record_deletion_error(user_id=user_id, code="auth_deactivation_failed")
+                    continue
+            except Exception:
+                self.notebook.record_deletion_error(user_id=user_id, code="auth_deactivation_failed")
+                continue
+            try:
+                self.notebook.complete_user_deletion(user_id=user_id)
+                resumed += 1
+            except Exception:
+                pass  # The domain service preserves its specific retryable error code.
+        return resumed
+
     async def __call__(self, scope: dict[str, Any], receive: Receive, send: Send) -> None:
         path = str(scope.get("path", ""))
         if path == "/healthz" or path.startswith("/v1/auth/") or path in {"/v1/session", "/v1/sessions"}:
@@ -61,6 +79,8 @@ class NotebookAsgiApp:
             return
         method = str(scope.get("method", ""))
         static = self.static_files.get(path)
+        if path in {"/login", "/register", "/legal/terms", "/legal/privacy"}:
+            static = self.static_files["/"]
         if method == "GET" and static:
             await self._asset(send, *static)
             return
@@ -80,9 +100,58 @@ class NotebookAsgiApp:
                 pending = await self._sync(self.notebook.store.pending_job_count, user_id=user.user_id)
                 progress = await self._sync(self.notebook.store.progress, user_id=user.user_id)
                 await self._json(send, 200, {"error_count": len(items), "pending_task_count": pending, "due_review_count": progress["due_review_count"], "recommendation_gap_count": progress["recommendation_gap_count"], "recent_errors": [self._error_entry(item) for item in items[:5]]})
+            elif path == "/v1/exports" and method == "POST":
+                key = self._key(headers)
+                payload = await self._json_body(receive)
+                verified = await self._verify_sensitive(scope, headers, token or "", payload, "export")
+                if verified.user_id != user.user_id:
+                    raise SensitiveVerificationError
+                job = await self._sync(self.notebook.create_export, user_id=user.user_id, idempotency_key=key)
+                await self._json(send, 201, self._export_created(job))
+            elif path.startswith("/v1/exports/") and path.endswith("/download") and method == "GET":
+                job_id = path.split("/")[-2]
+                filename, content = await self._sync(self.notebook.download_export, user_id=user.user_id, job_id=job_id)
+                await self._bytes(send, 200, content, "application/json", filename)
+            elif path.startswith("/v1/exports/") and method == "GET":
+                job = await self._sync(self.notebook.store.get_job, user_id=user.user_id, job_id=path.rsplit("/", 1)[1])
+                if not job or job.job_type != "export":
+                    raise LookupError
+                await self._json(send, 200, self._export_job(job))
+            elif path == "/v1/account" and method == "DELETE":
+                payload = await self._json_body(receive)
+                if set(payload) != {"phone", "challenge_token", "code", "confirmation"} or payload["confirmation"] != "DELETE":
+                    raise ValueError("invalid deletion confirmation")
+                verified = await self._verify_sensitive(scope, headers, token or "", payload, "delete")
+                if verified.user_id != user.user_id:
+                    raise SensitiveVerificationError
+                try:
+                    await self._sync(self.notebook.prepare_user_deletion, user_id=user.user_id)
+                except Exception:
+                    await self._error(send, 503, "failed_retryable")
+                    return
+                try:
+                    deactivated = await self._sync(self.auth_service.deactivate_account, user.user_id)
+                except Exception:
+                    deactivated = False
+                if not deactivated:
+                    try:
+                        await self._sync(self.notebook.record_deletion_error, user_id=user.user_id, code="auth_deactivation_failed")
+                    except Exception:
+                        pass
+                    await self._error(send, 503, "failed_retryable")
+                    return
+                try:
+                    await self._sync(self.notebook.complete_user_deletion, user_id=user.user_id)
+                except Exception:
+                    await self._error(send, 503, "failed_retryable")
+                    return
+                expired = f"{self.session_cookie}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax".encode("ascii")
+                await send({"type": "http.response.start", "status": 204, "headers": [(b"set-cookie", expired), (b"cache-control", b"no-store")]})
+                await send({"type": "http.response.body", "body": b""})
             elif path == "/v1/files" and method == "POST":
+                key = self._key(headers)
                 purpose, filename, content = await self._multipart(receive, headers)
-                record = await self._sync(self.notebook.upload, user_id=user.user_id, purpose=purpose, original_name=filename, content=content)
+                record = await self._sync(self.notebook.upload, user_id=user.user_id, purpose=purpose, original_name=filename, content=content, idempotency_key=key)
                 await self._json(send, 201, {"file_id": record.file_id, "status": record.status, "content_sha256": record.content_sha256})
             elif path == "/v1/intakes" and method == "POST":
                 payload = await self._json_body(receive)
@@ -197,6 +266,10 @@ class NotebookAsgiApp:
             await self._error(send, 413, "request_too_large")
         except LookupError:
             await self._error(send, 404, "not_found")
+        except SensitiveVerificationError:
+            await self._error(send, 403, "sensitive_verification_failed")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
         except RuntimeError as exc:
             code = str(exc) if str(exc) in {"input_version_changed", "waiting_confirmation", "failed_final", "conflict"} else "conflict"
             await self._error(send, 422 if code == "failed_final" else 409, code)
@@ -240,6 +313,27 @@ class NotebookAsgiApp:
         if purpose not in {"exam", "answer_photo", "question_image"}:
             raise ValueError("unsupported public upload purpose")
         return purpose, filename, content
+
+    async def _verify_sensitive(self, scope: dict[str, Any], headers: dict[str, str], session_token: str, payload: dict[str, Any], action: str) -> Any:
+        if set(payload) - {"phone", "challenge_token", "code", "confirmation"} or not all(isinstance(payload.get(key), str) for key in {"phone", "challenge_token", "code"}):
+            raise ValueError("invalid sensitive request")
+        client = scope.get("client")
+        device_id = headers.get("x-device-id")
+        if not client or not client[0] or not device_id:
+            raise ValueError("client context required")
+        verified = await self._sync(
+            self.auth_service.verify_sensitive,
+            session_token,
+            payload["phone"],
+            payload["challenge_token"],
+            payload["code"],
+            action,
+            ip_address=str(client[0]),
+            device_id=device_id,
+        )
+        if verified is None:
+            raise SensitiveVerificationError
+        return verified
 
     @staticmethod
     async def _sync(function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
@@ -290,6 +384,22 @@ class NotebookAsgiApp:
             payload["download_url"] = f"/v1/practice-pdfs/{value.job_id}/download"
         return payload
 
+    @staticmethod
+    def _export_job(value: Job) -> dict[str, Any]:
+        if not value.checkpoint or "expires_at" not in value.checkpoint:
+            raise LookupError("export not found")
+        payload = {"job_id": value.job_id, "status": value.status, "expires_at": value.checkpoint["expires_at"]}
+        if value.status == "completed":
+            payload["download_url"] = f"/v1/exports/{value.job_id}/download"
+        return payload
+
+    @staticmethod
+    def _export_created(value: Job) -> dict[str, Any]:
+        payload = NotebookAsgiApp._export_job(value)
+        if "download_url" not in payload:
+            raise RuntimeError("export_not_completed")
+        return {key: payload[key] for key in ("job_id", "download_url", "expires_at")}
+
     async def _error(self, send: Send, status: int, code: str) -> None:
         await self._json(send, status, {"error": {"code": code, "message": code, "retryable": code in {"failed_retryable", "temporarily_unavailable", "rate_limited"}, "request_id": secrets.token_hex(8)}})
 
@@ -313,6 +423,10 @@ class NotebookAsgiApp:
         cache = b"public,max-age=31536000,immutable" if immutable else b"no-cache"
         await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", media_type.encode("ascii")), (b"content-length", str(len(body)).encode("ascii")), (b"cache-control", cache), (b"x-content-type-options", b"nosniff")]})
         await send({"type": "http.response.body", "body": body})
+
+
+class SensitiveVerificationError(RuntimeError):
+    pass
 
 
 class RequestTooLarge(ValueError):

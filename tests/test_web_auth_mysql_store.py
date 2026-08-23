@@ -56,6 +56,7 @@ class MySqlRegistrationStoreTests(unittest.TestCase):
     def reserve(self, store: MySqlRegistrationStore):
         return store.reserve_send(
             phone_hash="p" * 64,
+            cooldown_hash="c" * 64,
             ip_hash="i" * 64,
             ip_prefix_hash="n" * 64,
             device_hash="d" * 64,
@@ -121,20 +122,26 @@ class MySqlRegistrationStoreTests(unittest.TestCase):
         challenge = (
             "p" * 64,
             "t" * 64,
+            "register",
             "correct-hash",
             "sent",
             0,
             (NOW + timedelta(minutes=5)).replace(tzinfo=None),
         )
         connection = FakeConnection([challenge])
-        status, user = self.store(connection).register(
+        status, user = self.store(connection).complete(
             challenge_id="c" * 32,
+            purpose="register",
             phone_hash="p" * 64,
             tenant_hash="t" * 64,
             phone_last4="8000",
             code_hash="wrong-hash",
             session_hash="s" * 64,
             session_expires_at=NOW + timedelta(days=30),
+            password_salt=b"s" * 16,
+            password_hash=b"h" * 64,
+            password_params="scrypt",
+            agreement_version="terms:t|privacy:p",
             now=NOW,
             max_attempts=5,
         )
@@ -143,6 +150,61 @@ class MySqlRegistrationStoreTests(unittest.TestCase):
         self.assertEqual((connection.committed, connection.rolled_back), (1, 0))
         self.assertTrue(
             any("SET attempt_count=%s" in query for query, _ in connection.cursor_instance.executed)
+        )
+
+    def test_prevalidation_counts_wrong_code_without_password_work(self) -> None:
+        challenge = (
+            "p" * 64,
+            "t" * 64,
+            "register",
+            "correct-hash",
+            "sent",
+            4,
+            (NOW + timedelta(minutes=5)).replace(tzinfo=None),
+        )
+        connection = FakeConnection([challenge])
+        status = self.store(connection).prevalidate_code(
+            challenge_id="c" * 32,
+            purpose="register",
+            phone_hash="p" * 64,
+            tenant_hash="t" * 64,
+            code_hash="wrong-hash",
+            now=NOW,
+            max_attempts=5,
+        )
+        self.assertEqual(status, RegistrationStatus.LOCKED)
+        self.assertEqual((connection.committed, connection.rolled_back), (1, 0))
+        updates = [
+            args
+            for query, args in connection.cursor_instance.executed
+            if "SET attempt_count=%s" in query
+        ]
+        self.assertEqual(updates, [(5, "locked", "c" * 32)])
+
+    def test_prevalidation_accepts_correct_code_without_consuming_it(self) -> None:
+        challenge = (
+            "p" * 64,
+            "t" * 64,
+            "register",
+            "correct-hash",
+            "sent",
+            0,
+            (NOW + timedelta(minutes=5)).replace(tzinfo=None),
+        )
+        connection = FakeConnection([challenge])
+        status = self.store(connection).prevalidate_code(
+            challenge_id="c" * 32,
+            purpose="register",
+            phone_hash="p" * 64,
+            tenant_hash="t" * 64,
+            code_hash="correct-hash",
+            now=NOW,
+            max_attempts=5,
+        )
+        self.assertEqual(status, RegistrationStatus.COMPLETE)
+        self.assertEqual((connection.committed, connection.rolled_back), (0, 1))
+        self.assertFalse(
+            any("status='verified'" in query for query, _ in connection.cursor_instance.executed)
         )
 
     def test_migration_contains_persistent_limits_events_and_audit_dimensions(self) -> None:
@@ -154,6 +216,12 @@ class MySqlRegistrationStoreTests(unittest.TestCase):
         self.assertIn("CREATE TABLE auth_sms_send_events", sql)
         self.assertIn("ip_prefix_hash", sql)
         self.assertIn("tenant_scope_hash", sql)
+
+    def test_v040_migration_adds_password_agreement_and_sensitive_purposes(self) -> None:
+        sql = (Path(__file__).resolve().parents[1] / "services/web_auth/migrations/0005_auth_v040.sql").read_text(encoding="utf-8")
+        self.assertIn("auth_password_credentials", sql)
+        self.assertIn("auth_agreement_acceptances", sql)
+        self.assertIn("sensitive_export", sql)
 
 
 if __name__ == "__main__":

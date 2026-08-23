@@ -41,6 +41,7 @@ class FileRecord:
     media_type: str
     byte_size: int
     status: str
+    original_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -116,12 +117,14 @@ class MySqlDomainStore:
         media_type: str,
         byte_size: int,
         status: str = "ready",
+        idempotency_key: str | None = None,
     ) -> FileRecord:
         user = _required(user_id, "user_id", 32)
-        if purpose not in {"exam", "answer_photo", "question_image", "practice_pdf"}:
+        if purpose not in {"exam", "answer_photo", "question_image", "practice_pdf", "export"}:
             raise ValueError("unsupported upload purpose")
         proposed = uuid.uuid4().hex
         now = _utcnow()
+        request_digest = hashlib.sha256(json.dumps([purpose, original_name, content_sha256, media_type, byte_size], ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
         connection = self._connect()
         cursor = connection.cursor()
         try:
@@ -129,6 +132,20 @@ class MySqlDomainStore:
             cursor.execute("SELECT id FROM web_users WHERE id=%s AND status='active' FOR UPDATE", (user,))
             if not cursor.fetchone():
                 raise PermissionError("active account required")
+            if idempotency_key:
+                key = _required(idempotency_key, "idempotency_key")
+                cursor.execute(
+                    "SELECT i.request_sha256,f.id,f.user_id,f.purpose,f.object_key,f.content_sha256,f.media_type,f.byte_size,f.status,f.original_name "
+                    "FROM file_upload_idempotency i JOIN web_files f ON f.id=i.file_id "
+                    "WHERE i.user_id=%s AND i.idempotency_key=%s FOR UPDATE",
+                    (user, key),
+                )
+                previous = cursor.fetchone()
+                if previous:
+                    if str(previous[0]) != request_digest:
+                        raise RuntimeError("conflict")
+                    connection.commit()
+                    return FileRecord(str(previous[1]), str(previous[2]), str(previous[3]), str(previous[4]), str(previous[5]), str(previous[6]), int(previous[7]), str(previous[8]), str(previous[9]))
             cursor.execute(
                 "INSERT INTO web_files (id,user_id,purpose,original_name,object_key,content_sha256,"
                 "media_type,byte_size,status,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
@@ -136,15 +153,20 @@ class MySqlDomainStore:
                 (proposed, user, purpose, original_name, object_key, content_sha256, media_type, byte_size, status, now, now),
             )
             cursor.execute(
-                "SELECT id,user_id,purpose,object_key,content_sha256,media_type,byte_size,status "
+                "SELECT id,user_id,purpose,object_key,content_sha256,media_type,byte_size,status,original_name "
                 "FROM web_files WHERE user_id=%s AND purpose=%s AND content_sha256=%s FOR UPDATE",
                 (user, purpose, content_sha256),
             )
             row = cursor.fetchone()
             if not row:
                 raise RuntimeError("file metadata did not persist")
+            if idempotency_key:
+                cursor.execute(
+                    "INSERT INTO file_upload_idempotency (user_id,idempotency_key,request_sha256,file_id,created_at) VALUES (%s,%s,%s,%s,%s)",
+                    (user, key, request_digest, str(row[0]), now),
+                )
             connection.commit()
-            return FileRecord(str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]), str(row[5]), int(row[6]), str(row[7]))
+            return FileRecord(str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]), str(row[5]), int(row[6]), str(row[7]), str(row[8]))
         except Exception:
             connection.rollback()
             raise
@@ -157,12 +179,12 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             cursor.execute(
-                "SELECT id,user_id,purpose,object_key,content_sha256,media_type,byte_size,status "
+                "SELECT id,user_id,purpose,object_key,content_sha256,media_type,byte_size,status,original_name "
                 "FROM web_files WHERE user_id=%s AND id=%s AND status<>'deleted'",
                 (user_id, file_id),
             )
             row = cursor.fetchone()
-            return FileRecord(str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]), str(row[5]), int(row[6]), str(row[7])) if row else None
+            return FileRecord(str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]), str(row[5]), int(row[6]), str(row[7]), str(row[8])) if row else None
         finally:
             cursor.close()
             connection.close()
@@ -696,6 +718,235 @@ class MySqlDomainStore:
             row = cursor.fetchone()
             connection.commit()
             return Job(job_id, user_id, "practice_pdf", str(row[0]), "completed", checkpoint, None)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def create_export_job(self, *, user_id: str, idempotency_key: str, expires_at: datetime) -> Job:
+        key = _required(idempotency_key, "idempotency_key")
+        now = _utcnow()
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute("SELECT id FROM web_users WHERE id=%s AND status='active' FOR UPDATE", (user_id,))
+            if not cursor.fetchone():
+                raise PermissionError("active account required")
+            proposed = uuid.uuid4().hex
+            digest = hashlib.sha256(b"personal-export-v1").hexdigest()
+            cursor.execute(
+                "INSERT INTO web_jobs (id,user_id,job_type,resource_type,resource_id,idempotency_key,input_sha256,status,checkpoint_json,created_at,updated_at) "
+                "VALUES (%s,%s,'export','export',%s,%s,%s,'queued',%s,%s,%s) ON DUPLICATE KEY UPDATE updated_at=updated_at",
+                (proposed, user_id, proposed, key, digest, json.dumps({"expires_at": expires_at.isoformat()}), now, now),
+            )
+            cursor.execute("SELECT id,resource_id,status,checkpoint_json,last_error_code FROM web_jobs WHERE user_id=%s AND job_type='export' AND idempotency_key=%s FOR UPDATE", (user_id, key))
+            row = cursor.fetchone()
+            if not row:
+                raise RuntimeError("export job did not persist")
+            connection.commit()
+            return Job(str(row[0]), user_id, "export", str(row[1]), str(row[2]), self._json(row[3]), row[4])
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def complete_export_job(self, *, user_id: str, job_id: str, file_id: str, expires_at: datetime) -> Job:
+        checkpoint = {"file_id": file_id, "expires_at": expires_at.isoformat()}
+        connection = self._connect()
+        cursor = connection.cursor()
+        now = _utcnow()
+        try:
+            connection.begin()
+            changed = cursor.execute("UPDATE web_jobs SET status='completed',checkpoint_json=%s,result_json=%s,updated_at=%s WHERE id=%s AND user_id=%s AND job_type='export'", (json.dumps(checkpoint), json.dumps(checkpoint), now, job_id, user_id))
+            if changed != 1:
+                raise LookupError("export not found")
+            cursor.execute("SELECT resource_id FROM web_jobs WHERE id=%s AND user_id=%s", (job_id, user_id))
+            row = cursor.fetchone()
+            connection.commit()
+            return Job(job_id, user_id, "export", str(row[0]), "completed", checkpoint, None)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def claim_export_download(self, *, user_id: str, job_id: str, maximum: int) -> bool:
+        connection = self._connect()
+        cursor = connection.cursor()
+        now = _utcnow()
+        try:
+            connection.begin()
+            cursor.execute("SELECT id FROM web_jobs WHERE id=%s AND user_id=%s AND job_type='export' FOR UPDATE", (job_id, user_id))
+            if not cursor.fetchone():
+                raise LookupError("export not found")
+            cursor.execute("SELECT COUNT(*) FROM domain_audit_events WHERE user_id=%s AND event_type='export.downloaded' AND resource_type='export' AND resource_id=%s", (user_id, job_id))
+            row = cursor.fetchone()
+            completed = int(row[0]) if row else 0
+            allowed = completed < maximum
+            event_type = "export.downloaded" if allowed else "export.download_denied"
+            outcome = "allowed" if allowed else "download_limit"
+            cursor.execute(
+                "INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,%s,'export',%s,%s,%s)",
+                (user_id, event_type, job_id, json.dumps({"outcome": outcome, "successful_downloads": completed}), now),
+            )
+            connection.commit()
+            return allowed
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def export_data(self, *, user_id: str) -> dict[str, Any]:
+        """Return the frozen user business export; never auth, audit, hashes or object keys."""
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT id,purpose,original_name,media_type,byte_size,status,created_at,updated_at FROM web_files WHERE user_id=%s ORDER BY created_at,id", (user_id,))
+            files = [dict(zip(("file_id", "purpose", "original_name", "media_type", "byte_size", "status", "created_at", "updated_at"), row)) for row in cursor.fetchall()]
+            cursor.execute("SELECT id,file_id,item_no,input_version,status,question_text,answer_text,created_at,updated_at FROM intake_items WHERE user_id=%s ORDER BY created_at,id", (user_id,))
+            intakes = [dict(zip(("intake_id", "file_id", "item_no", "input_version", "status", "question_text", "answer_text", "created_at", "updated_at"), row)) for row in cursor.fetchall()]
+            cursor.execute("SELECT id,attempt_id,input_version,verdict,first_error,evidence_text,confidence,status,created_at FROM grade_candidates WHERE user_id=%s ORDER BY created_at,id", (user_id,))
+            grade_candidates = [dict(zip(("candidate_id", "attempt_id", "input_version", "verdict", "first_error", "evidence", "confidence", "status", "created_at"), row)) for row in cursor.fetchall()]
+            cursor.execute("SELECT id,attempt_id,question_text,answer_text,first_error,status,created_at,updated_at FROM error_notebook_entries WHERE user_id=%s ORDER BY created_at,id", (user_id,))
+            errors = [dict(zip(("error_id", "attempt_id", "question_text", "answer_text", "first_error", "status", "created_at", "updated_at"), row)) for row in cursor.fetchall()]
+            cursor.execute("SELECT id,intake_id,input_version,question_text,answer_text,status,created_at,updated_at FROM attempts WHERE user_id=%s ORDER BY created_at,id", (user_id,))
+            attempts = [dict(zip(("attempt_id", "intake_id", "input_version", "question_text", "answer_text", "status", "created_at", "updated_at"), row)) for row in cursor.fetchall()]
+            cursor.execute("SELECT id,error_id,question_id,reason,status,created_at FROM recommendations WHERE user_id=%s ORDER BY created_at,id", (user_id,))
+            recommendations = [dict(zip(("recommendation_id", "error_id", "question_id", "reason", "status", "created_at"), row)) for row in cursor.fetchall()]
+            cursor.execute("SELECT id,error_id,stage,due_at,status,created_at FROM review_tasks WHERE user_id=%s ORDER BY created_at,id", (user_id,))
+            reviews = [dict(zip(("review_id", "error_id", "stage", "due_at", "status", "created_at"), row)) for row in cursor.fetchall()]
+            cursor.execute("SELECT id,review_task_id,error_id,stage,result,completed_at FROM review_attempts WHERE user_id=%s ORDER BY completed_at,id", (user_id,))
+            review_attempts = [dict(zip(("review_attempt_id", "review_id", "error_id", "stage", "result", "completed_at"), row)) for row in cursor.fetchall()]
+            cursor.execute("SELECT id,job_type,resource_type,resource_id,status,created_at,updated_at FROM web_jobs WHERE user_id=%s AND job_type<>'export' ORDER BY created_at,id", (user_id,))
+            jobs = [dict(zip(("job_id", "job_type", "resource_type", "resource_id", "status", "created_at", "updated_at"), row)) for row in cursor.fetchall()]
+            return {"schema_version": 2, "files": files, "intakes": intakes, "attempts": attempts, "grade_candidates": grade_candidates, "errors": errors, "recommendations": recommendations, "review_tasks": reviews, "review_attempts": review_attempts, "jobs": jobs}
+        finally:
+            cursor.close()
+            connection.close()
+
+    def begin_user_deletion(self, *, user_id: str) -> dict[str, Any]:
+        """Durably record pending before any cross-service account mutation."""
+        now = _utcnow()
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute(
+                "INSERT INTO account_deletions (user_id,requested_at,status,updated_at,last_error_code) VALUES (%s,%s,'pending',%s,NULL) "
+                "ON DUPLICATE KEY UPDATE updated_at=updated_at",
+                (user_id, now, now),
+            )
+            cursor.execute("SELECT status,updated_at,last_error_code FROM account_deletions WHERE user_id=%s FOR UPDATE", (user_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise RuntimeError("deletion marker did not persist")
+            connection.commit()
+            return {"status": str(row[0]), "updated_at": row[1], "last_error_code": row[2]}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def deletion_status(self, *, user_id: str) -> dict[str, Any] | None:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT status,updated_at,last_error_code FROM account_deletions WHERE user_id=%s", (user_id,))
+            row = cursor.fetchone()
+            return {"status": str(row[0]), "updated_at": row[1], "last_error_code": row[2]} if row else None
+        finally:
+            cursor.close()
+            connection.close()
+
+    def deactivate_user_data(self, *, user_id: str) -> None:
+        """Idempotently make retained business rows inaccessible after the durable pending marker."""
+        self.begin_user_deletion(user_id=user_id)
+        now = _utcnow()
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute("UPDATE web_jobs SET status='cancelled',lease_owner=NULL,lease_expires_at=NULL,updated_at=%s WHERE user_id=%s AND status IN ('queued','running','waiting_confirmation','failed_retryable')", (now, user_id))
+            cursor.execute("UPDATE web_files SET status='deleted',updated_at=%s WHERE user_id=%s AND status<>'deleted'", (now, user_id))
+            cursor.execute("UPDATE intake_items SET status='cancelled',updated_at=%s WHERE user_id=%s AND status IN ('extracting','waiting_confirmation','confirmed')", (now, user_id))
+            cursor.execute("UPDATE attempts SET status='cancelled',updated_at=%s WHERE user_id=%s AND status IN ('grading','grade_ready')", (now, user_id))
+            cursor.execute("UPDATE review_tasks SET status='cancelled' WHERE user_id=%s AND status IN ('pending','ready')", (user_id,))
+            cursor.execute("UPDATE recommendations SET status='withdrawn' WHERE user_id=%s AND status IN ('candidate','assigned','completed')", (user_id,))
+            cursor.execute("UPDATE error_notebook_entries SET status='removed',updated_at=%s WHERE user_id=%s AND status<>'removed'", (now, user_id))
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            self._deletion_error(user_id=user_id, code="domain_cleanup_failed")
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def deletion_file_keys(self, *, user_id: str) -> list[str]:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT object_key FROM web_files WHERE user_id=%s AND status='deleted'", (user_id,))
+            return [str(row[0]) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            connection.close()
+
+    def pending_deletion_user_ids(self) -> list[str]:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT user_id FROM account_deletions WHERE status='pending' ORDER BY user_id")
+            return [str(row[0]) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            connection.close()
+
+    def complete_user_deletion(self, *, user_id: str) -> dict[str, Any]:
+        now = _utcnow()
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            changed = cursor.execute("UPDATE account_deletions SET status='completed',updated_at=%s,last_error_code=NULL WHERE user_id=%s AND status='pending'", (now, user_id))
+            if changed != 1:
+                cursor.execute("SELECT status,updated_at,last_error_code FROM account_deletions WHERE user_id=%s FOR UPDATE", (user_id,))
+                row = cursor.fetchone()
+                if not row:
+                    raise LookupError("deletion not found")
+                connection.commit()
+                return {"status": str(row[0]), "updated_at": row[1], "last_error_code": row[2]}
+            cursor.execute("SELECT status,updated_at,last_error_code FROM account_deletions WHERE user_id=%s FOR UPDATE", (user_id,))
+            row = cursor.fetchone()
+            connection.commit()
+            return {"status": str(row[0]), "updated_at": row[1], "last_error_code": row[2]}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def record_deletion_error(self, *, user_id: str, code: str) -> None:
+        self._deletion_error(user_id=user_id, code=code)
+
+    def _deletion_error(self, *, user_id: str, code: str) -> None:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute("UPDATE account_deletions SET status='pending',updated_at=%s,last_error_code=%s WHERE user_id=%s AND status='pending'", (_utcnow(), code[:64], user_id))
+            connection.commit()
         except Exception:
             connection.rollback()
             raise

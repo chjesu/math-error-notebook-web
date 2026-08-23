@@ -2,7 +2,7 @@
 
 > 文档基线：v0.4.0
 > 基线日期：2026-08-23
-> 当前状态：登录/注册产品设计已更新；当前代码和 OpenAPI 仍为 v0.3.3，v0.4.0 认证重构待开发
+> 当前状态：v0.4.0 本地候选已实现；OpenAPI 为 30 paths，133 项测试通过，真实 MySQL smoke、独立安全复核与浏览器验收已完成。生产门禁未通过。
 
 ## 当前产品口径
 
@@ -13,7 +13,7 @@
 5. 一个账号对应一个私有错题本，所有数据以服务端 user_id 隔离。
 6. 上传、判题、错因和推荐先作为候选，确认和质量门后才成为正式记录。
 7. 推荐只使用已验证且授权允许的题。
-8. 云部署继续后置，必须先完成本地全链路与安全验收。
+8. 本地完整手工学习闭环已验收；云部署继续后置，必须完成独立安全复核和全部生产门禁。
 
 ## 文档导航
 
@@ -21,19 +21,19 @@
 |---|---|---:|---|
 | [01-DISCUSSION-MINUTES.md](./01-DISCUSSION-MINUTES.md) | 当前决策、范围和被替代决策 | v0.4.0 | 已确认 |
 | [02-PRODUCT-REQUIREMENTS.md](./02-PRODUCT-REQUIREMENTS.md) | 活跃需求、验收标准、指标和暂缓需求 | v0.4.0 | 已确认 |
-| [03-TECHNICAL-ARCHITECTURE.md](./03-TECHNICAL-ARCHITECTURE.md) | 最小系统架构、状态、迁移与安全边界 | v0.4.0目标 | 待实现 |
-| [04-IMPLEMENTATION-PLAN.md](./04-IMPLEMENTATION-PLAN.md) | 分批实施、迁移和完成证据 | v0.4.0 | 待执行 |
+| [03-TECHNICAL-ARCHITECTURE.md](./03-TECHNICAL-ARCHITECTURE.md) | 最小系统架构、状态、迁移与安全边界 | v0.4.0 | 已同步实现；生产门禁未完成 |
+| [04-IMPLEMENTATION-PLAN.md](./04-IMPLEMENTATION-PLAN.md) | 分批实施、迁移和完成证据 | v0.4.0 | 本地候选已落地；生产批次待执行 |
 | [05-TEST-ACCEPTANCE-OPERATIONS.md](./05-TEST-ACCEPTANCE-OPERATIONS.md) | 安全与学习闭环验收 | v0.4.0 | 已确认 |
 | [06-WORKBREAKDOWN-CODEX-WORKFLOW.md](./06-WORKBREAKDOWN-CODEX-WORKFLOW.md) | 角色、任务领取、恢复与模型路由 | v0.4.0 | 待更新工作流实例 |
 | [07-SMS-PROVIDER-RUICHENG.md](./07-SMS-PROVIDER-RUICHENG.md) | 短信适配、密钥和网络约束 | v0.2.0 | 待验收 |
-| [08-IMPLEMENTATION-EVIDENCE.md](./08-IMPLEMENTATION-EVIDENCE.md) | 当前实现、测试、提交、本地环境与剩余门禁 | v0.3.3 | 旧基线证据 |
+| [08-IMPLEMENTATION-EVIDENCE.md](./08-IMPLEMENTATION-EVIDENCE.md) | 当前实现、测试、本地环境与剩余门禁 | v0.4.0 | 本地闭环已验收；生产门禁未完成 |
 | [09-PRODUCT-FUNCTION-DESIGN.md](./09-PRODUCT-FUNCTION-DESIGN.md) | 页面、流程、异常恢复和产品事件 | v0.4.0 | 已确认 |
 | [10-UX-UI-INTERACTION-DESIGN.md](./10-UX-UI-INTERACTION-DESIGN.md) | 信息架构、线框、视觉规范、交互状态和前端顺序 | v0.4.0 | 核心流程可评审 |
 | [11-REMAINING-FUNCTION-WBS.md](./11-REMAINING-FUNCTION-WBS.md) | 剩余功能任务、依赖、并行线、验收证据和完成定义 | v0.4.0 | 可执行基线 |
-| [12-ARCHITECTURE-DATA-API-CONTRACT.md](./12-ARCHITECTURE-DATA-API-CONTRACT.md) | 权限矩阵、user_id Schema、候选/正式记录、API 错误与迁移契约 | v0.4.0目标 | OpenAPI待升级 |
-| [13-LOGIN-REGISTER-PRD.md](./13-LOGIN-REGISTER-PRD.md) | 登录/注册页面、字段、状态、风控、目标 API 与验收标准 | v0.4.0 | 已确认，待实现 |
+| [12-ARCHITECTURE-DATA-API-CONTRACT.md](./12-ARCHITECTURE-DATA-API-CONTRACT.md) | 权限矩阵、user_id Schema、候选/正式记录、API 错误与迁移契约 | v0.4.0 | 已与 30 paths OpenAPI 同步 |
+| [13-LOGIN-REGISTER-PRD.md](./13-LOGIN-REGISTER-PRD.md) | 登录/注册页面、字段、状态、风控、目标 API 与验收标准 | v0.4.0 | 本地实现已验收；生产安全门禁未完成 |
 | [14-CODEX-MULTI-AGENT-TEAM.md](./14-CODEX-MULTI-AGENT-TEAM.md) | 多角色子智能体、岗位能力、并行工作流、模型路由和治理边界 | v1.0 | 已建立 |
-| [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前首题闭环机器可校验 API 契约 | v0.3.3 | 认证部分待v0.4.0升级 |
+| [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前完整本地候选机器可校验 API 契约 | v0.4.0 | 30 paths；生产部署前仍需契约复核 |
 
 ## 活跃需求
 

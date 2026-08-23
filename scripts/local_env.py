@@ -41,6 +41,11 @@ MIGRATIONS = (
     ROOT / "services" / "web_domain" / "migrations" / "0002_web_domain.sql",
     ROOT / "services" / "web_auth" / "migrations" / "0003_account_simplification.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0004_learning_loop.sql",
+    ROOT / "services" / "web_auth" / "migrations" / "0005_auth_v040.sql",
+    ROOT / "services" / "web_domain" / "migrations" / "0006_privacy.sql",
+    ROOT / "services" / "web_auth" / "migrations" / "0007_auth_security.sql",
+    ROOT / "services" / "web_domain" / "migrations" / "0008_privacy_recovery.sql",
+    ROOT / "services" / "web_domain" / "migrations" / "0009_file_upload_idempotency.sql",
 )
 
 
@@ -264,12 +269,31 @@ def _apply_migrations() -> None:
                 )
                 existing[name] = digest
                 continue
-        _run_sql(
-            migration.read_text(encoding="utf-8"),
-            root=True,
-            database=True,
-            label=f"apply {name}",
-        )
+        migration_sql = migration.read_text(encoding="utf-8")
+        if name == "0005_auth_v040.sql":
+            partial = _run_sql(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() "
+                "AND table_name IN ('auth_password_credentials','auth_agreement_acceptances');",
+                root=True,
+                database=True,
+                label="0005 partial schema check",
+            )
+            if partial.strip() != "0":
+                migration_sql = (migration.with_name("0007_auth_security.sql")).read_text(encoding="utf-8")
+        elif name == "0008_privacy_recovery.sql":
+            applied_columns = _run_sql(
+                "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() "
+                "AND table_name='account_deletions' "
+                "AND column_name IN ('status','updated_at','last_error_code');",
+                root=True,
+                database=True,
+                label="0008 recovery schema check",
+            )
+            if applied_columns.strip() == "3":
+                migration_sql = "SELECT 1;"
+            elif applied_columns.strip() != "0":
+                raise RuntimeError("0008 privacy recovery schema is partially applied")
+        _run_sql(migration_sql, root=True, database=True, label=f"apply {name}")
         _run_sql(
             f"INSERT INTO web_schema_migrations (name, sha256, applied_at) VALUES ('{name}', '{digest}', UTC_TIMESTAMP(6));",
             root=True,
@@ -405,6 +429,20 @@ def _clear_test_data() -> None:
     cursor = connection.cursor()
     try:
         for table in (
+            "account_deletions",
+            "file_upload_idempotency",
+            "review_attempts",
+            "recommendations",
+            "review_tasks",
+            "domain_audit_events",
+            "error_notebook_entries",
+            "grade_candidates",
+            "attempts",
+            "web_jobs",
+            "intake_items",
+            "web_files",
+            "auth_agreement_acceptances",
+            "auth_password_credentials",
             "auth_sessions",
             "auth_sms_challenges",
             "auth_sms_send_events",
@@ -423,6 +461,47 @@ def _clear_test_data() -> None:
         connection.close()
 
 
+def _live_schema_ready() -> bool:
+    """Verify the live ledger and required v0.4 tables, not only the ready file."""
+
+    if not _is_running():
+        return False
+    try:
+        rows = _run_sql(
+            "SELECT name,COALESCE(sha256,'') FROM web_schema_migrations ORDER BY name;",
+            root=False,
+            database=True,
+            label="live migration ledger check",
+        )
+        applied = {
+            parts[0]: parts[1] if len(parts) > 1 else ""
+            for line in rows.splitlines()
+            if line.strip()
+            for parts in [line.split("\t", 1)]
+        }
+        for migration in MIGRATIONS:
+            if applied.get(migration.name) != hashlib.sha256(migration.read_bytes()).hexdigest():
+                return False
+        required = _run_sql(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() "
+            "AND table_name IN ('web_users','auth_password_credentials',"
+            "'auth_agreement_acceptances','web_jobs','account_deletions','file_upload_idempotency');",
+            root=False,
+            database=True,
+            label="live schema table check",
+        )
+        recovery_columns = _run_sql(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() "
+            "AND table_name='account_deletions' AND column_name IN ('status','updated_at','last_error_code');",
+            root=False,
+            database=True,
+            label="live privacy recovery schema check",
+        )
+        return required.strip() == "6" and recovery_columns.strip() == "3"
+    except RuntimeError:
+        return False
+
+
 async def _asgi_call(
     app: Any,
     path: str,
@@ -430,7 +509,8 @@ async def _asgi_call(
     *,
     cookie: str | None = None,
     idempotency_key: str | None = None,
-) -> tuple[int, dict[str, str], dict]:
+    method: str = "POST",
+) -> tuple[int, dict[str, str], Any]:
     body = json.dumps(payload).encode("utf-8")
     requests = [{"type": "http.request", "body": body, "more_body": False}]
     responses: list[dict[str, Any]] = []
@@ -453,7 +533,7 @@ async def _asgi_call(
     await app(
         {
             "type": "http",
-            "method": "POST",
+            "method": method,
             "path": path,
             "scheme": "https",
             "client": ("198.51.100.10", 12345),
@@ -464,11 +544,19 @@ async def _asgi_call(
     )
     started, finished = responses
     headers = {key.decode("ascii"): value.decode("ascii") for key, value in started["headers"]}
-    return started["status"], headers, json.loads(finished["body"])
+    response_body = finished.get("body", b"")
+    if not response_body:
+        parsed: Any = None
+    elif headers.get("content-type", "").startswith("application/json"):
+        parsed = json.loads(response_body)
+    else:
+        parsed = response_body
+    return started["status"], headers, parsed
 
 
-def _service():
+def _service(*, cooldown_seconds: int = 60):
     from services.web_auth import (
+        AuthConfig,
         InMemoryCaptchaVerifier,
         MySqlRegistrationStore,
         RecordingSmsSender,
@@ -481,11 +569,12 @@ def _service():
         sms_sender=sender,
         captcha_verifier=InMemoryCaptchaVerifier({"local-captcha"}),
         secret_pepper=base64.b64decode(_load_secrets()["auth_pepper_b64"]),
+        config=AuthConfig(resend_cooldown_seconds=cooldown_seconds, captcha_after_phone_day=99, captcha_after_ip_hour=99),
     )
     return service, sender
 
 
-def _domain_smoke(service: Any, session_cookie: str) -> dict[str, int]:
+def _domain_smoke(service: Any, sender: Any, session_cookie: str, phone: str) -> dict[str, int]:
     from services.web_app import NotebookAsgiApp
     from services.web_domain import MySqlDomainStore, NotebookService
 
@@ -496,7 +585,18 @@ def _domain_smoke(service: Any, session_cookie: str) -> dict[str, int]:
     store = MySqlDomainStore(_connection_factory())
     with tempfile.TemporaryDirectory(prefix="domain-smoke-", dir=RUNTIME) as directory:
         notebook = NotebookService(store, Path(directory))
-        uploaded = notebook.upload(user_id=user.user_id, purpose="question_image", original_name="question.png", content=b"\x89PNG\r\n\x1a\nlocal-smoke")
+        upload_content = b"\x89PNG\r\n\x1a\nlocal-smoke"
+        uploaded = notebook.upload(user_id=user.user_id, purpose="question_image", original_name="question.png", content=upload_content, idempotency_key="smoke-upload")
+        replayed_upload = notebook.upload(user_id=user.user_id, purpose="question_image", original_name="question.png", content=upload_content, idempotency_key="smoke-upload")
+        if replayed_upload.file_id != uploaded.file_id:
+            raise RuntimeError("file upload idempotency replay failed")
+        try:
+            notebook.upload(user_id=user.user_id, purpose="question_image", original_name="question.png", content=b"\x89PNG\r\n\x1a\nchanged-smoke", idempotency_key="smoke-upload")
+        except RuntimeError as exc:
+            if str(exc) != "conflict":
+                raise
+        else:
+            raise RuntimeError("file upload idempotency conflict was not rejected")
         app = NotebookAsgiApp(service, notebook, allowed_hosts={"local.test"})
         created = asyncio.run(_asgi_call(app, "/v1/intakes", {"file_id": uploaded.file_id}, cookie=session_cookie, idempotency_key="smoke-extract"))
         if created[0] != 202:
@@ -545,7 +645,23 @@ def _domain_smoke(service: Any, session_cookie: str) -> dict[str, int]:
         _, pdf = notebook.download_practice_pdf(user_id=user.user_id, job_id=pdf_job.job_id)
         if not pdf.startswith(b"%PDF-"):
             raise RuntimeError("domain PDF smoke test failed")
-        return {"manual_api": 1, "recommendations": len(recommendations), "reviews": len(reviews), "pdf_bytes": len(pdf)}
+        export_otp = asyncio.run(_asgi_call(app, "/v1/auth/sensitive/otp/request", {"phone": phone, "action": "export"}, cookie=session_cookie))
+        if export_otp[0] != 202:
+            raise RuntimeError("export sensitive OTP smoke test failed")
+        exported = asyncio.run(_asgi_call(app, "/v1/exports", {"phone": phone, "challenge_token": export_otp[2]["challenge_token"], "code": sender.deliveries[-1][1]}, cookie=session_cookie, idempotency_key="smoke-export"))
+        if exported[0] != 201 or not exported[2].get("download_url"):
+            raise RuntimeError("personal export smoke test failed")
+        downloaded = asyncio.run(_asgi_call(app, exported[2]["download_url"], {}, cookie=session_cookie, method="GET"))
+        if downloaded[0] != 200 or "errors" not in downloaded[2].get("data", {}):
+            raise RuntimeError("personal export download smoke test failed")
+        delete_otp = asyncio.run(_asgi_call(app, "/v1/auth/sensitive/otp/request", {"phone": phone, "action": "delete"}, cookie=session_cookie))
+        if delete_otp[0] != 202:
+            code = (delete_otp[2] or {}).get("error", {}).get("code", "unknown")
+            raise RuntimeError(f"delete sensitive OTP smoke test failed: {delete_otp[0]} {code}")
+        deleted = asyncio.run(_asgi_call(app, "/v1/account", {"phone": phone, "challenge_token": delete_otp[2]["challenge_token"], "code": sender.deliveries[-1][1], "confirmation": "DELETE"}, cookie=session_cookie, method="DELETE"))
+        if deleted[0] != 204 or service.authenticate_session(token) is not None:
+            raise RuntimeError("account deletion smoke test failed")
+        return {"manual_api": 1, "upload_idempotency": 1, "recommendations": len(recommendations), "reviews": len(reviews), "pdf_bytes": len(pdf), "export": 1, "deletion": 1}
 
 
 def _clear_domain_smoke_data(user_id: str) -> None:
@@ -556,7 +672,8 @@ def _clear_domain_smoke_data(user_id: str) -> None:
     connection = _connection_factory()()
     cursor = connection.cursor()
     try:
-        for table in ("review_attempts", "recommendations", "review_tasks", "domain_audit_events", "error_notebook_entries", "grade_candidates", "attempts", "web_jobs", "intake_items", "web_files"):
+        cursor.execute("DELETE FROM account_deletions WHERE user_id=%s", (user_id,))
+        for table in ("file_upload_idempotency", "review_attempts", "recommendations", "review_tasks", "domain_audit_events", "error_notebook_entries", "grade_candidates", "attempts", "web_jobs", "intake_items", "web_files"):
             cursor.execute(f"DELETE FROM `{table}` WHERE user_id=%s", (user_id,))
         cursor.execute("DELETE FROM question_verifications WHERE id=%s AND question_version_id=%s", (verification_id, version_id))
         cursor.execute("DELETE FROM question_versions WHERE id=%s AND question_id=%s", (version_id, question_id))
@@ -577,43 +694,58 @@ def smoke() -> dict[str, Any]:
 
     start()
     _clear_test_data()
-    service, sender = _service()
+    service, sender = _service(cooldown_seconds=0)
     app = AuthAsgiApp(service, allowed_hosts={"local.test"})
     phone = f"139{secrets.randbelow(100_000_000):08d}"
-    requested = asyncio.run(_asgi_call(app, "/v1/auth/otp/request", {"phone": phone}))
+    requested = asyncio.run(_asgi_call(app, "/v1/auth/register/otp/request", {"phone": phone}))
     if requested[0] != 202 or len(sender.deliveries) != 1:
         raise RuntimeError("OTP request smoke test failed")
     verified = asyncio.run(
         _asgi_call(
             app,
-            "/v1/auth/otp/verify",
+            "/v1/auth/register/complete",
             {
                 "challenge_token": requested[2]["challenge_token"],
                 "phone": phone,
                 "code": sender.deliveries[0][1],
+                "password": "local-smoke-password",
+                "terms_version": "2026-08-23",
+                "privacy_version": "2026-08-23",
             },
         )
     )
     if verified[0] != 200 or "set-cookie" not in verified[1]:
         raise RuntimeError("OTP verification smoke test failed")
+    login_requested = asyncio.run(_asgi_call(app, "/v1/auth/login/otp/request", {"phone": phone}))
+    login = asyncio.run(
+        _asgi_call(
+            app,
+            "/v1/auth/login/otp/verify",
+            {
+                "challenge_token": login_requested[2]["challenge_token"],
+                "phone": phone,
+                "code": sender.deliveries[-1][1],
+                "terms_version": "2026-08-23",
+                "privacy_version": "2026-08-23",
+            },
+        )
+    )
+    if login[0] != 200 or "set-cookie" not in login[1]:
+        raise RuntimeError("OTP login smoke test failed")
     replay = asyncio.run(
         _asgi_call(
             app,
-            "/v1/auth/otp/verify",
-            {
-                "challenge_token": requested[2]["challenge_token"],
-                "phone": phone,
-                "code": sender.deliveries[0][1],
-            },
+            "/v1/auth/login/otp/verify",
+            {"challenge_token": login_requested[2]["challenge_token"], "phone": phone, "code": sender.deliveries[-1][1], "terms_version": "2026-08-23", "privacy_version": "2026-08-23"},
         )
     )
     if replay[0] != 400:
         raise RuntimeError("OTP replay protection smoke test failed")
-    smoke_user = service.authenticate_session(verified[1]["set-cookie"].split(";", 1)[0].split("=", 1)[1])
+    smoke_user = service.authenticate_session(login[1]["set-cookie"].split(";", 1)[0].split("=", 1)[1])
     if smoke_user is None:
         raise RuntimeError("domain smoke user lookup failed")
     try:
-        domain = _domain_smoke(service, verified[1]["set-cookie"])
+        domain = _domain_smoke(service, sender, login[1]["set-cookie"], phone)
     finally:
         _clear_domain_smoke_data(smoke_user.user_id)
 
@@ -623,6 +755,7 @@ def smoke() -> dict[str, Any]:
 
     def request_once(_: int):
         return concurrent_service.request_code(
+            purpose="register",
             phone=concurrent_phone,
             ip_address="198.51.100.20",
             device_id="local-concurrent-device",
@@ -639,6 +772,7 @@ def smoke() -> dict[str, Any]:
     first_number = secrets.randbelow(99_999_989)
     ip_statuses = [
         ip_service.request_code(
+            purpose="register",
             phone=f"137{first_number + index:08d}",
             ip_address="198.51.100.30",
             device_id=f"local-ip-limit-device-{index}",
@@ -654,6 +788,7 @@ def smoke() -> dict[str, Any]:
         "mysql": f"127.0.0.1:{PORT}/{DATABASE}",
         "otp_request": requested[0],
         "otp_verify": verified[0],
+        "otp_login": login[0],
         "otp_replay": replay[0],
         "secure_cookie": "Secure" in verified[1]["set-cookie"],
         "concurrent_requests": 50,
@@ -663,7 +798,10 @@ def smoke() -> dict[str, Any]:
         "domain_recommendations": domain["recommendations"],
         "domain_reviews": domain["reviews"],
         "domain_manual_api": domain["manual_api"],
+        "domain_upload_idempotency": domain["upload_idempotency"],
         "domain_pdf_bytes": domain["pdf_bytes"],
+        "domain_export": domain["export"],
+        "account_deletion": domain["deletion"],
     }
 
 
@@ -681,6 +819,7 @@ def serve(host: str, port: int) -> None:
     start()
     from services.web_app import NotebookAsgiApp
     from services.web_auth import (
+        AuthConfig,
         InMemoryCaptchaVerifier,
         MySqlRegistrationStore,
         RegistrationService,
@@ -693,13 +832,16 @@ def serve(host: str, port: int) -> None:
         sms_sender=ConsoleSmsSender(),
         captcha_verifier=InMemoryCaptchaVerifier({"local-captcha"}),
         secret_pepper=base64.b64decode(_load_secrets()["auth_pepper_b64"]),
+        config=AuthConfig(captcha_after_phone_day=99, captcha_after_ip_hour=99),
     )
+    notebook = NotebookService(MySqlDomainStore(_connection_factory()), RUNTIME / "quarantine")
     app = NotebookAsgiApp(
         service,
-        NotebookService(MySqlDomainStore(_connection_factory()), RUNTIME / "quarantine"),
+        notebook,
         allowed_hosts={"127.0.0.1", "localhost"},
         require_https=False,
     )
+    app.resume_pending_deletions()
     uvicorn.run(app, host=host, port=port, access_log=False)
 
 
@@ -710,7 +852,7 @@ def doctor() -> dict[str, Any]:
         "mysql": _binary("mysql").is_file(),
         "migration": all(migration.is_file() for migration in MIGRATIONS),
         "initialized": DATA.is_dir() and any(DATA.iterdir()),
-        "schema_ready": {migration.name for migration in MIGRATIONS} <= ready_migrations,
+        "schema_ready": {migration.name for migration in MIGRATIONS} <= ready_migrations and _live_schema_ready(),
         "secrets": SECRETS.is_file(),
         "client_configs": ROOT_CLIENT.is_file() and APP_CLIENT.is_file(),
         "running": _is_running(),

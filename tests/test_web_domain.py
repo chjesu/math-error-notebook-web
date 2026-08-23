@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
-from services.web_domain import MySqlDomainStore
+from services.web_domain import InMemoryNotebookStore, MySqlDomainStore, NotebookService
 
 
 class FakeCursor:
@@ -67,8 +68,17 @@ class DomainContractTests(unittest.TestCase):
         self.assertIn("user_id=%s AND id=%s", query)
         self.assertEqual(args, ("a" * 32, "f" * 32))
 
+    def test_get_file_returns_original_name_from_the_same_projection(self) -> None:
+        row = ("f" * 32, "a" * 32, "practice_pdf", "quarantine/x", "d" * 64, "application/pdf", 12, "ready", "practice.pdf")
+        connection = FakeConnection([row])
+        record = MySqlDomainStore(lambda: connection).get_file(user_id="a" * 32, file_id="f" * 32)
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.original_name, "practice.pdf")
+        self.assertIn("status,original_name FROM web_files", connection.cursor_instance.executed[-1][0])
+
     def test_create_file_checks_active_user_and_scopes_dedupe(self) -> None:
-        row = ("f" * 32, "a" * 32, "exam", "quarantine/x", "d" * 64, "application/pdf", 12, "ready")
+        row = ("f" * 32, "a" * 32, "exam", "quarantine/x", "d" * 64, "application/pdf", 12, "ready", "paper.pdf")
         connection = FakeConnection([("a" * 32,), row])
         record = MySqlDomainStore(lambda: connection).create_file(
             user_id="a" * 32,
@@ -80,6 +90,7 @@ class DomainContractTests(unittest.TestCase):
             byte_size=12,
         )
         self.assertEqual(record.user_id, "a" * 32)
+        self.assertEqual(record.original_name, "paper.pdf")
         self.assertTrue(any("WHERE user_id=%s AND purpose=%s AND content_sha256=%s" in query for query, _ in connection.cursor_instance.executed))
         self.assertEqual(connection.committed, 1)
 
@@ -90,6 +101,26 @@ class DomainContractTests(unittest.TestCase):
         self.assertEqual(count, 3)
         self.assertIn("WHERE user_id=%s", query)
         self.assertEqual(args, ("a" * 32,))
+
+    def test_duplicate_upload_discards_unreferenced_quarantine_file(self) -> None:
+        with TemporaryDirectory() as temporary:
+            service = NotebookService(InMemoryNotebookStore(), Path(temporary))
+            content = b"\x89PNG\r\n\x1a\nimage"
+            first = service.upload(user_id="a" * 32, purpose="question_image", original_name="q.png", content=content)
+            second = service.upload(user_id="a" * 32, purpose="question_image", original_name="q.png", content=content)
+            self.assertEqual(first.file_id, second.file_id)
+            self.assertEqual(len([path for path in Path(temporary).rglob("*") if path.is_file()]), 1)
+
+    def test_failed_file_metadata_write_discards_quarantine_file(self) -> None:
+        class FailingStore:
+            def create_file(self, **_kwargs):
+                raise RuntimeError("database unavailable")
+
+        with TemporaryDirectory() as temporary:
+            service = NotebookService(FailingStore(), Path(temporary))
+            with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+                service.upload(user_id="a" * 32, purpose="question_image", original_name="q.png", content=b"\x89PNG\r\n\x1a\nimage")
+            self.assertFalse(any(path.is_file() for path in Path(temporary).rglob("*")))
 
 
 if __name__ == "__main__":
