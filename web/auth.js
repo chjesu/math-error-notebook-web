@@ -83,7 +83,7 @@ function refreshAuthControls() {
   $("#code").disabled = !challenge || authSubmitting;
   $("#agreement").disabled = authSubmitting;
   $("#otp-button").disabled = !phoneIsValid || otpRequesting || countdown > 0;
-  $("#auth-submit").disabled = !challenge || !phoneIsValid || !validCode() || !passwordIsValid || !$("#agreement").checked || authSubmitting;
+  $("#auth-submit").disabled = !challenge || !phoneIsValid || !validCode() || !$("#agreement").checked || authSubmitting;
   if (authMode === "register") {
     $("#password").disabled = authSubmitting;
     $("#toggle-password").disabled = authSubmitting;
