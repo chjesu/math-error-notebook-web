@@ -1,4 +1,15 @@
 const $ = selector => document.querySelector(selector);
+const deviceId = (() => {
+  try {
+    const existing = localStorage.getItem("lzlm-device-id");
+    if (existing) return existing;
+    const created = crypto.randomUUID();
+    localStorage.setItem("lzlm-device-id", created);
+    return created;
+  } catch {
+    return crypto.randomUUID();
+  }
+})();
 let challenge = null;
 let phone = null;
 let dueReview = null;
@@ -13,6 +24,7 @@ async function api(path, options = {}) {
     ...options,
     headers: {
       ...(options.body instanceof FormData ? {} : {"Content-Type": "application/json"}),
+      "X-Device-ID": deviceId,
       ...(options.headers || {})
     }
   });

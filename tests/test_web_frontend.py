@@ -19,6 +19,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("/manual-candidate", script)
         self.assertIn("/manual-grade", script)
         self.assertIn("确认写入错题本", html)
+        self.assertIn('localStorage.getItem("lzlm-device-id")', script)
+        self.assertIn('"X-Device-ID": deviceId', script)
 
     def test_mobile_layout_and_keyboard_focus_are_defined(self) -> None:
         css = (Path(__file__).resolve().parents[1] / "web" / "app.css").read_text(encoding="utf-8")
