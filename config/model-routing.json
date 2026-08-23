@@ -16,6 +16,11 @@
       "reasoning_effort": "high",
       "minimum_confidence": 0.92
     },
+    "web-expert-review": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high",
+      "minimum_confidence": 0.92
+    },
     "math-grade-candidate": {
       "model": "gpt-5.6-terra",
       "reasoning_effort": "medium",
@@ -36,7 +41,15 @@
     "multi_tenant",
     "data_migration",
     "secrets",
-    "sms_abuse"
+    "sms_abuse",
+    "account_deletion",
+    "data_export",
+    "prompt_injection",
+    "file_parsing",
+    "candidate_write_gate",
+    "supply_chain",
+    "deployment",
+    "session"
   ],
   "promote_math_to_adjudication": [
     "math_uncertainty",

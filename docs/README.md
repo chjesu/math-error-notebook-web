@@ -32,6 +32,7 @@
 | [11-REMAINING-FUNCTION-WBS.md](./11-REMAINING-FUNCTION-WBS.md) | 剩余功能任务、依赖、并行线、验收证据和完成定义 | v0.4.0 | 可执行基线 |
 | [12-ARCHITECTURE-DATA-API-CONTRACT.md](./12-ARCHITECTURE-DATA-API-CONTRACT.md) | 权限矩阵、user_id Schema、候选/正式记录、API 错误与迁移契约 | v0.4.0目标 | OpenAPI待升级 |
 | [13-LOGIN-REGISTER-PRD.md](./13-LOGIN-REGISTER-PRD.md) | 登录/注册页面、字段、状态、风控、目标 API 与验收标准 | v0.4.0 | 已确认，待实现 |
+| [14-CODEX-MULTI-AGENT-TEAM.md](./14-CODEX-MULTI-AGENT-TEAM.md) | 多角色子智能体、岗位能力、并行工作流、模型路由和治理边界 | v1.0 | 已建立 |
 | [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前首题闭环机器可校验 API 契约 | v0.3.3 | 认证部分待v0.4.0升级 |
 
 ## 活跃需求

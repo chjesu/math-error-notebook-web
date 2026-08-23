@@ -31,6 +31,26 @@ class CodexTaskRouterTests(unittest.TestCase):
         self.assertEqual(adjudicated["model"], "gpt-5.6-sol")
         self.assertEqual(adjudicated["promoted_from"], "math-grade-candidate")
 
+    def test_team_roles_route_by_specialty_and_wave(self) -> None:
+        self.assertEqual(router.select_role("PO", [])["model"], "gpt-5.6-luna")
+        self.assertEqual(router.select_role("BE", [])["model"], "gpt-5.6-terra")
+        self.assertEqual(router.select_role("SEC", [])["model"], "gpt-5.6-sol")
+        self.assertEqual(router.select_role("AUTH", [])["model"], "gpt-5.6-sol")
+        self.assertEqual(router.select_role("DATA", [])["model"], "gpt-5.6-sol")
+        self.assertEqual(router.select_role("MATH", [])["task"], "web-expert-review")
+        self.assertEqual(router.select_role("ARCH", [])["reasoning_effort"], "high")
+        promoted = router.select_role("BE", ["authentication"])
+        self.assertEqual(promoted["model"], "gpt-5.6-sol")
+        acceptance = router.select_wave("acceptance", [])
+        self.assertEqual([route["role"] for route in acceptance], ["QA", "SRE", "MATH", "SEC"])
+
+    def test_team_configuration_has_unique_known_members(self) -> None:
+        value = router.team_config()
+        self.assertLessEqual(value["max_parallel_agents"], 8)
+        for members in value["waves"].values():
+            self.assertEqual(len(members), len(set(members)))
+            self.assertTrue(set(members) <= set(value["roles"]))
+
     def test_load_input_is_bom_compatible_and_compact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "input.json"
@@ -68,6 +88,7 @@ class CodexTaskRouterTests(unittest.TestCase):
 
             def fake_run(command, **kwargs):
                 self.assertIn("--ephemeral", command)
+                self.assertIn("--ignore-user-config", command)
                 self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
                 self.assertIn("--skip-git-repo-check", command)
                 self.assertNotIn("public fixture", " ".join(command))
@@ -93,6 +114,60 @@ class CodexTaskRouterTests(unittest.TestCase):
             audit = json.loads(Path(value["audit"]).read_text(encoding="utf-8"))
             self.assertNotIn("input", audit)
             self.assertFalse(audit["database_modified"])
+
+    def test_run_wave_dispatches_one_independent_result_per_role(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            original_results = router.TEAM_RESULTS
+            router.TEAM_RESULTS = Path(temporary)
+
+            def fake_review(route, review_input, output_path):
+                self.assertIn('"classification":"public-synthetic"', review_input)
+                return {"route": route, "result": {"status": "complete"}, "out": str(output_path)}
+
+            packets = {
+                role: '{"classification":"public-synthetic","question":"q","sources":[]}'
+                for role in ("DM", "PO", "UX")
+            }
+            try:
+                with mock.patch.object(router, "invoke", side_effect=fake_review):
+                    value = router.run_wave(
+                        "product", [], packets, Path(temporary) / "product-run"
+                    )
+                    with self.assertRaisesRegex(ValueError, "must not already exist"):
+                        router.run_wave("product", [], packets, Path(temporary) / "product-run")
+            finally:
+                router.TEAM_RESULTS = original_results
+            self.assertEqual(value["parallel_agents"], 3)
+            self.assertEqual(set(value["results"]), {"DM", "PO", "UX"})
+
+    def test_team_input_requires_public_role_specific_packets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            original_inputs = router.TEAM_INPUTS
+            router.TEAM_INPUTS = Path(temporary)
+            path = Path(temporary) / "product.json"
+            packets = {
+                role: {"question": "公开问题", "sources": []}
+                for role in ("DM", "PO", "UX")
+            }
+            try:
+                path.write_text(
+                    json.dumps(
+                        {"classification": "public-synthetic", "wave": "product", "packets": packets},
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                loaded = router.load_team_input(path, "product")
+                self.assertEqual(set(loaded), {"DM", "PO", "UX"})
+                value = json.loads(path.read_text(encoding="utf-8"))
+                value["classification"] = "project-confidential"
+                path.write_text(json.dumps(value), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "public-synthetic"):
+                    router.load_team_input(path, "product")
+                with self.assertRaisesRegex(ValueError, "must stay under"):
+                    router.resolve_under(Path(temporary).parent / "outside.json", Path(temporary))
+            finally:
+                router.TEAM_INPUTS = original_inputs
 
 
 if __name__ == "__main__":

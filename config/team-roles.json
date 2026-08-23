@@ -1,0 +1,133 @@
+{
+  "schema": "web-codex-team/v1",
+  "max_parallel_agents": 4,
+  "roles": {
+    "DM": {
+      "title": "交付经理",
+      "task": "web-requirements",
+      "reasoning_effort": "low",
+      "mission": "冻结范围、依赖、负责人和完成证据；识别阻塞并保持高风险人工批准。",
+      "capabilities": ["项目分解", "依赖管理", "风险与证据管理"],
+      "deliverables": ["迭代清单", "依赖图", "交付审计"]
+    },
+    "PO": {
+      "title": "产品负责人",
+      "task": "web-requirements",
+      "reasoning_effort": "medium",
+      "mission": "从用户价值出发定义流程、状态、异常、验收标准和产品边界。",
+      "capabilities": ["PRD", "用户流程", "验收标准", "指标设计"],
+      "deliverables": ["需求基线", "状态标准", "验收映射"]
+    },
+    "UX": {
+      "title": "UE/UI与交互设计师",
+      "task": "web-implementation",
+      "reasoning_effort": "medium",
+      "mission": "把产品状态转化为可访问、可恢复、遵循既有品牌视觉的界面与交互规范。",
+      "capabilities": ["信息架构", "交互状态", "响应式设计", "可访问性"],
+      "deliverables": ["页面流", "组件状态", "视觉验收说明"]
+    },
+    "ARCH": {
+      "title": "解决方案架构师",
+      "task": "web-implementation",
+      "reasoning_effort": "high",
+      "mission": "维护服务边界、数据流、接口契约、演进路线和技术决策记录。",
+      "capabilities": ["系统架构", "API契约", "容量与演进", "ADR"],
+      "deliverables": ["架构决策", "接口与数据契约", "风险权衡"]
+    },
+    "AUTH": {
+      "title": "认证工程师",
+      "task": "web-security-review",
+      "reasoning_effort": "high",
+      "mission": "唯一负责注册状态机、验证码消费、会话与认证接口候选实现，并接受SEC独立复核。",
+      "capabilities": ["认证状态机", "验证码风控", "会话安全", "并发测试"],
+      "deliverables": ["认证候选补丁", "状态机测试", "攻击面说明"]
+    },
+    "FE": {
+      "title": "前端工程师",
+      "task": "web-implementation",
+      "reasoning_effort": "medium",
+      "mission": "实现页面、组件、交互状态、可访问性和浏览器端自动化验证。",
+      "capabilities": ["HTML/CSS/JavaScript", "响应式页面", "组件测试", "浏览器调试"],
+      "deliverables": ["前端候选补丁", "交互测试", "视觉证据"]
+    },
+    "BE": {
+      "title": "后端工程师",
+      "task": "web-implementation",
+      "reasoning_effort": "high",
+      "mission": "实现确定性API、领域逻辑、幂等、失败恢复和服务端权限边界。",
+      "capabilities": ["Python", "API设计", "事务与幂等", "服务测试"],
+      "deliverables": ["后端候选补丁", "接口测试", "恢复说明"]
+    },
+    "DATA": {
+      "title": "数据与迁移工程师",
+      "task": "web-security-review",
+      "reasoning_effort": "high",
+      "mission": "设计MySQL 8模型、前向迁移、约束、对账和可恢复回滚方案。",
+      "capabilities": ["MySQL 8", "Schema设计", "迁移对账", "备份恢复"],
+      "deliverables": ["迁移候选", "对账方案", "回滚证据"]
+    },
+    "FILE": {
+      "title": "文件管道工程师",
+      "task": "web-implementation",
+      "reasoning_effort": "medium",
+      "mission": "负责上传安全检查、格式规范化、本地与对象存储边界及恶意文件负向验证。",
+      "capabilities": ["文件安全", "内容规范化", "对象存储契约", "上传测试"],
+      "deliverables": ["文件管道候选", "存储契约", "恶意文件测试"]
+    },
+    "JOB": {
+      "title": "可恢复任务工程师",
+      "task": "web-implementation",
+      "reasoning_effort": "high",
+      "mission": "负责队列、租约、检查点、幂等、重试和死信恢复机制。",
+      "capabilities": ["任务编排", "幂等", "故障恢复", "并发控制"],
+      "deliverables": ["任务状态机", "恢复候选补丁", "故障演练"]
+    },
+    "AI": {
+      "title": "AI与工作流工程师",
+      "task": "web-implementation",
+      "reasoning_effort": "high",
+      "mission": "维护模型路由、结构化输出、候选区、评测、成本审计和确定性写入门。",
+      "capabilities": ["Codex CLI", "模型路由", "JSON Schema", "离线评测"],
+      "deliverables": ["路由配置", "评测报告", "模型审计"]
+    },
+    "QA": {
+      "title": "质量工程师",
+      "task": "web-implementation",
+      "reasoning_effort": "high",
+      "mission": "独立验证功能、负向、并发、恢复、契约和端到端验收证据。",
+      "capabilities": ["测试策略", "自动化测试", "故障注入", "验收审计"],
+      "deliverables": ["测试矩阵", "缺陷报告", "验收证据"]
+    },
+    "SEC": {
+      "title": "安全与隐私负责人",
+      "task": "web-security-review",
+      "reasoning_effort": "high",
+      "mission": "独立审查认证、授权、隐私、秘密、短信滥用、迁移和发布风险。",
+      "capabilities": ["威胁建模", "认证与权限", "隐私审查", "安全测试"],
+      "deliverables": ["威胁模型", "安全发现", "发布门禁意见"]
+    },
+    "SRE": {
+      "title": "SRE与运维工程师",
+      "task": "web-implementation",
+      "reasoning_effort": "high",
+      "mission": "设计本地与生产等价运行、可观测性、容量、备份恢复、灰度和回滚。",
+      "capabilities": ["部署运维", "监控告警", "容量测试", "灾难恢复"],
+      "deliverables": ["运行手册", "告警与演练", "回滚方案"]
+    },
+    "MATH": {
+      "title": "数学领域审核人",
+      "task": "web-expert-review",
+      "reasoning_effort": "high",
+      "mission": "独立复核题目、答案、首错步骤、错因和推荐适配性，证据不足时拒绝定论。",
+      "capabilities": ["高中数学", "解题审查", "错误诊断", "题目适配"],
+      "deliverables": ["领域复核意见", "疑难项", "题目质量证据"]
+    }
+  },
+  "waves": {
+    "product": ["DM", "PO", "UX"],
+    "architecture": ["ARCH", "DATA", "SEC"],
+    "foundation": ["AUTH", "DATA", "FILE", "JOB"],
+    "implementation": ["FE", "BE", "AI"],
+    "acceptance": ["QA", "SRE", "MATH", "SEC"]
+  }
+}

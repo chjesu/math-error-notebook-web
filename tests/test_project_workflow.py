@@ -119,6 +119,51 @@ class ProjectWorkflowTests(unittest.TestCase):
                 "WEB-PROJECT-002", "system_security_review", "SEC", "same-agent", 60
             )
 
+    def test_team_template_parallelizes_independent_design_reviews(self) -> None:
+        started = workflow.start("WEB-TEAM-001", "Codex multi-agent team", "team")
+        self.assertEqual(started["ready_steps"], ["team_charter"])
+        workflow.claim("WEB-TEAM-001", "team_charter", "DM", "delivery-manager", 60)
+        result = workflow.update(
+            "WEB-TEAM-001",
+            "team_charter",
+            "delivery-manager",
+            "completed",
+            "docs/team-charter.md",
+            None,
+            None,
+        )
+        self.assertEqual(
+            result["ready_steps"],
+            ["role_design", "orchestration_design", "security_governance"],
+        )
+        manifest = workflow.read("WEB-TEAM-001")
+        self.assertEqual(
+            workflow.step(manifest, "orchestration_design")[1]["model_task"],
+            "web-implementation",
+        )
+        self.assertEqual(
+            workflow.step(manifest, "security_governance")[1]["model_task"],
+            "web-security-review",
+        )
+        validation = workflow.step(manifest, "team_validation")[1]
+        self.assertEqual(
+            validation["separation_from"],
+            ["role_design", "orchestration_design", "security_governance"],
+        )
+        for name, role in (
+            ("role_design", "PO"),
+            ("orchestration_design", "AI"),
+            ("security_governance", "SEC"),
+        ):
+            workflow.claim("WEB-TEAM-001", name, role, "same-agent", 60)
+            workflow.update(
+                "WEB-TEAM-001", name, "same-agent", "completed", f"{name}.json", None, None
+            )
+        with self.assertRaisesRegex(ValueError, "cannot be the only reviewer"):
+            workflow.claim(
+                "WEB-TEAM-001", "team_validation", "QA", "same-agent", 60
+            )
+
     def test_legacy_registration_manifest_keeps_sequential_dependencies(self) -> None:
         payload = {
             "schema": "web-registration-workflow/v1",

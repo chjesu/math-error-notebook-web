@@ -27,7 +27,7 @@ flowchart TB
     end
 
     subgraph TARGET[后续：阿里云生产目标]
-        U[学生/家长/教师] -->|HTTPS| WAF[WAF / SLB]
+        U[普通用户] -->|HTTPS| WAF[WAF / SLB]
         WAF --> API[模块化单体 API]
         API --> AUTH[账号与会话]
         API --> DOMAIN[错题本领域服务]
@@ -54,7 +54,7 @@ flowchart TB
 |---|---|---|
 | 手机验证码注册、会话、限流 | `services/web_auth/` | v0.3.3 单入口已实现；v0.4.0 登录/注册拆分、密码、协议和新 API 待开发 |
 | 本地 MySQL 模拟环境 | `scripts/local_env.py` | 已实现；仅绑定 localhost，不是生产启动器 |
-| Codex 模型路由 | `scripts/codex_task_router.py`、`config/model-routing.json` | 已实现；外发必须显式授权，候选只读 |
+| Codex 模型路由与团队 | `scripts/codex_task_router.py`、`config/model-routing.json`、`config/team-roles.json` | 已实现；岗位按波次并行，外发必须显式授权，候选只读 |
 | 任务领取、租约、证据、恢复 | `scripts/project_workflow.py` | 已实现注册模板和全项目模板 |
 | 个人账号与 user_id 数据隔离 | `services/web_domain/` | 已实现；API、Store、任务和下载均从服务端会话注入 `user_id` |
 | Web 题库、错题、作答和复习数据 | MySQL 0002/0004 | 已建立并完成真实本地迁移；当前权威源题库为 0 题 |
@@ -123,7 +123,7 @@ flowchart LR
     CHECK -->|不通过| REWORK[返工/人工复核]
 ```
 
-模型任务统一走 `scripts/codex_task_router.py`，外发前必须显式授权。手机号、验证码、密码、密钥、用户数据和数据库内容不得进入模型输入。低置信度最多自动升级一次。
+模型任务统一走 `scripts/codex_task_router.py`，外发前必须显式授权。团队岗位和波次由 `config/team-roles.json` 声明；每个岗位对应一个独立、临时、只读的 Codex CLI 子进程，最多并行 4 个，完整职责见 `docs/14-CODEX-MULTI-AGENT-TEAM.md`。批量 `team-run` 只接受位于固定输入根目录、按岗位拆分的公开/合成资料包，并把结果限制到固定候选根目录；真实项目材料不得用该命令批量外发。手机号、验证码、密码、密钥、用户数据和数据库内容不得进入模型输入。单项低置信度最多自动升级一次，批量波次不自动升级。
 
 ## 7. 完成门
 

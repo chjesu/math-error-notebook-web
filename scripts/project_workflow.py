@@ -83,7 +83,25 @@ PROJECT_STEPS = (
     ),
     ("cloud_deploy_approval", "DM", True, ("system_security_review",), None, ()),
 )
-TEMPLATES = {"registration": REGISTRATION_STEPS, "project": PROJECT_STEPS}
+TEAM_STEPS = (
+    ("team_charter", "DM", False, (), "web-requirements", ()),
+    ("role_design", "PO", False, ("team_charter",), "web-requirements", ()),
+    ("orchestration_design", "AI", False, ("team_charter",), "web-implementation", ()),
+    ("security_governance", "SEC", False, ("team_charter",), "web-security-review", ()),
+    (
+        "team_validation",
+        "QA",
+        False,
+        ("role_design", "orchestration_design", "security_governance"),
+        None,
+        ("role_design", "orchestration_design", "security_governance"),
+    ),
+)
+TEMPLATES = {
+    "registration": REGISTRATION_STEPS,
+    "project": PROJECT_STEPS,
+    "team": TEAM_STEPS,
+}
 ID_RE = re.compile(r"^WEB-[A-Z0-9][A-Z0-9._-]{2,63}$")
 
 
