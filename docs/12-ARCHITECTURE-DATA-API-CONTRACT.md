@@ -81,7 +81,7 @@ v0.4.0认证目标端点为：
 | `phone_not_registered` | 409 | 登录页提示并提供注册跳转，回填手机号 |
 | `phone_already_registered` | 409 | 注册页提示并提供登录跳转，不提交密码 |
 | `agreement_required` | 400 | 聚焦协议复选框 |
-| `weak_password` | 400 | 聚焦密码字段，说明6—20位规则 |
+| `weak_password` | 400 | 聚焦密码字段，说明8—20位且同时包含英文字母和数字的规则 |
 | `request_too_large` | 413 | 保留本地文件选择并提示大小限制 |
 | `authentication_required` | 401 | 回到手机号入口；成功后返回原页 |
 | `forbidden` | 403 | 不重试，提示无操作权限 |

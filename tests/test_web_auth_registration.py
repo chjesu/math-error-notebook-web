@@ -30,14 +30,14 @@ class RegistrationServiceTests(unittest.TestCase):
 
     def register(self, *, phone: str = PHONE, now: datetime = NOW + timedelta(seconds=1)):
         sent = self.request("register", phone, now - timedelta(seconds=1))
-        return self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=phone, code=self.sender.deliveries[-1][1], password="safe123", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=now)
+        return self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=phone, code=self.sender.deliveries[-1][1], password="safe1234", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=now)
 
     def test_register_creates_password_and_agreement_in_one_completion(self) -> None:
         result = self.register()
         self.assertEqual(result.status, RegistrationStatus.COMPLETE)
         self.assertIn(result.user_id, self.store.password_credentials)
         self.assertIn(result.user_id, self.store.agreements)
-        self.assertNotIn("safe123", repr(self.store.password_credentials))
+        self.assertNotIn("safe1234", repr(self.store.password_credentials))
 
     def test_password_pepper_is_domain_separated_and_versioned(self) -> None:
         with patch("services.web_auth.registration.hashlib.scrypt", return_value=b"h" * 64) as scrypt:
@@ -63,15 +63,15 @@ class RegistrationServiceTests(unittest.TestCase):
         self.register()
         self.assertEqual(self.request("register", now=NOW + timedelta(seconds=62)).status, SendCodeStatus.PHONE_ALREADY_REGISTERED)
         login = self.request("login", now=NOW + timedelta(seconds=123))
-        cross = self.service.complete_registration(challenge_id=login.challenge_id or "", phone=PHONE, code=self.sender.deliveries[-1][1], password="safe123", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=124))
+        cross = self.service.complete_registration(challenge_id=login.challenge_id or "", phone=PHONE, code=self.sender.deliveries[-1][1], password="safe1234", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=124))
         self.assertEqual(cross.status, RegistrationStatus.INVALID_CODE)
 
     def test_password_agreement_and_replay_fail_closed(self) -> None:
         sent = self.request("register")
         self.assertEqual(self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=PHONE, code="000000", password="123", terms_version="", privacy_version="", ip_address="203.0.113.7", device_id="browser-device-001").status, RegistrationStatus.AGREEMENT_REQUIRED)
-        result = self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=PHONE, code=self.sender.deliveries[-1][1], password="safe123", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=1))
+        result = self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=PHONE, code=self.sender.deliveries[-1][1], password="safe1234", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=1))
         self.assertEqual(result.status, RegistrationStatus.COMPLETE)
-        replay = self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=PHONE, code=self.sender.deliveries[-1][1], password="safe123", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=2))
+        replay = self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=PHONE, code=self.sender.deliveries[-1][1], password="safe1234", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=2))
         self.assertEqual(replay.status, RegistrationStatus.INVALID_CODE)
 
     def test_protocol_version_is_fixed_strict_and_length_limited(self) -> None:
@@ -82,7 +82,7 @@ class RegistrationServiceTests(unittest.TestCase):
             challenge_id=sent.challenge_id or "",
             phone=PHONE,
             code=self.sender.deliveries[-1][1],
-            password="safe123",
+            password="safe1234",
             ip_address="203.0.113.7",
             device_id="browser-device-001",
             now=NOW + timedelta(seconds=1),
@@ -108,7 +108,7 @@ class RegistrationServiceTests(unittest.TestCase):
         wrong = "000001" if self.sender.deliveries[-1][1] == "000000" else "000000"
         common = dict(
             phone=PHONE,
-            password="safe123",
+            password="safe1234",
             terms_version=PROTOCOL,
             privacy_version=PROTOCOL,
             ip_address="203.0.113.7",
@@ -147,7 +147,7 @@ class RegistrationServiceTests(unittest.TestCase):
                 challenge_id=sent.challenge_id or "",
                 phone=PHONE,
                 code=self.sender.deliveries[-1][1],
-                password="safe123",
+                password="safe1234",
                 terms_version=PROTOCOL,
                 privacy_version=PROTOCOL,
                 ip_address="203.0.113.7",
@@ -286,22 +286,25 @@ class RegistrationServiceTests(unittest.TestCase):
     def test_plaintext_code_phone_and_password_are_not_persisted_or_audited(self) -> None:
         result = self.request("register")
         code = self.sender.deliveries[-1][1]
-        completed = self.service.complete_registration(challenge_id=result.challenge_id or "", phone=PHONE, code=code, password="safe123", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=1))
+        completed = self.service.complete_registration(challenge_id=result.challenge_id or "", phone=PHONE, code=code, password="safe1234", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=1))
         persisted = json.dumps({"challenge": vars(self.store.challenges[result.challenge_id or ""]), "audit": [vars(item) for item in self.store.audit_events], "credentials": repr(self.store.password_credentials)}, default=str)
         self.assertEqual(completed.status, RegistrationStatus.COMPLETE)
         self.assertNotIn(code, persisted)
         self.assertNotIn(PHONE, persisted)
-        self.assertNotIn("safe123", persisted)
+        self.assertNotIn("safe1234", persisted)
 
     def test_password_length_unicode_whitespace_and_control_boundaries(self) -> None:
         cases = (
-            ("a" * 5, RegistrationStatus.WEAK_PASSWORD),
-            ("a" * 6, RegistrationStatus.COMPLETE),
-            ("a" * 20, RegistrationStatus.COMPLETE),
-            ("a" * 21, RegistrationStatus.WEAK_PASSWORD),
-            ("数学密码安全", RegistrationStatus.COMPLETE),
-            ("safe\x00x", RegistrationStatus.WEAK_PASSWORD),
-            ("safe 123", RegistrationStatus.WEAK_PASSWORD),
+            ("safe123", RegistrationStatus.WEAK_PASSWORD),
+            ("safe1234", RegistrationStatus.COMPLETE),
+            ("a" * 19 + "1", RegistrationStatus.COMPLETE),
+            ("a" * 20 + "1", RegistrationStatus.WEAK_PASSWORD),
+            ("abcdefgh", RegistrationStatus.WEAK_PASSWORD),
+            ("12345678", RegistrationStatus.WEAK_PASSWORD),
+            ("数学密码1234", RegistrationStatus.WEAK_PASSWORD),
+            ("数学密码A1234", RegistrationStatus.COMPLETE),
+            ("safe123\x00", RegistrationStatus.WEAK_PASSWORD),
+            ("safe 1234", RegistrationStatus.WEAK_PASSWORD),
         )
         for offset, (password, expected) in enumerate(cases):
             phone = f"13900139{offset:03d}"
@@ -325,20 +328,20 @@ class RegistrationServiceTests(unittest.TestCase):
         second = self.request("register", now=NOW + timedelta(seconds=61))
         self.assertEqual(second.status, SendCodeStatus.ACCEPTED)
         self.assertEqual(self.store.challenges[first.challenge_id or ""].status, "cancelled")
-        result = self.service.complete_registration(challenge_id=first.challenge_id or "", phone=PHONE, code=old_code, password="safe123", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=62))
+        result = self.service.complete_registration(challenge_id=first.challenge_id or "", phone=PHONE, code=old_code, password="safe1234", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=62))
         self.assertEqual(result.status, RegistrationStatus.INVALID_CODE)
 
     def test_invalid_attempts_lock_and_expired_code_fails_closed(self) -> None:
         sent = self.request("register")
         wrong = "000001" if self.sender.deliveries[-1][1] == "000000" else "000000"
         for _ in range(4):
-            result = self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=PHONE, code=wrong, password="safe123", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=1))
+            result = self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=PHONE, code=wrong, password="safe1234", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=1))
             self.assertEqual(result.status, RegistrationStatus.INVALID_CODE)
-        locked = self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=PHONE, code=wrong, password="safe123", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=2))
+        locked = self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=PHONE, code=wrong, password="safe1234", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(seconds=2))
         self.assertEqual(locked.status, RegistrationStatus.LOCKED)
         expired_phone = "13900139000"
         expired = self.request("register", expired_phone, NOW + timedelta(seconds=61))
-        result = self.service.complete_registration(challenge_id=expired.challenge_id or "", phone=expired_phone, code=self.sender.deliveries[-1][1], password="safe123", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(minutes=7))
+        result = self.service.complete_registration(challenge_id=expired.challenge_id or "", phone=expired_phone, code=self.sender.deliveries[-1][1], password="safe1234", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", now=NOW + timedelta(minutes=7))
         self.assertEqual(result.status, RegistrationStatus.EXPIRED)
 
     def test_session_logout_current_and_all(self) -> None:
@@ -370,7 +373,7 @@ class RegistrationServiceTests(unittest.TestCase):
 
     def test_challenge_cannot_cross_server_scope_and_user_remains_minimal(self) -> None:
         sent = self.request("register")
-        result = self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=PHONE, code=self.sender.deliveries[-1][1], password="safe123", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", tenant_scope="other-scope", now=NOW + timedelta(seconds=1))
+        result = self.service.complete_registration(challenge_id=sent.challenge_id or "", phone=PHONE, code=self.sender.deliveries[-1][1], password="safe1234", terms_version=PROTOCOL, privacy_version=PROTOCOL, ip_address="203.0.113.7", device_id="browser-device-001", tenant_scope="other-scope", now=NOW + timedelta(seconds=1))
         self.assertEqual(result.status, RegistrationStatus.INVALID_CODE)
         completed = self.register(phone="13900139000", now=NOW + timedelta(seconds=62))
         user = next(user for user in self.store.users_by_phone.values() if user.user_id == completed.user_id)

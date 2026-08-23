@@ -64,7 +64,7 @@ class PrivacyHttpTests(unittest.TestCase):
             code=self.sender.deliveries[-1][1],
             ip_address="203.0.113.7",
             device_id="privacy-browser-001",
-            password="example-password",
+            password="example-password1",
             terms_version="2026-08-23",
             privacy_version="2026-08-23",
         )

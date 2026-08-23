@@ -129,7 +129,7 @@ class NotebookE2ETests(unittest.TestCase):
 
     def login(self, phone: str) -> str:
         requested = self.call("/v1/auth/register/otp/request", method="POST", payload={"phone": phone})
-        verified = self.call("/v1/auth/register/complete", method="POST", payload={"phone": phone, "challenge_token": requested[2]["challenge_token"], "code": self.sender.deliveries[-1][1], "password": "safe123", "terms_version": "2026-08-23", "privacy_version": "2026-08-23"})
+        verified = self.call("/v1/auth/register/complete", method="POST", payload={"phone": phone, "challenge_token": requested[2]["challenge_token"], "code": self.sender.deliveries[-1][1], "password": "safe1234", "terms_version": "2026-08-23", "privacy_version": "2026-08-23"})
         self.assertEqual(verified[0], 200)
         return verified[1]["set-cookie"].split(";", 1)[0]
 

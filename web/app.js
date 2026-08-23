@@ -63,12 +63,12 @@ function show(authenticated) {
 
 function authError(error) {
   if (error.status === 401) return "登录已失效，请重新登录。";
-  return ({phone_not_registered:"该手机号尚未注册，请前往注册。", phone_already_registered:"该手机号已注册，请前往登录。", invalid_code:"验证码不正确，请重新输入。", code_expired:"验证码已失效，请重新获取。", too_many_attempts:"验证次数过多，请重新获取验证码。", agreement_required:"请先同意用户协议和隐私政策。", weak_password:"密码需为6—20位，且不能包含控制字符。", invalid_request:"请检查填写内容。", rate_limited:"操作过于频繁，请稍后重试。", export_expired:"导出已过期，请重新申请。", confirmation_required:"请输入正确的注销确认。", network_error:"网络异常，请检查网络后重试。"})[error.message] || "操作失败，请稍后重试。";
+  return ({phone_not_registered:"该手机号尚未注册，请前往注册。", phone_already_registered:"该手机号已注册，请前往登录。", invalid_code:"验证码不正确，请重新输入。", code_expired:"验证码已失效，请重新获取。", too_many_attempts:"验证次数过多，请重新获取验证码。", agreement_required:"请先同意用户协议和隐私政策。", weak_password:"密码需为8—20位，并同时包含字母和数字。", invalid_request:"请检查填写内容。", rate_limited:"操作过于频繁，请稍后重试。", export_expired:"导出已过期，请重新申请。", confirmation_required:"请输入正确的注销确认。", network_error:"网络异常，请检查网络后重试。"})[error.message] || "操作失败，请稍后重试。";
 }
 
 function validPhone() { return /^1[3-9]\d{9}$/.test($("#phone").value); }
 function validCode() { return /^\d{6}$/.test($("#code").value); }
-function validPassword() { const value = $("#password").value; return value.length >= 6 && value.length <= 20 && !/[\s\x00-\x1f]/.test(value); }
+function validPassword() { const value = $("#password").value; return value.length >= 8 && value.length <= 20 && /[A-Za-z]/.test(value) && /[0-9]/.test(value) && !/[\s\x00-\x1f\x7f]/.test(value); }
 function refreshAuthControls() {
   const phoneIsValid = validPhone();
   const passwordIsValid = authMode !== "register" || validPassword();
@@ -87,7 +87,7 @@ function refreshAuthControls() {
   $("#auth-submit").disabled = !challenge || !phoneIsValid || !validCode() || !$("#agreement").checked || !passwordIsValid || authSubmitting;
   $("#password").setAttribute("aria-invalid", String(authMode === "register" && $("#password").value && !passwordIsValid));
   $("#password-error").hidden = authMode !== "register" || !$("#password").value || passwordIsValid;
-  if (!$("#password-error").hidden) $("#password-error").textContent = "密码需为 6—20 位，且不能包含空白字符。";
+  if (!$("#password-error").hidden) $("#password-error").textContent = "密码需为 8—20 位，并同时包含字母和数字。";
 }
 
 function setAuthMode(mode, keepPhone = false, updateHistory = true) {

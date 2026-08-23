@@ -746,7 +746,9 @@ class RegistrationService:
             agreement_version = f"terms:{self.config.protocol_version}|privacy:{self.config.protocol_version}"
         if purpose == "register" and (
             password is None
-            or not 6 <= len(password) <= 20
+            or not 8 <= len(password) <= 20
+            or re.search(r"[A-Za-z]", password) is None
+            or re.search(r"[0-9]", password) is None
             or any(character.isspace() or not character.isprintable() for character in password)
         ):
             return RegistrationResult(RegistrationStatus.WEAK_PASSWORD, "weak_password")

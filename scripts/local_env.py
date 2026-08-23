@@ -708,7 +708,7 @@ def smoke() -> dict[str, Any]:
                 "challenge_token": requested[2]["challenge_token"],
                 "phone": phone,
                 "code": sender.deliveries[0][1],
-                "password": "local-smoke-password",
+                "password": "local-smoke-password1",
                 "terms_version": "2026-08-23",
                 "privacy_version": "2026-08-23",
             },

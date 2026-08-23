@@ -47,7 +47,7 @@ class AuthAsgiTests(unittest.TestCase):
 
     def register(self) -> str:
         request = self.call("/v1/auth/register/otp/request", {"phone":"13800138000"})
-        status, headers, value = self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":self.sender.deliveries[-1][1], "password":"safe123", "terms_version":PROTOCOL, "privacy_version":PROTOCOL})
+        status, headers, value = self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":self.sender.deliveries[-1][1], "password":"safe1234", "terms_version":PROTOCOL, "privacy_version":PROTOCOL})
         self.assertEqual(status, 200)
         self.assertEqual(value["next_action"], "workbench")
         return headers["set-cookie"].split(";", 1)[0]
@@ -62,9 +62,9 @@ class AuthAsgiTests(unittest.TestCase):
         local_request = self.call("/v1/auth/register/otp/request", {"phone":"13900139000"})
         self.app = production_app
         self.assertEqual(local_request[2]["local_test_code"], self.sender.deliveries[-1][1])
-        missing = self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":registration_code, "password":"safe123"})
+        missing = self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":registration_code, "password":"safe1234"})
         self.assertEqual(missing[2]["error"]["code"], "agreement_required")
-        self.assertEqual(self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":registration_code, "password":"safe123", "terms_version":PROTOCOL, "privacy_version":PROTOCOL})[0], 200)
+        self.assertEqual(self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":registration_code, "password":"safe1234", "terms_version":PROTOCOL, "privacy_version":PROTOCOL})[0], 200)
         self.assertEqual(self.call("/v1/auth/register/otp/request", {"phone":"13800138000"})[2]["error"]["code"], "phone_already_registered")
 
     def test_login_and_sensitive_request_are_session_bound(self) -> None:
@@ -138,7 +138,7 @@ class AuthAsgiTests(unittest.TestCase):
                 "challenge_token": requested[2]["challenge_token"],
                 "phone": "13900139000",
                 "code": wrong,
-                "password": "safe123",
+                "password": "safe1234",
                 "terms_version": PROTOCOL,
                 "privacy_version": PROTOCOL,
             },
@@ -232,7 +232,7 @@ class AuthAsgiTests(unittest.TestCase):
                 "challenge_token": request[2]["challenge_token"],
                 "phone": "13800138000",
                 "code": self.sender.deliveries[-1][1],
-                "password": "safe123",
+                "password": "safe1234",
                 "terms_version": PROTOCOL,
                 "privacy_version": PROTOCOL,
             },
