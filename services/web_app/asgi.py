@@ -39,8 +39,18 @@ class NotebookAsgiApp:
         root = Path(__file__).resolve().parents[2]
         self.static_files = {
             "/": (root / "web" / "index.html", "text/html; charset=utf-8", False),
+            "/login": (root / "web" / "login.html", "text/html; charset=utf-8", False),
+            "/register": (root / "web" / "register.html", "text/html; charset=utf-8", False),
+            "/legal/terms": (root / "web" / "terms.html", "text/html; charset=utf-8", False),
+            "/legal/privacy": (root / "web" / "privacy.html", "text/html; charset=utf-8", False),
+            "/errors": (root / "web" / "errors.html", "text/html; charset=utf-8", False),
+            "/reviews": (root / "web" / "reviews.html", "text/html; charset=utf-8", False),
+            "/practice": (root / "web" / "practice.html", "text/html; charset=utf-8", False),
+            "/progress": (root / "web" / "progress.html", "text/html; charset=utf-8", False),
+            "/settings": (root / "web" / "settings.html", "text/html; charset=utf-8", False),
             "/web/app.css": (root / "web" / "app.css", "text/css; charset=utf-8", False),
             "/web/app.js": (root / "web" / "app.js", "text/javascript; charset=utf-8", False),
+            "/web/auth.js": (root / "web" / "auth.js", "text/javascript; charset=utf-8", False),
             "/assets/branding/favicon-v1.ico": (root / "assets" / "branding" / "favicon-v1.ico", "image/x-icon", True),
             "/assets/branding/logo-symbol-color-64-v1.png": (root / "assets" / "branding" / "logo-symbol-color-64-v1.png", "image/png", True),
             "/assets/branding/logo-symbol-color-128-v1.png": (root / "assets" / "branding" / "logo-symbol-color-128-v1.png", "image/png", True),
@@ -79,8 +89,6 @@ class NotebookAsgiApp:
             return
         method = str(scope.get("method", ""))
         static = self.static_files.get(path)
-        if path in {"/login", "/register", "/legal/terms", "/legal/privacy"}:
-            static = self.static_files["/"]
         if method == "GET" and static:
             await self._asset(send, *static)
             return
