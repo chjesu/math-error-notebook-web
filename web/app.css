@@ -92,6 +92,7 @@ body:not(.is-authenticated) main {
 form { display: grid; gap: 10px; margin-top: 22px; }
 .auth-card form { margin-top: 16px; }
 #code-form { margin-top: 12px; }
+#register-fields { display: grid; gap: 10px; }
 label { font-weight: 650; }
 input {
   width: 100%;
