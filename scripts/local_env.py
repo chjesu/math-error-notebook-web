@@ -461,6 +461,10 @@ def _clear_test_data() -> None:
         connection.close()
 
 
+def _existing_user_count() -> int:
+    return int(_run_sql("SELECT COUNT(*) FROM web_users;", root=False, database=True, label="local user count"))
+
+
 def _live_schema_ready() -> bool:
     """Verify the live ledger and required v0.4 tables, not only the ready file."""
 
@@ -693,6 +697,8 @@ def smoke() -> dict[str, Any]:
     from services.web_auth.registration import SendCodeStatus
 
     start()
+    if _existing_user_count():
+        raise RuntimeError("smoke requires an empty local user database")
     _clear_test_data()
     service, sender = _service(cooldown_seconds=0)
     app = AuthAsgiApp(service, allowed_hosts={"local.test"})

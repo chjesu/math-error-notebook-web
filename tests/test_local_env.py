@@ -47,6 +47,14 @@ class LocalEnvironmentTests(unittest.TestCase):
         self.assertIn("DELETE FROM question_sources WHERE id=%s", scoped_cleanup)
         self.assertIn("if not recommendations or len(reviews) != 1", domain_smoke)
 
+    def test_smoke_refuses_to_clear_existing_local_users(self) -> None:
+        with mock.patch.object(local_env, "start"), mock.patch.object(
+            local_env, "_existing_user_count", return_value=1
+        ), mock.patch.object(local_env, "_clear_test_data") as clear:
+            with self.assertRaisesRegex(RuntimeError, "empty local user database"):
+                local_env.smoke()
+        clear.assert_not_called()
+
     def test_live_schema_check_requires_matching_ledger_and_tables(self) -> None:
         ledger = "\n".join(
             f"{path.name}\t{__import__('hashlib').sha256(path.read_bytes()).hexdigest()}"
