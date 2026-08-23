@@ -20,6 +20,10 @@ let activeCandidate = null;
 let authMode = "login";
 let countdown = 0;
 let countdownTimer = null;
+let otpRequesting = false;
+let authSubmitting = false;
+let phoneTouched = false;
+let authRevision = 0;
 let sensitiveChallenge = null;
 let sensitiveAction = null;
 
@@ -48,10 +52,13 @@ async function api(path, options = {}) {
 }
 
 function show(authenticated) {
-  $("#auth-view").hidden = authenticated;
-  $("#workbench-view").hidden = !authenticated;
-  document.querySelector(".sidebar").hidden = !authenticated;
-  document.querySelector(".bottom-nav").hidden = !authenticated;
+  const legalActive = location.pathname.startsWith("/legal/");
+  document.body.classList.toggle("is-authenticated", authenticated && !legalActive);
+  $("#legal-view").hidden = !legalActive;
+  $("#auth-view").hidden = authenticated || legalActive;
+  $("#workbench-view").hidden = !authenticated || legalActive;
+  document.querySelector(".sidebar").hidden = !authenticated || legalActive;
+  document.querySelector(".bottom-nav").hidden = !authenticated || legalActive;
 }
 
 function authError(error) {
@@ -59,21 +66,52 @@ function authError(error) {
   return ({phone_not_registered:"该手机号尚未注册，请前往注册。", phone_already_registered:"该手机号已注册，请前往登录。", invalid_code:"验证码不正确，请重新输入。", code_expired:"验证码已失效，请重新获取。", too_many_attempts:"验证次数过多，请重新获取验证码。", agreement_required:"请先同意用户协议和隐私政策。", weak_password:"密码需为6—20位，且不能包含控制字符。", invalid_request:"请检查填写内容。", rate_limited:"操作过于频繁，请稍后重试。", export_expired:"导出已过期，请重新申请。", confirmation_required:"请输入正确的注销确认。", network_error:"网络异常，请检查网络后重试。"})[error.message] || "操作失败，请稍后重试。";
 }
 
+function validPhone() { return /^1[3-9]\d{9}$/.test($("#phone").value); }
+function validCode() { return /^\d{6}$/.test($("#code").value); }
+function validPassword() { const value = $("#password").value; return value.length >= 6 && value.length <= 20 && !/[\s\x00-\x1f]/.test(value); }
+function refreshAuthControls() {
+  const phoneIsValid = validPhone();
+  const passwordIsValid = authMode !== "register" || validPassword();
+  const busy = otpRequesting || authSubmitting;
+  $("#phone").setAttribute("aria-invalid", String(phoneTouched && !phoneIsValid));
+  $("#phone-error").hidden = !phoneTouched || phoneIsValid;
+  $("#phone").disabled = busy;
+  $("#login-tab").disabled = busy;
+  $("#register-tab").disabled = busy;
+  $("#switch-auth").disabled = busy;
+  $("#code").disabled = !challenge || authSubmitting;
+  $("#password").disabled = authSubmitting;
+  $("#agreement").disabled = authSubmitting;
+  $("#toggle-password").disabled = authSubmitting;
+  $("#otp-button").disabled = !phoneIsValid || otpRequesting || countdown > 0;
+  $("#auth-submit").disabled = !challenge || !phoneIsValid || !validCode() || !$("#agreement").checked || !passwordIsValid || authSubmitting;
+  $("#password").setAttribute("aria-invalid", String(authMode === "register" && $("#password").value && !passwordIsValid));
+  $("#password-error").hidden = authMode !== "register" || !$("#password").value || passwordIsValid;
+  if (!$("#password-error").hidden) $("#password-error").textContent = "密码需为 6—20 位，且不能包含空白字符。";
+}
+
 function setAuthMode(mode, keepPhone = false, updateHistory = true) {
+  authRevision += 1;
+  otpRequesting = false;
+  authSubmitting = false;
   $("#legal-view").hidden = true; $("#auth-view").hidden = false;
+  const modeChanged = authMode !== mode;
   authMode = mode; $("#auth-title").textContent = mode === "login" ? "验证码登录" : "手机号注册";
   $("#auth-help").textContent = mode === "login" ? "已有账号使用手机号验证码登录。" : "设置密码并确认协议，注册后直接进入你的错题本。";
   $("#register-fields").hidden = mode !== "register"; $("#agreement-fields").hidden = false; $("#password").required = mode === "register"; $("#auth-submit").textContent = mode === "login" ? "验证并进入" : "注册并进入";
   $("#switch-auth").textContent = mode === "login" ? "没有账号？立即注册" : "已有账号？去登录";
   $("#login-tab").classList.toggle("ghost", mode !== "login"); $("#register-tab").classList.toggle("ghost", mode !== "register");
-  $("#password").type = "password"; $("#toggle-password").textContent = "显示";
-  if (!keepPhone) { $("#phone").value = ""; $("#code").value = ""; $("#password").value = ""; $("#agreement").checked = false; }
+  $("#login-tab").setAttribute("aria-pressed", String(mode === "login")); $("#register-tab").setAttribute("aria-pressed", String(mode === "register"));
+  $("#password").type = "password"; $("#toggle-password").textContent = "显示"; $("#toggle-password").setAttribute("aria-label", "显示密码"); $("#toggle-password").setAttribute("aria-pressed", "false");
+  if (!keepPhone || modeChanged) { if (!keepPhone) { $("#phone").value = ""; phoneTouched = false; } $("#code").value = ""; $("#code-error").hidden = true; $("#password").value = ""; $("#agreement").checked = false; }
   resetOtp();
+  refreshAuthControls();
+  if (!updateHistory) $("#phone").focus();
   if (updateHistory) history.pushState({authMode: mode}, "", mode === "login" ? "/login" : "/register");
 }
 
-function resetOtp() { challenge = null; $("#code-form").hidden = true; clearInterval(countdownTimer); countdown = 0; $("#otp-button").disabled = false; $("#otp-button").textContent = "获取验证码"; }
-function startCountdown(seconds = 60) { countdown = Math.max(1, Math.ceil(seconds || 60)); clearInterval(countdownTimer); const tick = () => { $("#otp-button").textContent = countdown ? `重新获取（${countdown}s）` : "获取验证码"; $("#otp-button").disabled = countdown > 0; if (!countdown) clearInterval(countdownTimer); }; tick(); countdownTimer = setInterval(() => { countdown -= 1; tick(); }, 1000); }
+function resetOtp() { challenge = null; clearInterval(countdownTimer); countdown = 0; $("#otp-button").textContent = "获取验证码"; refreshAuthControls(); }
+function startCountdown(seconds = 60) { countdown = Math.max(1, Math.ceil(seconds || 60)); clearInterval(countdownTimer); const tick = () => { $("#otp-button").textContent = countdown ? `${countdown}s 后重试` : "重新发送"; refreshAuthControls(); if (!countdown) clearInterval(countdownTimer); }; tick(); countdownTimer = setInterval(() => { countdown -= 1; tick(); }, 1000); }
 
 function showPanel(id) { ["errors","reviews","practice","progress","settings"].forEach(x => { const el = document.getElementById(x); if (el) el.hidden = x !== id && id !== "workbench"; }); document.querySelectorAll('a[href^="#"]').forEach(link => link.classList.toggle("active", link.getAttribute("href") === `#${id}`)); }
 
@@ -92,6 +130,7 @@ async function refresh() {
   try {
     await api("/v1/session");
     show(true);
+    if (location.pathname.startsWith("/legal/")) return;
     if (location.pathname !== "/") history.replaceState({}, "", `/${location.hash || "#workbench"}`);
     const [workbench, reviews] = await Promise.all([api("/v1/workbench"), api("/v1/reviews/today")]);
     $("#error-count").textContent = workbench.error_count;
@@ -115,57 +154,99 @@ async function refresh() {
 
 $("#phone-form").addEventListener("submit", async event => {
   event.preventDefault();
+  phoneTouched = true;
+  if (!validPhone()) return refreshAuthControls();
   phone = $("#phone").value;
+  const requestRevision = authRevision;
+  const requestMode = authMode;
+  const requestPhone = phone;
   const button = event.submitter;
-  button.disabled = true;
+  otpRequesting = true;
+  button.textContent = "发送中…";
+  refreshAuthControls();
   try {
     const captcha_token = $("#captcha-token").value.trim();
-    const result = await api(`/v1/auth/${authMode}/otp/request`, {method: "POST", body: JSON.stringify(captcha_token ? {phone, captcha_token} : {phone})});
+    const result = await api(`/v1/auth/${requestMode}/otp/request`, {method: "POST", body: JSON.stringify(captcha_token ? {phone: requestPhone, captcha_token} : {phone: requestPhone})});
+    if (requestRevision !== authRevision || requestMode !== authMode || requestPhone !== $("#phone").value) return;
     challenge = result.challenge_token;
     $("#code").value = "";
-    $("#code-form").hidden = false;
+    $("#code-error").hidden = true;
+    refreshAuthControls();
     status($("#auth-status"), result.message);
     $("#code").focus();
     startCountdown(result.retry_after_seconds);
   } catch (error) {
+    if (requestRevision !== authRevision || requestMode !== authMode || requestPhone !== $("#phone").value) return;
     if (error.message === "captcha_required") { $("#captcha-fields").hidden = false; $("#captcha-token").focus(); }
     if (error.status === 429 && error.retryAfter) startCountdown(error.retryAfter);
     status($("#auth-status"), authError(error), true);
+    if (["phone_not_registered", "phone_already_registered"].includes(error.message)) $("#switch-auth").focus();
   } finally {
-    button.disabled = countdown > 0;
+    if (requestRevision === authRevision) {
+      otpRequesting = false;
+      if (!countdown) button.textContent = "获取验证码";
+      refreshAuthControls();
+    }
   }
 });
 
 $("#phone").addEventListener("input", () => {
+  const normalized = $("#phone").value.replace(/\D/g, "").slice(0, 11);
+  if ($("#phone").value !== normalized) $("#phone").value = normalized;
   if (phone && $("#phone").value !== phone) {
+    authRevision += 1;
     $("#code").value = "";
     resetOtp();
     status($("#auth-status"), "手机号已变更，请重新获取验证码。");
   }
+  refreshAuthControls();
 });
+$("#phone").addEventListener("blur", () => { phoneTouched = true; refreshAuthControls(); });
+$("#code").addEventListener("input", () => { $("#code").value = $("#code").value.replace(/\D/g, "").slice(0, 6); $("#code-error").hidden = true; refreshAuthControls(); });
+$("#password").addEventListener("input", refreshAuthControls);
+$("#agreement").addEventListener("change", refreshAuthControls);
 
 $("#code-form").addEventListener("submit", async event => {
   event.preventDefault();
-  if (!$("#agreement").checked) return status($("#auth-status"), "请先同意用户协议和隐私政策。", true);
+  if ($("#auth-submit").disabled) return refreshAuthControls();
   const button = event.submitter;
-  button.disabled = true;
+  const requestRevision = authRevision;
+  const requestMode = authMode;
+  const requestPhone = phone;
+  const requestChallenge = challenge;
+  authSubmitting = true;
+  button.textContent = authMode === "login" ? "登录中" : "注册中";
+  refreshAuthControls();
   try {
-    const body = {phone, challenge_token: challenge, code: $("#code").value, terms_version: "2026-08-23", privacy_version: "2026-08-23"};
-    if (authMode === "register") body.password = $("#password").value;
-    await api(authMode === "login" ? "/v1/auth/login/otp/verify" : "/v1/auth/register/complete", {method: "POST", body: JSON.stringify(body)});
+    const body = {phone: requestPhone, challenge_token: requestChallenge, code: $("#code").value, terms_version: "2026-08-23", privacy_version: "2026-08-23"};
+    if (requestMode === "register") body.password = $("#password").value;
+    await api(requestMode === "login" ? "/v1/auth/login/otp/verify" : "/v1/auth/register/complete", {method: "POST", body: JSON.stringify(body)});
+    if (requestRevision !== authRevision || requestMode !== authMode || requestPhone !== phone || requestChallenge !== challenge) return;
     await refresh();
   } catch (error) {
+    if (requestRevision !== authRevision || requestMode !== authMode || requestPhone !== phone || requestChallenge !== challenge) return;
+    if (["invalid_code", "code_expired", "too_many_attempts"].includes(error.message)) {
+      $("#code").value = "";
+      $("#code-error").textContent = authError(error);
+      $("#code-error").hidden = false;
+      if (error.message !== "invalid_code") resetOtp();
+      $("#code").focus();
+    }
     status($("#auth-status"), authError(error), true);
   } finally {
-    button.disabled = false;
+    if (requestRevision === authRevision) {
+      authSubmitting = false;
+      button.textContent = authMode === "login" ? "验证并进入" : "注册并进入";
+      refreshAuthControls();
+    }
   }
 });
 
-$("#login-tab").onclick = () => setAuthMode("login", authMode === "login"); $("#register-tab").onclick = () => setAuthMode("register", true);
+$("#login-tab").onclick = () => { if (authMode !== "login") setAuthMode("login", false); }; $("#register-tab").onclick = () => { if (authMode !== "register") setAuthMode("register", true); };
 $("#switch-auth").onclick = () => setAuthMode(authMode === "login" ? "register" : "login", authMode === "login");
-$("#toggle-password").onclick = () => { const input = $("#password"); input.type = input.type === "password" ? "text" : "password"; $("#toggle-password").textContent = input.type === "password" ? "显示" : "隐藏"; };
-function showLegal(kind, updateHistory = true) { $("#password").type = "password"; $("#toggle-password").textContent = "显示"; $("#auth-view").hidden = true; $("#legal-view").hidden = false; const terms = kind === "terms"; $("#legal-title").textContent = terms ? "用户协议" : "隐私政策"; $("#legal-text").textContent = terms ? "请仅上传你有权处理的学习资料，并对手工确认的题干、作答和判题结果负责。" : "本地测试版只处理你主动提交的手机号和学习数据；认证秘密不进入日志或模型，个人数据可导出并可注销账号。"; if (updateHistory) history.pushState({legal: kind}, "", terms ? "/legal/terms" : "/legal/privacy"); }
-document.querySelectorAll("[data-legal]").forEach(link => link.onclick = event => { event.preventDefault(); showLegal(link.dataset.legal); });
+$("#toggle-password").onclick = () => { const input = $("#password"); input.type = input.type === "password" ? "text" : "password"; const visible = input.type === "text"; $("#toggle-password").textContent = visible ? "隐藏" : "显示"; $("#toggle-password").setAttribute("aria-label", visible ? "隐藏密码" : "显示密码"); $("#toggle-password").setAttribute("aria-pressed", String(visible)); };
+function showLegal(kind, updateHistory = true) { document.body.classList.remove("is-authenticated"); $("#password").type = "password"; $("#toggle-password").textContent = "显示"; $("#toggle-password").setAttribute("aria-label", "显示密码"); $("#toggle-password").setAttribute("aria-pressed", "false"); $("#auth-view").hidden = true; $("#workbench-view").hidden = true; document.querySelector(".sidebar").hidden = true; document.querySelector(".bottom-nav").hidden = true; $("#legal-view").hidden = false; const terms = kind === "terms"; $("#legal-title").textContent = terms ? "用户协议" : "隐私政策"; $("#legal-text").textContent = terms ? "请仅上传你有权处理的学习资料，并对手工确认的题干、作答和判题结果负责。" : "本地测试版只处理你主动提交的手机号和学习数据；认证秘密不进入日志或模型，个人数据可导出并可注销账号。"; if (updateHistory) history.pushState({legal: kind}, "", terms ? "/legal/terms" : "/legal/privacy"); }
+document.querySelectorAll("[data-legal]").forEach(link => link.onclick = event => { event.preventDefault(); if (!otpRequesting && !authSubmitting) showLegal(link.dataset.legal); });
 $("#legal-back").onclick = () => history.back();
 
 $("#upload-form").addEventListener("submit", async event => {
@@ -338,7 +419,7 @@ $("#all-errors").onclick = async event => { const id = event.target.dataset.erro
 function routeHash() { const hash = location.hash.slice(1); showPanel(["errors","reviews","practice","progress","settings"].includes(hash) ? hash : "workbench"); if (hash === "errors") $("#refresh-errors").click(); if (hash === "progress") api("/v1/progress").then(x => $("#progress-text").textContent = `错题 ${x.error_count || 0} 道，已完成复习 ${x.completed_review_count || 0} 次。`).catch(e => $("#progress-text").textContent = authError(e)); }
 window.addEventListener("hashchange", routeHash);
 function routePage() { if (location.pathname === "/legal/terms") return showLegal("terms", false); if (location.pathname === "/legal/privacy") return showLegal("privacy", false); setAuthMode(location.pathname === "/register" ? "register" : "login", true, false); }
-window.addEventListener("popstate", routePage);
+window.addEventListener("popstate", () => { routePage(); refresh(); });
 
 routePage();
 routeHash();

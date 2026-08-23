@@ -232,7 +232,7 @@ v0.4.0 目标契约：
 
 登录验证请求只接受：`phone`、`challenge_token`、`code`、`terms_version`、`privacy_version`。注册完成请求只接受：`phone`、`challenge_token`、`code`、`password`、`terms_version`、`privacy_version`。不得接受昵称、年级、身份、家庭、监护或可改变数据归属的 `user_id`。
 
-当前 `openapi/web-v1.json` 和代码已升级为 v0.4.0 本地候选契约，共 30 paths；四个认证接口、密码/协议记录、场景隔离和会话创建已通过真实 MySQL smoke、133 项测试、独立安全复核及浏览器验收。生产短信/CAPTCHA/KMS/OSS、压测、灾备和观测仍是上线门禁。
+当前 `openapi/web-v1.json` 和代码已升级为 v0.4.0 本地候选契约，共 30 paths；四个认证接口、密码/协议记录、场景隔离和会话创建已通过真实 MySQL smoke、134 项测试、独立安全复核及浏览器验收。生产短信/CAPTCHA/KMS/OSS、压测、灾备和观测仍是上线门禁。
 
 ## 9. 埋点与隐私
 
