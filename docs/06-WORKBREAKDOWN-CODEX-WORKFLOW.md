@@ -1,6 +1,6 @@
 # 工作分解与 Codex Agent 工作流
 
-> v0.3.2 产品边界：普通用户只有一种，手机号验证后直接使用个人错题本。本文中的家庭、学生档案和产品租户表述属于早期工作包命名；后续领取任务时必须按 `user_id` 隔离和无资料/身份/监护流程重新冻结验收标准。
+> v0.4.0 产品边界：普通用户只有一种，但认证拆为验证码登录与新用户手机号注册；注册增加密码和协议确认并自动登录。本文中的家庭、学生档案和产品租户表述属于早期工作包命名；后续领取任务时必须按 `user_id` 隔离、login/register场景和无资料/身份/监护流程重新冻结验收标准。
 
 > 剩余功能的具体任务 ID、依赖、里程碑和完成证据以 `11-REMAINING-FUNCTION-WBS.md` 为准；本文继续负责通用领取、复核、恢复和模型路由规则。
 
@@ -154,7 +154,7 @@ flowchart TD
 
 ```powershell
 python -X utf8 -B scripts\project_workflow.py start `
-  --id WEB-AUTH-001 --label "手机验证码注册" --template registration --json
+  --id WEB-AUTH-001 --label "验证码登录与手机号注册" --template registration --json
 python -X utf8 -B scripts\project_workflow.py claim WEB-AUTH-001 `
   --step requirements --role PO --owner <负责人> --json
 ```
@@ -231,7 +231,7 @@ python -X utf8 -B scripts\codex_task_router.py run `
   --authorize-external-send --json
 ```
 
-统一参数必须包含：`--ephemeral --sandbox read-only --output-schema`。输入经本地压缩后通过 stdin 发送；手机号、验证码、令牌、对象存储签名和未必要的学生身份不得进入输入。
+统一参数必须包含：`--ephemeral --sandbox read-only --output-schema`。输入经本地压缩后通过 stdin 发送；手机号、验证码、密码、令牌、对象存储签名和未必要的学生身份不得进入输入。
 
 ### 8.1 难度路由
 

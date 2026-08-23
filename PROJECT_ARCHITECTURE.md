@@ -4,7 +4,9 @@
 
 这是独立 Web 项目。当前只建设并验收本地模拟环境；阿里云部署保留为最后的人工批准步骤，在本地端到端流程完全跑通前不得执行。
 
-当前产品基线为 v0.3.2：所有用户完成手机号验证码后直接使用个人错题本。MVP 不建设姓名/昵称/年级资料、身份角色、家庭、学生档案、监护同意或实名认证。个人业务数据以服务端会话解析的 `user_id` 隔离。
+当前目标产品基线为 v0.4.0：验证码登录与新用户注册拆成两个页面和两个服务端场景；登录使用手机号验证码，注册使用手机号、验证码、密码和协议确认，注册成功自动登录并进入个人错题本。MVP 仍不建设姓名/昵称/年级资料、身份角色、家庭、学生档案、监护同意或实名认证。个人业务数据以服务端会话解析的 `user_id` 隔离。
+
+当前代码、迁移和 `openapi/web-v1.json` 仍是 v0.3.3 单入口实现，会在验证码成功后自动创建或复用账号，尚无注册密码、协议记录和 login/register 场景隔离。它是可运行的旧基线，不得作为 v0.4.0 产品完成证据。v0.4.0 详细产品标准见 `docs/13-LOGIN-REGISTER-PRD.md`。
 
 现有代码和在建 Schema 中的 `tenant_id`、家庭、成员、学生档案及监护同意属于早期设计，不能继续作为产品入口或注册后阻断条件。架构步骤必须形成迁移与回滚方案后再调整，不得直接覆盖用户尚未提交的在建代码。
 
@@ -18,7 +20,7 @@
 flowchart TB
     subgraph LOCAL[当前：本地生产等价模拟]
         LB[本地浏览器] -->|localhost| LAPI[ASGI API]
-        LAPI --> LAUTH[注册状态机]
+        LAPI --> LAUTH[认证状态机]
         LAUTH --> LDB[(MySQL 8.4\n127.0.0.1:3307)]
         LAUTH --> LCAPTCHA[本地 CAPTCHA 适配器]
         LAUTH --> LSMS[本地模拟短信\n仅终端显示]
@@ -50,7 +52,7 @@ flowchart TB
 
 | 功能域 | 权威入口/计划落点 | 当前状态 |
 |---|---|---|
-| 手机验证码注册、会话、限流 | `services/web_auth/` | 已实现；单元、MySQL、并发和真实 HTTP 本地验收通过 |
+| 手机验证码注册、会话、限流 | `services/web_auth/` | v0.3.3 单入口已实现；v0.4.0 登录/注册拆分、密码、协议和新 API 待开发 |
 | 本地 MySQL 模拟环境 | `scripts/local_env.py` | 已实现；仅绑定 localhost，不是生产启动器 |
 | Codex 模型路由 | `scripts/codex_task_router.py`、`config/model-routing.json` | 已实现；外发必须显式授权，候选只读 |
 | 任务领取、租约、证据、恢复 | `scripts/project_workflow.py` | 已实现注册模板和全项目模板 |
@@ -65,7 +67,7 @@ flowchart TB
 
 | 路径 | 权威职责 |
 |---|---|
-| `services/web_auth/registration.py` | OTP、限流、注册和会话状态机 |
+| `services/web_auth/registration.py` | OTP、限流、登录、注册和会话的唯一权威状态机 |
 | `services/web_auth/mysql_store.py` | MySQL 事务与行锁 |
 | `services/web_auth/asgi.py` | HTTP 边界和 Cookie |
 | `services/web_auth/bootstrap.py` | 生产环境变量装配和失败关闭 |
@@ -89,7 +91,7 @@ sequenceDiagram
     participant D as MySQL
     participant T as Turnstile
     participant S as 瑞成云
-    C->>A: 请求验证码
+    C->>A: 按 login/register 场景请求验证码
     A->>D: 原子检查冷却、多维限额和预算
     opt 风险达到升级阈值
         A->>T: 服务端验证一次性 token
@@ -100,8 +102,8 @@ sequenceDiagram
     S-->>A: 00/03 + 流水号
     A->>D: 标记 sent
     A-->>C: 统一 202 响应
-    C->>A: 提交验证码和资料
-    A->>D: 行锁校验、单次消费、建用户和会话
+    C->>A: 登录提交验证码；注册提交验证码、密码和协议版本
+    A->>D: 行锁校验、场景隔离、单次消费、建用户/凭据/会话
     A-->>C: Secure/HttpOnly Cookie
 ```
 
@@ -121,7 +123,7 @@ flowchart LR
     CHECK -->|不通过| REWORK[返工/人工复核]
 ```
 
-模型任务统一走 `scripts/codex_task_router.py`，外发前必须显式授权。手机号、验证码、密钥、用户数据和数据库内容不得进入模型输入。低置信度最多自动升级一次。
+模型任务统一走 `scripts/codex_task_router.py`，外发前必须显式授权。手机号、验证码、密码、密钥、用户数据和数据库内容不得进入模型输入。低置信度最多自动升级一次。
 
 ## 7. 完成门
 
