@@ -169,10 +169,11 @@ $("#phone-form").addEventListener("submit", async event => {
     const result = await api(`/v1/auth/${requestMode}/otp/request`, {method: "POST", body: JSON.stringify(captcha_token ? {phone: requestPhone, captcha_token} : {phone: requestPhone})});
     if (requestRevision !== authRevision || requestMode !== authMode || requestPhone !== $("#phone").value) return;
     challenge = result.challenge_token;
-    $("#code").value = "";
+    const localTestCode = /^\d{6}$/.test(result.local_test_code || "") ? result.local_test_code : "";
+    $("#code").value = localTestCode;
     $("#code-error").hidden = true;
     refreshAuthControls();
-    status($("#auth-status"), result.message);
+    status($("#auth-status"), localTestCode ? "仅限本地测试：模拟验证码已自动填入。" : result.message);
     $("#code").focus();
     startCountdown(result.retry_after_seconds);
   } catch (error) {
@@ -409,7 +410,7 @@ $("#logout").addEventListener("click", async () => {
 });
 
 $("#logout-all").onclick = async () => { try { await api("/v1/sessions", {method: "DELETE"}); show(false); } catch (e) { status($("#settings-status"), authError(e), true); } };
-$("#sensitive-otp").onclick = async () => { try { sensitiveAction = $("#sensitive-action").value; const captcha_token = $("#sensitive-captcha-token").value.trim(); const result = await api("/v1/auth/sensitive/otp/request", {method:"POST", body:JSON.stringify(captcha_token ? {phone:$("#sensitive-phone").value, action:sensitiveAction, captcha_token} : {phone:$("#sensitive-phone").value, action:sensitiveAction})}); sensitiveChallenge = result.challenge_token; status($("#settings-status"), `用于${sensitiveAction === "export" ? "导出" : "注销"}的验证码已发送，请在 5 分钟内使用。`); } catch(e) { if (e.message === "captcha_required") { $("#sensitive-captcha-fields").hidden = false; $("#sensitive-captcha-token").focus(); } status($("#settings-status"), authError(e), true); } };
+$("#sensitive-otp").onclick = async () => { try { sensitiveAction = $("#sensitive-action").value; const captcha_token = $("#sensitive-captcha-token").value.trim(); const result = await api("/v1/auth/sensitive/otp/request", {method:"POST", body:JSON.stringify(captcha_token ? {phone:$("#sensitive-phone").value, action:sensitiveAction, captcha_token} : {phone:$("#sensitive-phone").value, action:sensitiveAction})}); sensitiveChallenge = result.challenge_token; const localTestCode = /^\d{6}$/.test(result.local_test_code || "") ? result.local_test_code : ""; if (localTestCode) $("#sensitive-code").value = localTestCode; status($("#settings-status"), localTestCode ? "仅限本地测试：操作验证码已自动填入。" : `用于${sensitiveAction === "export" ? "导出" : "注销"}的验证码已发送，请在 5 分钟内使用。`); } catch(e) { if (e.message === "captcha_required") { $("#sensitive-captcha-fields").hidden = false; $("#sensitive-captcha-token").focus(); } status($("#settings-status"), authError(e), true); } };
 function sensitivePayload() { return {phone:$("#sensitive-phone").value, challenge_token:sensitiveChallenge, code:$("#sensitive-code").value}; }
 $("#sensitive-action").onchange = () => { sensitiveChallenge = null; sensitiveAction = null; $("#sensitive-code").value = ""; status($("#settings-status"), "用途已改变，请重新获取验证码。"); };
 $("#export-data").onclick = async () => { if (sensitiveAction !== "export" || !sensitiveChallenge) return status($("#settings-status"), "请先选择导出并获取对应验证码。", true); try { const job = await api("/v1/exports", {method:"POST", body:JSON.stringify(sensitivePayload()), headers:{"Idempotency-Key":crypto.randomUUID()}}); sensitiveChallenge = sensitiveAction = null; $("#sensitive-code").value = ""; if (job.download_url) { const link = document.createElement("a"); link.href = job.download_url; link.textContent = "下载个人数据"; link.setAttribute("download", ""); $("#settings-status").replaceChildren("导出已生成：", link); link.click(); } else status($("#settings-status"), `导出任务已创建：${job.job_id || job.task_id || "处理中"}`); } catch(e) { status($("#settings-status"), authError(e), true); } };

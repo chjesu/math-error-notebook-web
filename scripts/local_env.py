@@ -806,11 +806,56 @@ def smoke() -> dict[str, Any]:
 
 
 class ConsoleSmsSender:
-    """Local-only sender: show the simulated OTP in the foreground terminal."""
+    """Local-only sender that keeps simulated deliveries in process memory."""
+
+    def __init__(self) -> None:
+        self.deliveries: list[tuple[str, str, int]] = []
 
     def send_verification(self, phone: str, code: str, ttl_seconds: int) -> str:
-        print(f"[LOCAL SMS] {phone[:3]}****{phone[-4:]} code={code} ttl={ttl_seconds}s", flush=True)
+        self.deliveries.append((phone, code, ttl_seconds))
+        print(f"[LOCAL SMS] {phone[:3]}****{phone[-4:]} simulated code issued", flush=True)
         return f"local-{secrets.token_hex(8)}"
+
+
+class LocalOtpDisclosureApp:
+    """Add a simulated OTP to localhost-only request responses."""
+
+    OTP_PATHS = {
+        "/v1/auth/register/otp/request",
+        "/v1/auth/login/otp/request",
+        "/v1/auth/sensitive/otp/request",
+    }
+
+    def __init__(self, app: Any, sender: Any) -> None:
+        self.app = app
+        self.sender = sender
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http" or scope.get("method") != "POST" or scope.get("path") not in self.OTP_PATHS:
+            await self.app(scope, receive, send)
+            return
+
+        delivery_count = len(self.sender.deliveries)
+        messages: list[dict[str, Any]] = []
+
+        async def capture(message: dict[str, Any]) -> None:
+            messages.append(message)
+
+        await self.app(scope, receive, capture)
+        start_message = next((message for message in messages if message["type"] == "http.response.start"), None)
+        if start_message is None or start_message.get("status") != 202 or len(self.sender.deliveries) != delivery_count + 1:
+            for message in messages:
+                await send(message)
+            return
+
+        body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
+        payload = json.loads(body)
+        payload["local_test_code"] = self.sender.deliveries[-1][1]
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        headers = [(key, value) for key, value in start_message["headers"] if key.lower() != b"content-length"]
+        headers.append((b"content-length", str(len(encoded)).encode("ascii")))
+        await send({**start_message, "headers": headers})
+        await send({"type": "http.response.body", "body": encoded})
 
 
 def serve(host: str, port: int) -> None:
@@ -827,9 +872,10 @@ def serve(host: str, port: int) -> None:
     from services.web_domain import MySqlDomainStore, NotebookService
     import uvicorn
 
+    sender = ConsoleSmsSender()
     service = RegistrationService(
         store=MySqlRegistrationStore(_connection_factory()),
-        sms_sender=ConsoleSmsSender(),
+        sms_sender=sender,
         captcha_verifier=InMemoryCaptchaVerifier({"local-captcha"}),
         secret_pepper=base64.b64decode(_load_secrets()["auth_pepper_b64"]),
         config=AuthConfig(captcha_after_phone_day=99, captcha_after_ip_hour=99),
@@ -842,7 +888,7 @@ def serve(host: str, port: int) -> None:
         require_https=False,
     )
     app.resume_pending_deletions()
-    uvicorn.run(app, host=host, port=port, access_log=False)
+    uvicorn.run(LocalOtpDisclosureApp(app, sender), host=host, port=port, access_log=False)
 
 
 def doctor() -> dict[str, Any]:

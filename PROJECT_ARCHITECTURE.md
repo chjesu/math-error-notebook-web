@@ -23,7 +23,7 @@ flowchart TB
         LAPI --> LAUTH[认证状态机]
         LAUTH --> LDB[(MySQL 8.4\n127.0.0.1:3307)]
         LAUTH --> LCAPTCHA[本地 CAPTCHA 适配器]
-        LAUTH --> LSMS[本地模拟短信\n仅终端显示]
+        LAUTH --> LSMS[本地模拟短信\n页面标记并自动填入]
     end
 
     subgraph TARGET[后续：阿里云生产目标]
@@ -133,4 +133,4 @@ flowchart LR
 
 ## 本地模拟边界
 
-本地模拟复用同一注册状态机、MySQL 适配器、迁移和 ASGI 边界，仅替换短信与 CAPTCHA 外部适配器。同步 MySQL、文件和 PDF 调用通过标准库线程执行，避免阻塞 ASGI 事件循环；上传仍使用有大小上限的本地缓冲，生产必须改为流式 OSS。MySQL 固定绑定 `127.0.0.1:3307`；模拟服务固定绑定 localhost，不能作为生产启动入口。
+本地模拟复用同一注册状态机、MySQL 适配器、迁移和 ASGI 边界，仅替换短信与 CAPTCHA 外部适配器。localhost 启动器会在验证码申请成功的响应中附加本地测试码，页面明确标记并自动填入；生产装配不会返回该字段。同步 MySQL、文件和 PDF 调用通过标准库线程执行，避免阻塞 ASGI 事件循环；上传仍使用有大小上限的本地缓冲，生产必须改为流式 OSS。MySQL 固定绑定 `127.0.0.1:3307`；模拟服务固定绑定 localhost，不能作为生产启动入口。

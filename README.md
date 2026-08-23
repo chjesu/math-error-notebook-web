@@ -23,7 +23,7 @@ python -X utf8 -B scripts/codex_task_router.py route --task web-security-review 
 .\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py serve
 ```
 
-服务仅监听 `127.0.0.1:8000`。请求验证码后，模拟验证码显示在当前终端。测试 CAPTCHA token 为 `local-captcha`。停止数据库使用：
+服务仅监听 `127.0.0.1:8000`。请求验证码后，页面会明确标记“仅限本地测试”并自动填入模拟验证码；正式服务响应不会返回验证码。测试 CAPTCHA token 为 `local-captcha`。停止数据库使用：
 
 自动识别和自动判题 Worker 尚未接入时，上传后可在页面直接手工确认题干、作答、结果和首错步骤，再确认写入错题本；候选不会自动进入正式错题。
 

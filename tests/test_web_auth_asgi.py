@@ -5,6 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+from scripts.local_env import LocalOtpDisclosureApp
 from services.web_auth import AuthAsgiApp, AuthConfig, InMemoryCaptchaVerifier, InMemoryRegistrationStore, RecordingSmsSender, RegistrationService
 
 
@@ -54,9 +55,16 @@ class AuthAsgiTests(unittest.TestCase):
     def test_target_endpoints_enforce_account_state_and_agreement(self) -> None:
         self.assertEqual(self.call("/v1/auth/login/otp/request", {"phone":"13800138000"})[2]["error"]["code"], "phone_not_registered")
         request = self.call("/v1/auth/register/otp/request", {"phone":"13800138000"})
-        missing = self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":self.sender.deliveries[-1][1], "password":"safe123"})
+        registration_code = self.sender.deliveries[-1][1]
+        self.assertNotIn("local_test_code", request[2])
+        production_app = self.app
+        self.app = LocalOtpDisclosureApp(self.app, self.sender)
+        local_request = self.call("/v1/auth/register/otp/request", {"phone":"13900139000"})
+        self.app = production_app
+        self.assertEqual(local_request[2]["local_test_code"], self.sender.deliveries[-1][1])
+        missing = self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":registration_code, "password":"safe123"})
         self.assertEqual(missing[2]["error"]["code"], "agreement_required")
-        self.assertEqual(self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":self.sender.deliveries[-1][1], "password":"safe123", "terms_version":PROTOCOL, "privacy_version":PROTOCOL})[0], 200)
+        self.assertEqual(self.call("/v1/auth/register/complete", {"challenge_token":request[2]["challenge_token"], "phone":"13800138000", "code":registration_code, "password":"safe123", "terms_version":PROTOCOL, "privacy_version":PROTOCOL})[0], 200)
         self.assertEqual(self.call("/v1/auth/register/otp/request", {"phone":"13800138000"})[2]["error"]["code"], "phone_already_registered")
 
     def test_login_and_sensitive_request_are_session_bound(self) -> None:

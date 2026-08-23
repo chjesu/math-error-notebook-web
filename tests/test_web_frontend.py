@@ -41,7 +41,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("showLegal", script)
         self.assertIn('$("#password").type = "password"', script)
         self.assertIn("resetOtp()", script)
-        self.assertIn('challenge = result.challenge_token;\n    $("#code").value = "";', script)
+        self.assertIn('challenge = result.challenge_token;\n    const localTestCode =', script)
+        self.assertIn('$("#code").value = localTestCode;', script)
         self.assertIn('$("#agreement-fields").hidden = false', script)
         self.assertIn('$("#agreement").addEventListener("change", refreshAuthControls)', script)
         self.assertNotIn('authMode === "register" && !$("#agreement").checked', script)
@@ -49,6 +50,9 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("requestRevision !== authRevision", script)
         self.assertIn('$("#login-tab").disabled = busy', script)
         self.assertIn('$("#phone").disabled = busy', script)
+        self.assertIn("result.local_test_code", script)
+        self.assertIn("仅限本地测试：模拟验证码已自动填入。", script)
+        self.assertIn("仅限本地测试：操作验证码已自动填入。", script)
 
     def test_auth_first_screen_and_control_states_match_ux_contract(self) -> None:
         root = Path(__file__).resolve().parents[1]
