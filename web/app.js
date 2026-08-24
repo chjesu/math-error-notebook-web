@@ -73,10 +73,6 @@ async function requireSession() {
   }
 }
 
-$("#logout").addEventListener("click", async () => {
-  try { await api("/v1/session", {method: "DELETE"}); } finally { location.replace("/login"); }
-});
-
 function bindWorkbench() {
   let activeIntake = null;
   let activeAttempt = null;
@@ -440,6 +436,9 @@ function bindSettings() {
   let sensitiveChallenge = null;
   let sensitiveAction = null;
   const settingsStatus = $("#settings-status");
+  $("#logout").addEventListener("click", async () => {
+    try { await api("/v1/session", {method: "DELETE"}); } finally { location.replace("/login"); }
+  });
   $("#logout-all").addEventListener("click", async () => {
     try { await api("/v1/sessions", {method: "DELETE"}); location.replace("/login"); }
     catch (error) { status(settingsStatus, authError(error), true); }

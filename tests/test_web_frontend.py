@@ -25,6 +25,8 @@ class FrontendContractTests(unittest.TestCase):
             self.assertIn('李兆霖数学错题本', html)
             for route in ('href="/"', 'href="/errors"', 'href="/reviews"', 'href="/practice"', 'href="/progress"', 'href="/settings"'):
                 self.assertIn(route, html)
+            for icon in ("workbench", "errors", "reviews", "practice", "progress", "settings"):
+                self.assertIn(f'/web/nav-icons.svg#{icon}', html)
             self.assertNotIn('href="#', html)
             for other_marker in unique_markers:
                 if other_marker != own_marker:
@@ -87,6 +89,14 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn('api("/v1/workbench")', script)
         self.assertIn(".chat-main", css)
         self.assertIn(".chat-composer", css)
+
+    def test_logout_only_appears_in_settings(self) -> None:
+        settings = (WEB / "settings.html").read_text(encoding="utf-8")
+        self.assertIn('id="logout"', settings)
+        self.assertIn("退出当前账号", settings)
+        self.assertIn('id="logout-all"', settings)
+        for filename in ("index.html", "errors.html", "reviews.html", "practice.html", "progress.html"):
+            self.assertNotIn('id="logout"', (WEB / filename).read_text(encoding="utf-8"))
 
     def test_login_and_register_are_separate_documents(self) -> None:
         login = (WEB / "login.html").read_text(encoding="utf-8")
