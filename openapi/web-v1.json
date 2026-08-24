@@ -136,6 +136,16 @@
         "responses": {"200": {"$ref": "#/components/responses/Intake"}, "201": {"$ref": "#/components/responses/Intake"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
       }
     },
+    "/v1/intakes/{intake_id}/chat-turn": {
+      "post": {
+        "operationId": "continueMathNotebookConversation",
+        "description": "在服务端绑定的持久 Codex 会话中继续当前错题；模型只能返回候选，确认题干、确认判题和写入错题本仍经过确定性闸门。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IntakeId"}],
+        "requestBody": {"$ref": "#/components/requestBodies/ChatTurn"},
+        "responses": {"200": {"$ref": "#/components/responses/ChatTurn"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
+      }
+    },
     "/v1/attempts/{attempt_id}/manual-grade": {
       "post": {
         "operationId": "saveManualGradeCandidate",
@@ -333,6 +343,7 @@
       "IntakeRevision": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IntakeRevision"}}}},
       "ManualIntakeCandidate": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualIntakeCandidate"}}}},
       "ManualGradeCandidate": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualGradeCandidate"}}}},
+      "ChatTurn": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChatTurnRequest"}}}},
       "Version": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Version"}}}},
       "ReviewResult": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewResult"}}}},
       "PracticePdf": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PracticePdfRequest"}}}}
@@ -347,6 +358,7 @@
       "TaskAccepted": {"description": "任务已创建", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TaskAccepted"}}}},
       "Intake": {"description": "识别候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Intake"}}}},
       "GradeCandidate": {"description": "判题候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GradeCandidate"}}}},
+      "ChatTurn": {"description": "本轮会话答复及可选的新候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChatTurnResponse"}}}},
       "ErrorEntry": {"description": "正式错题", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEntry"}}}},
       "ErrorList": {"description": "错题列表", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/ErrorEntry"}}}}}}},
       "RecommendationList": {"description": "已验证推荐及真实缺口", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RecommendationList"}}}},
@@ -378,12 +390,14 @@
       "IntakeRevision": {"type": "object", "additionalProperties": false, "required": ["input_version", "question_text", "answer_text"], "properties": {"input_version": {"type": "integer", "minimum": 1}, "question_text": {"type": "string", "minLength": 1}, "answer_text": {"type": "string"}}},
       "ManualIntakeCandidate": {"type": "object", "additionalProperties": false, "required": ["question_text"], "properties": {"question_text": {"type": "string", "minLength": 1}, "answer_text": {"type": "string", "default": ""}}},
       "ManualGradeCandidate": {"type": "object", "additionalProperties": false, "required": ["input_version", "verdict"], "properties": {"input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "first_error": {"type": "string"}, "cause_code": {"enum": ["knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear"]}, "evidence": {"type": "string"}, "correct_solution": {"type": "string"}, "final_answer": {"type": "string"}, "prevention_cue": {"type": "string"}}, "allOf": [{"if": {"properties": {"verdict": {"enum": ["partial", "incorrect"]}}, "required": ["verdict"]}, "then": {"required": ["first_error", "cause_code", "evidence", "correct_solution", "final_answer"]}}]},
+      "ChatTurnRequest": {"type": "object", "additionalProperties": false, "required": ["message", "stage", "input_version", "attempt_id", "candidate_id"], "properties": {"message": {"type": "string", "minLength": 1, "maxLength": 12000}, "stage": {"enum": ["intake", "grade"]}, "input_version": {"type": "integer", "minimum": 1}, "attempt_id": {"type": ["string", "null"], "pattern": "^[0-9a-f]{32}$"}, "candidate_id": {"type": ["string", "null"], "pattern": "^[0-9a-f]{32}$"}}},
       "Version": {"type": "object", "additionalProperties": false, "required": ["input_version"], "properties": {"input_version": {"type": "integer", "minimum": 1}}},
       "TaskAccepted": {"type": "object", "required": ["resource_id", "task_id"], "properties": {"resource_id": {"$ref": "#/components/schemas/Id"}, "task_id": {"$ref": "#/components/schemas/Id"}}},
       "Task": {"type": "object", "required": ["task_id", "type", "status"], "properties": {"task_id": {"$ref": "#/components/schemas/Id"}, "type": {"enum": ["extract", "grade", "import", "practice_pdf", "export"]}, "status": {"enum": ["queued", "running", "waiting_confirmation", "completed", "failed_retryable", "failed_final", "cancelled"]}, "checkpoint": {"type": ["object", "null"]}, "last_error_code": {"type": ["string", "null"]}}},
       "Intake": {"type": "object", "required": ["intake_id", "input_version", "status", "question_text", "answer_text"], "properties": {"intake_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "status": {"enum": ["extracting", "waiting_confirmation", "confirmed", "cancelled"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}}},
       "Diagnosis": {"type": "object", "properties": {"cause_code": {"type": ["string", "null"]}, "cause_evidence": {"type": ["string", "null"]}, "correct_solution": {"type": ["string", "null"]}, "final_answer": {"type": ["string", "null"]}, "prevention_cue": {"type": ["string", "null"]}}},
       "GradeCandidate": {"type": "object", "required": ["result_id", "input_version", "verdict", "status"], "properties": {"result_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "status": {"enum": ["candidate", "committed", "superseded", "rejected"]}, "first_error": {"type": ["string", "null"]}, "diagnosis": {"$ref": "#/components/schemas/Diagnosis"}}},
+      "ChatTurnResponse": {"type": "object", "required": ["assistant_message", "action", "stage", "model"], "properties": {"assistant_message": {"type": "string"}, "action": {"enum": ["respond", "revise_intake", "revise_grade", "ready"]}, "stage": {"enum": ["intake", "grade"]}, "intake": {"$ref": "#/components/schemas/Intake"}, "candidate": {"oneOf": [{"$ref": "#/components/schemas/GradeCandidate"}, {"type": "null"}]}, "model": {"type": ["object", "null"]}}},
       "ErrorEntry": {"type": "object", "required": ["error_id", "status", "question_text", "created_at"], "properties": {"error_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["open", "reviewing", "mastered", "removed"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}, "first_error": {"type": ["string", "null"]}, "diagnosis": {"$ref": "#/components/schemas/Diagnosis"}, "created_at": {"type": "string", "format": "date-time"}}},
       "Recommendation": {"type": "object", "required": ["recommendation_id", "question_id", "stem_text", "source", "reason", "status"], "properties": {"recommendation_id": {"$ref": "#/components/schemas/Id"}, "question_id": {"$ref": "#/components/schemas/Id"}, "stem_text": {"type": "string"}, "grade": {"type": ["integer", "null"]}, "difficulty": {"type": ["number", "null"]}, "source": {"type": "string"}, "reason": {"type": "string"}, "status": {"enum": ["assigned", "completed"]}}},
       "RecommendationList": {"type": "object", "required": ["items", "gap"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Recommendation"}}, "gap": {"type": "boolean"}}},

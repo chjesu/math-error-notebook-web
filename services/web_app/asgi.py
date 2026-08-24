@@ -226,6 +226,95 @@ class NotebookAsgiApp:
                     await self._json(send, 201, self._intake(intake) | {"model_status": "complete", "model": result.get("route")})
                 else:
                     await self._json(send, 200, self._intake(intake) | {"model_status": "unclear", "question_text": question_text, "answer_text": answer_text, "model": result.get("route")})
+            elif path.startswith("/v1/intakes/") and path.endswith("/chat-turn") and method == "POST":
+                if self.model_runner is None:
+                    raise ModelUnavailableError("local model processing is disabled")
+                intake_id = path.split("/")[-2]
+                payload = await self._json_body(receive)
+                if set(payload) != {"message", "stage", "input_version", "attempt_id", "candidate_id"}:
+                    raise ValueError("invalid chat turn request")
+                message = payload["message"]
+                stage = payload["stage"]
+                if not isinstance(message, str) or not message.strip() or len(message) > 12_000 or stage not in {"intake", "grade"}:
+                    raise ValueError("invalid chat turn request")
+                intake = await self._sync(self.notebook.store.get_intake, user_id=user.user_id, intake_id=intake_id)
+                if not intake:
+                    raise LookupError
+                if int(payload["input_version"]) != intake.input_version:
+                    raise RuntimeError("input_version_changed")
+                if stage == "intake":
+                    if payload["attempt_id"] is not None or payload["candidate_id"] is not None:
+                        raise ValueError("invalid intake chat context")
+                    result = await self._sync(
+                        self.model_runner.chat_turn,
+                        conversation_id=intake_id,
+                        stage="intake",
+                        resource_id=intake_id,
+                        input_version=intake.input_version,
+                        user_message=message,
+                        context={"question_text": intake.question_text, "answer_text": intake.answer_text, "status": intake.status},
+                    )
+                    if result.get("action") == "revise_intake":
+                        if intake.status == "extracting":
+                            intake = await self._sync(
+                                self.notebook.store.save_extraction_candidate,
+                                user_id=user.user_id,
+                                intake_id=intake_id,
+                                question_text=str(result.get("question_text") or ""),
+                                answer_text=str(result.get("answer_text") or ""),
+                                evidence={"source": "codex_cli_conversation", "route": result.get("route"), "confidence": result.get("confidence")},
+                            )
+                        else:
+                            intake = await self._sync(
+                                self.notebook.store.revise_intake,
+                                user_id=user.user_id,
+                                intake_id=intake_id,
+                                expected_version=intake.input_version,
+                                question_text=str(result.get("question_text") or ""),
+                                answer_text=str(result.get("answer_text") or ""),
+                            )
+                    await self._json(send, 200, {
+                        "assistant_message": result["assistant_message"], "action": result["action"],
+                        "stage": "intake", "intake": self._intake(intake), "model": result.get("route"),
+                    })
+                else:
+                    attempt_id = payload["attempt_id"]
+                    candidate_id = payload["candidate_id"]
+                    if not isinstance(attempt_id, str) or candidate_id is not None and not isinstance(candidate_id, str):
+                        raise ValueError("invalid grade chat context")
+                    attempt = await self._sync(self.notebook.store.get_attempt, user_id=user.user_id, attempt_id=attempt_id)
+                    if not attempt or attempt.intake_id != intake_id or attempt.input_version != intake.input_version:
+                        raise LookupError
+                    candidate = None
+                    if candidate_id:
+                        candidate = await self._sync(self.notebook.store.get_grade_candidate, user_id=user.user_id, candidate_id=candidate_id)
+                        if not candidate or candidate.attempt_id != attempt_id:
+                            raise LookupError
+                    result = await self._sync(
+                        self.model_runner.chat_turn,
+                        conversation_id=intake_id,
+                        stage="grade",
+                        resource_id=attempt_id,
+                        input_version=attempt.input_version,
+                        user_message=message,
+                        context={
+                            "question_text": attempt.question_text, "answer_text": attempt.answer_text,
+                            "candidate": self._candidate(candidate) if candidate else None,
+                        },
+                    )
+                    if result.get("action") == "revise_grade":
+                        verdict, first_error, evidence = self._grade_values(result, evidence_key="cause_evidence")
+                        candidate = await self._sync(
+                            self.notebook.store.record_grade_candidate,
+                            user_id=user.user_id, attempt_id=attempt_id, input_version=attempt.input_version,
+                            verdict=verdict, first_error=first_error, evidence=evidence,
+                            confidence=float(result["confidence"]),
+                        )
+                    await self._json(send, 200, {
+                        "assistant_message": result["assistant_message"], "action": result["action"],
+                        "stage": "grade", "candidate": self._candidate(candidate) if candidate else None,
+                        "model": result.get("route"),
+                    })
             elif path.startswith("/v1/intakes/") and path.endswith("/confirm") and method == "POST":
                 intake_id = path.split("/")[-2]
                 payload = await self._json_body(receive)

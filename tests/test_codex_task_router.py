@@ -33,6 +33,9 @@ class CodexTaskRouterTests(unittest.TestCase):
         adjudicated = router.select("math-grade-candidate", ["math_uncertainty"])
         self.assertEqual(adjudicated["model"], "gpt-5.6-sol")
         self.assertEqual(adjudicated["promoted_from"], "math-grade-candidate")
+        loop_route = router.select("math-notebook-loop", [])
+        self.assertEqual(loop_route["model"], "gpt-5.6-sol")
+        self.assertTrue(loop_route["schema"].endswith("math-loop-turn.schema.json"))
 
     def test_team_roles_route_by_specialty_and_wave(self) -> None:
         self.assertEqual(router.select_role("PO", [])["model"], "gpt-5.6-luna")
@@ -103,7 +106,10 @@ class CodexTaskRouterTests(unittest.TestCase):
                 self.assertIn("--ephemeral", command)
                 self.assertIn("--ignore-user-config", command)
                 self.assertEqual(command[command.index("--disable") + 1], "shell_tool")
-                self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
+                if "resume" in command:
+                    self.assertIn('sandbox_mode="read-only"', command)
+                else:
+                    self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
                 self.assertIn("--skip-git-repo-check", command)
                 self.assertEqual(command[command.index("-i") + 1], str(image_path))
                 self.assertNotIn("public fixture", " ".join(command))
@@ -129,6 +135,49 @@ class CodexTaskRouterTests(unittest.TestCase):
             audit = json.loads(Path(value["audit"]).read_text(encoding="utf-8"))
             self.assertNotIn("input", audit)
             self.assertFalse(audit["database_modified"])
+
+    def test_conversation_turn_starts_and_resumes_one_read_only_codex_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "turn.json"
+            original_audits = router.AUDITS
+            router.AUDITS = root / "audits"
+            commands = []
+
+            def fake_run(command, **kwargs):
+                commands.append(command)
+                self.assertNotIn("--ephemeral", command)
+                self.assertIn("--json", command)
+                if "resume" in command:
+                    self.assertIn('sandbox_mode="read-only"', command)
+                else:
+                    self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
+                self.assertEqual(command[command.index("--disable") + 1], "shell_tool")
+                self.assertNotIn("--last", command)
+                self.assertNotEqual(Path(kwargs["cwd"]).resolve(), ROOT.resolve())
+                packet = json.loads(kwargs["input"].split("Review input:\n", 1)[1])
+                output.write_text(json.dumps({
+                    "conversation_id": packet["conversation_id"], "stage": packet["stage"],
+                    "resource_id": packet["resource_id"], "input_version": packet["input_version"],
+                    "action": "respond", "assistant_message": "继续", "question_text": None,
+                    "answer_text": None, "verdict": None, "first_error": None, "cause_code": None,
+                    "cause_evidence": None, "correct_solution": None, "final_answer": None,
+                    "prevention_cue": None, "confidence": 0.99,
+                }, ensure_ascii=False), encoding="utf-8")
+                stdout = '{"type":"thread.started","thread_id":"thread-123"}\n' if "resume" not in command else ""
+                return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+            packet = json.dumps({"conversation_id": "a" * 32, "stage": "intake", "resource_id": "a" * 32, "input_version": 1, "user_message": "继续", "context": {}}, ensure_ascii=False)
+            try:
+                with mock.patch.object(router.shutil, "which", return_value="codex"), mock.patch.object(router.subprocess, "run", side_effect=fake_run):
+                    first = router.run_conversation_turn(router.select("math-notebook-loop", []), packet, output)
+                    second = router.run_conversation_turn(router.select("math-notebook-loop", []), packet, output, first["session_id"])
+            finally:
+                router.AUDITS = original_audits
+            self.assertEqual((first["session_id"], second["session_id"]), ("thread-123", "thread-123"))
+            self.assertNotIn("resume", commands[0])
+            self.assertIn("resume", commands[1])
+            self.assertIn("thread-123", commands[1])
 
     def test_run_wave_dispatches_one_independent_result_per_role(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

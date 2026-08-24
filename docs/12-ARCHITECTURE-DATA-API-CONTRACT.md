@@ -1,6 +1,6 @@
 # v0.4.0 目标架构、数据与 API 契约
 
-> 当前实现说明：`openapi/web-v1.json` 已为 v0.4.0 本地候选契约，共 34 paths；认证四接口、个人 user_id 领域闭环、Codex CLI 数学候选、导出和注销已通过本地测试。真实供应商、生产 Worker、压测/灾备、观测与正式部署仍是生产门禁。
+> 当前实现说明：`openapi/web-v1.json` 已为 v0.4.0 本地候选契约，共 35 paths；认证四接口、个人 user_id 领域闭环、Codex CLI 数学候选与连续会话、导出和注销已通过本地测试。真实供应商、生产 Worker、压测/灾备、观测与正式部署仍是生产门禁。
 
 ## 1. 权限矩阵（ARCH-001）
 
@@ -109,4 +109,4 @@ v0.4.0认证目标端点为：
 
 ## 6. 文档与工作流（ARCH-006）
 
-`WEB-PRD-004`、v0.4.0 PRD和`docs/13-LOGIN-REGISTER-PRD.md`是当前产品基线。现有`WEB-PRD-003`和 v0.3.3 OpenAPI 仅保留为历史迁移起点；当前契约、WBS、34 paths OpenAPI 和 0005—0009 迁移已对齐，剩余工作属于生产门禁和独立复核。
+`WEB-PRD-004`、v0.4.0 PRD和`docs/13-LOGIN-REGISTER-PRD.md`是当前产品基线。现有`WEB-PRD-003`和 v0.3.3 OpenAPI 仅保留为历史迁移起点；当前契约、WBS、35 paths OpenAPI 和 0005—0009 迁移已对齐，剩余工作属于生产门禁和独立复核。

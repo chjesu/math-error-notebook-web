@@ -2,7 +2,7 @@
 
 > 文档基线：v0.4.0
 > 基线日期：2026-08-23
-> 当前状态：v0.4.0 本地候选已实现；OpenAPI 为 34 paths，153 项测试通过，真实 MySQL smoke、Codex CLI 数学候选实测与浏览器验收已完成。生产门禁未通过。
+> 当前状态：v0.4.0 本地候选已实现；OpenAPI 为 35 paths，157 项测试通过，真实 MySQL smoke、Codex CLI 数学候选实测与浏览器验收已完成。生产门禁未通过。
 
 ## 当前产品口径
 
@@ -30,10 +30,10 @@
 | [09-PRODUCT-FUNCTION-DESIGN.md](./09-PRODUCT-FUNCTION-DESIGN.md) | 页面、流程、异常恢复和产品事件 | v0.4.0 | 已确认 |
 | [10-UX-UI-INTERACTION-DESIGN.md](./10-UX-UI-INTERACTION-DESIGN.md) | 信息架构、线框、视觉规范、交互状态和前端顺序 | v0.4.0 | 核心流程可评审 |
 | [11-REMAINING-FUNCTION-WBS.md](./11-REMAINING-FUNCTION-WBS.md) | 剩余功能任务、依赖、并行线、验收证据和完成定义 | v0.4.0 | 可执行基线 |
-| [12-ARCHITECTURE-DATA-API-CONTRACT.md](./12-ARCHITECTURE-DATA-API-CONTRACT.md) | 权限矩阵、user_id Schema、候选/正式记录、API 错误与迁移契约 | v0.4.0 | 已与 34 paths OpenAPI 同步 |
+| [12-ARCHITECTURE-DATA-API-CONTRACT.md](./12-ARCHITECTURE-DATA-API-CONTRACT.md) | 权限矩阵、user_id Schema、候选/正式记录、API 错误与迁移契约 | v0.4.0 | 已与 35 paths OpenAPI 同步 |
 | [13-LOGIN-REGISTER-PRD.md](./13-LOGIN-REGISTER-PRD.md) | 登录/注册页面、字段、状态、风控、目标 API 与验收标准 | v0.4.0 | 本地实现已验收；生产安全门禁未完成 |
 | [14-CODEX-MULTI-AGENT-TEAM.md](./14-CODEX-MULTI-AGENT-TEAM.md) | 多角色子智能体、岗位能力、并行工作流、模型路由和治理边界 | v1.0 | 已建立 |
-| [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前完整本地候选机器可校验 API 契约 | v0.4.0 | 34 paths；生产部署前仍需契约复核 |
+| [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前完整本地候选机器可校验 API 契约 | v0.4.0 | 35 paths；生产部署前仍需契约复核 |
 
 ## 活跃需求
 

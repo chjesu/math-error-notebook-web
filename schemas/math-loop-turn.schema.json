@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "conversation_id", "stage", "resource_id", "input_version", "action",
+    "assistant_message", "question_text", "answer_text", "verdict",
+    "first_error", "cause_code", "cause_evidence", "correct_solution",
+    "final_answer", "prevention_cue", "confidence"
+  ],
+  "properties": {
+    "conversation_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+    "stage": {"type": "string", "enum": ["intake", "grade"]},
+    "resource_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+    "input_version": {"type": "integer", "minimum": 1},
+    "action": {"type": "string", "enum": ["respond", "revise_intake", "revise_grade", "ready"]},
+    "assistant_message": {"type": "string", "minLength": 1, "maxLength": 12000},
+    "question_text": {"type": ["string", "null"], "maxLength": 12000},
+    "answer_text": {"type": ["string", "null"], "maxLength": 12000},
+    "verdict": {"type": ["string", "null"], "enum": ["correct", "partial", "incorrect", "unclear", null]},
+    "first_error": {"type": ["string", "null"], "maxLength": 12000},
+    "cause_code": {"type": ["string", "null"], "enum": ["knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear", null]},
+    "cause_evidence": {"type": ["string", "null"], "maxLength": 12000},
+    "correct_solution": {"type": ["string", "null"], "maxLength": 12000},
+    "final_answer": {"type": ["string", "null"], "maxLength": 12000},
+    "prevention_cue": {"type": ["string", "null"], "maxLength": 12000},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

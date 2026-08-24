@@ -8,7 +8,7 @@ from threading import Lock
 from typing import Any, Callable
 import uuid
 
-from scripts.codex_task_router import run_review, select
+from scripts.codex_task_router import run_conversation_turn, run_review, select
 
 
 CAUSE_CODES = {
@@ -28,15 +28,18 @@ class CodexNotebookModel:
         output_root: Path,
         *,
         review: Callable[..., dict[str, Any]] = run_review,
+        conversation_review: Callable[..., dict[str, Any]] = run_conversation_turn,
         route_selector: Callable[[str, list[str]], dict[str, Any]] = select,
         max_active: int = 2,
     ) -> None:
         self.output_root = output_root.resolve()
         self.review = review
+        self.conversation_review = conversation_review
         self.route_selector = route_selector
         self.max_active = max_active
         self._active: set[tuple[str, str, int]] = set()
         self._active_lock = Lock()
+        self._sessions: dict[str, str] = {}
 
     def extract(self, *, intake: Any, file_record: Any, image_path: Path) -> dict[str, Any]:
         frozen = {
@@ -96,6 +99,93 @@ class CodexNotebookModel:
             "prevention_cue": prevention_cue,
             "route": self._route_metadata(value),
         }
+
+    def chat_turn(
+        self,
+        *,
+        conversation_id: str,
+        stage: str,
+        resource_id: str,
+        input_version: int,
+        user_message: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        if stage not in {"intake", "grade"}:
+            raise ModelUnavailableError("unsupported conversation stage")
+        message = self._text(user_message, "user_message", required=True)
+        frozen = {
+            "conversation_id": conversation_id,
+            "stage": stage,
+            "resource_id": resource_id,
+            "input_version": input_version,
+            "user_message": message,
+            "context": context,
+        }
+        key = ("math-notebook-loop", conversation_id, input_version)
+        with self._active_lock:
+            if key in self._active or len(self._active) >= self.max_active:
+                raise ModelUnavailableError("Codex CLI candidate generation is already in progress")
+            self._active.add(key)
+            session_id = self._sessions.get(conversation_id)
+        output = self.output_root / f"math-notebook-loop-{uuid.uuid4().hex}.json"
+        try:
+            self.output_root.mkdir(parents=True, exist_ok=True)
+            value = self.conversation_review(
+                self.route_selector("math-notebook-loop", []),
+                json.dumps(frozen, ensure_ascii=False, separators=(",", ":")),
+                output,
+                session_id,
+            )
+            result = value["result"]
+            if any((
+                result.get("conversation_id") != conversation_id,
+                result.get("stage") != stage,
+                result.get("resource_id") != resource_id,
+                result.get("input_version") != input_version,
+            )):
+                raise ModelUnavailableError("model response does not match the frozen conversation")
+            parsed = self._validate_turn(result, stage)
+            with self._active_lock:
+                self._sessions[conversation_id] = str(value["session_id"])
+            return {**parsed, "route": self._route_metadata(value)}
+        except ModelUnavailableError:
+            raise
+        except Exception as exc:
+            raise ModelUnavailableError("Codex CLI conversation turn failed") from exc
+        finally:
+            output.unlink(missing_ok=True)
+            with self._active_lock:
+                self._active.discard(key)
+
+    def _validate_turn(self, result: dict[str, Any], stage: str) -> dict[str, Any]:
+        action = result.get("action")
+        allowed = {"respond", "ready", "revise_intake" if stage == "intake" else "revise_grade"}
+        if action not in allowed:
+            raise ModelUnavailableError("model returned an unsupported conversation action")
+        parsed = dict(result)
+        parsed["assistant_message"] = self._text(result.get("assistant_message"), "assistant_message", required=True)
+        confidence = result.get("confidence")
+        if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
+            raise ModelUnavailableError("model returned invalid confidence")
+        parsed["confidence"] = float(confidence)
+        for name in ("question_text", "answer_text", "first_error", "cause_evidence", "correct_solution", "final_answer", "prevention_cue"):
+            parsed[name] = self._text(result.get(name), name) or None
+        if action == "revise_intake" and not parsed["question_text"]:
+            raise ModelUnavailableError("model omitted required question_text")
+        if action == "revise_grade":
+            verdict = result.get("verdict")
+            if verdict not in {"correct", "partial", "incorrect", "unclear"}:
+                raise ModelUnavailableError("model returned an unsupported verdict")
+            required = verdict in {"partial", "incorrect"}
+            if required and (
+                not parsed["first_error"]
+                or result.get("cause_code") not in CAUSE_CODES
+                or not parsed["cause_evidence"]
+                or not parsed["correct_solution"]
+                or not parsed["final_answer"]
+            ):
+                raise ModelUnavailableError("model omitted a complete grading diagnosis")
+        return parsed
 
     def _run(self, task: str, frozen: dict[str, Any], images: list[Path]) -> dict[str, Any]:
         resource_id = str(frozen.get("intake_id") or frozen.get("attempt_id") or "")

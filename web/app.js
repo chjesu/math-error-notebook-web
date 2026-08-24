@@ -46,7 +46,7 @@ function authError(error) {
     rate_limited: "操作过于频繁，请稍后重试。",
     export_expired: "导出已过期，请重新申请。",
     confirmation_required: "请输入正确的注销确认。",
-    model_unavailable: "本地智能处理暂时不可用，已切换为人工确认。",
+    model_unavailable: "本地智能处理暂时不可用，请稍后重试。",
     network_error: "网络异常，请检查网络后重试。"
   })[error.message] || "操作失败，请稍后重试。";
 }
@@ -85,85 +85,24 @@ function bindWorkbench() {
   let activeIntake = null;
   let activeAttempt = null;
   let activeCandidate = null;
+  let stage = "upload";
+  let busy = false;
   let uploadFiles = [];
-  let uploadRunning = false;
-  const CHAT_PAGE_SIZE = 10;
+  const pendingIntakes = [];
   const conversationTurns = [];
   const renderedCandidates = new Set();
+  const CHAT_PAGE_SIZE = 10;
   let visibleTurnCount = CHAT_PAGE_SIZE;
-  const pendingIntakes = [];
   const uploadInput = $("#file");
-  const uploadButton = $("#upload-button");
+  const sendButton = $("#upload-button");
+  const chatInput = $("#chat-input");
   const dropZone = $("#drop-zone");
   const uploadSurface = $(".chat-main");
   const allowedExtensions = new Set(["pdf", "png", "jpg", "jpeg", "docx"]);
   const maxFileBytes = 25 * 1024 * 1024;
-
-  function renderUploadFiles() {
-    const stateLabels = {queued: "等待上传", uploading: "上传中", processing: "处理中", done: "上传完成", failed: "上传失败"};
-    const composerFiles = uploadFiles.filter(item => !item.submitted);
-    $("#upload-file-list").replaceChildren(...composerFiles.map(item => {
-      const card = document.createElement("li");
-      const preview = document.createElement("div");
-      const name = document.createElement("small");
-      const state = document.createElement("span");
-      const remove = document.createElement("button");
-      card.className = `upload-thumbnail is-${item.state}`;
-      card.title = item.error ? `${item.file.name}：${item.error}` : item.file.name;
-      card.setAttribute("aria-label", `${item.file.name}，${stateLabels[item.state]}`);
-      preview.className = "upload-preview";
-      if (item.previewUrl) {
-        const image = document.createElement("img");
-        image.src = item.previewUrl;
-        image.alt = "";
-        preview.append(image);
-      } else {
-        const type = document.createElement("strong");
-        type.textContent = item.extension.toUpperCase();
-        preview.append(type);
-      }
-      state.className = "upload-state";
-      state.textContent = item.state === "uploading" ? `${item.progress}%` : stateLabels[item.state];
-      preview.append(state);
-      if (item.state === "uploading") {
-        const progress = document.createElement("i");
-        progress.className = "upload-progress";
-        progress.style.width = `${item.progress}%`;
-        preview.append(progress);
-      }
-      if (["queued", "failed"].includes(item.state)) {
-        remove.type = "button";
-        remove.dataset.removeFile = item.id;
-        remove.setAttribute("aria-label", `移除 ${item.file.name}`);
-        remove.textContent = "×";
-        preview.append(remove);
-      }
-      name.textContent = item.file.name;
-      card.append(preview, name);
-      return card;
-    }));
-    const retryable = composerFiles.filter(item => ["queued", "failed"].includes(item.state));
-    uploadButton.disabled = uploadRunning || retryable.length === 0;
-    const retrying = retryable.some(item => item.state === "failed");
-    uploadButton.textContent = retrying ? "↻" : "↑";
-    uploadButton.setAttribute("aria-label", retrying ? "重试失败文件" : "上传并录入");
-  }
-
-  function addUploadFiles(files) {
-    const rejected = [];
-    const duplicates = [];
-    for (const file of files) {
-      const extension = file.name.split(".").pop().toLowerCase();
-      if (!allowedExtensions.has(extension)) rejected.push(`${file.name}：格式不支持`);
-      else if (file.size > maxFileBytes) rejected.push(`${file.name}：超过 25 MB`);
-      else if (uploadFiles.some(item => item.file.name.toLowerCase() === file.name.toLowerCase() && item.file.size === file.size && item.file.lastModified === file.lastModified)) duplicates.push(file.name);
-      else uploadFiles.push({id: crypto.randomUUID(), file, extension, previewUrl: ["png", "jpg", "jpeg"].includes(extension) ? URL.createObjectURL(file) : "", state: "queued", progress: 0, error: "", submitted: false});
-    }
-    renderUploadFiles();
-    const waiting = uploadFiles.filter(item => item.state === "queued").length;
-    const notice = [rejected.join("；"), duplicates.length ? `已忽略 ${duplicates.length} 个重复文件` : ""].filter(Boolean).join("；");
-    status($("#upload-status"), notice || `已添加 ${waiting} 个待上传文件。`, rejected.length > 0);
-  }
+  const confirmIntakeCommands = new Set(["确认并判题", "确认题干与作答", "开始判题"]);
+  const commitCommands = new Set(["确认入本", "确认写入错题本", "加入错题本"]);
+  const nextCommands = new Set(["下一题", "处理下一个", "跳过"]);
 
   function scrollChatToEnd() {
     requestAnimationFrame(() => { $("#chat-thread").scrollTop = $("#chat-thread").scrollHeight; });
@@ -175,36 +114,6 @@ function bindWorkbench() {
     $("#history-pagination").hidden = start === 0;
   }
 
-  $("#load-older").addEventListener("click", () => {
-    const thread = $("#chat-thread");
-    const previousHeight = thread.scrollHeight;
-    visibleTurnCount += CHAT_PAGE_SIZE;
-    renderConversationWindow();
-    requestAnimationFrame(() => { thread.scrollTop += thread.scrollHeight - previousHeight; });
-  });
-
-  function createConversationPreview(item) {
-    const card = document.createElement("div");
-    const preview = document.createElement("div");
-    const name = document.createElement("small");
-    card.className = "chat-upload-thumbnail";
-    preview.className = "chat-upload-preview";
-    if (item.previewUrl) {
-      const image = document.createElement("img");
-      image.src = item.previewUrl;
-      image.alt = "";
-      preview.append(image);
-    } else {
-      const type = document.createElement("strong");
-      type.textContent = item.extension.toUpperCase();
-      preview.append(type);
-    }
-    name.textContent = item.file.name;
-    card.title = item.file.name;
-    card.append(preview, name);
-    return card;
-  }
-
   function appendTurn(turn) {
     conversationTurns.push(turn);
     renderConversationWindow();
@@ -212,22 +121,32 @@ function bindWorkbench() {
     scrollChatToEnd();
   }
 
-  function appendUserUpload(files) {
+  function assistantTurn(message, error = false) {
+    if (!message) return;
+    const turn = document.createElement("div");
+    const avatar = document.createElement("img");
+    const response = document.createElement("div");
+    turn.className = `chat-turn assistant-turn${error ? " is-error" : ""}`;
+    avatar.className = "chat-avatar";
+    avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
+    avatar.alt = "";
+    response.className = "chat-response";
+    response.textContent = message;
+    turn.append(avatar, response);
+    appendTurn(turn);
+  }
+
+  function userTurn(message) {
     const turn = document.createElement("div");
     const bubble = document.createElement("div");
-    const grid = document.createElement("div");
-    const label = document.createElement("p");
     turn.className = "chat-turn user-turn";
-    bubble.className = "chat-upload-bubble";
-    grid.className = "chat-upload-grid";
-    label.textContent = `请整理这 ${files.length} 个文件`;
-    grid.append(...files.map(createConversationPreview));
-    bubble.append(grid, label);
+    bubble.className = "chat-user-message";
+    bubble.textContent = message;
     turn.append(bubble);
     appendTurn(turn);
   }
 
-  function appendAssistantProgress() {
+  function progressTurn() {
     const turn = document.createElement("div");
     const avatar = document.createElement("img");
     const response = document.createElement("div");
@@ -245,77 +164,43 @@ function bindWorkbench() {
     summary.textContent = "正在处理";
     steps.className = "chat-progress-steps";
     steps.setAttribute("role", "status");
-    steps.setAttribute("aria-live", "polite");
     disclosure.append(summary, steps);
     response.append(disclosure);
     turn.append(avatar, response);
     appendTurn(turn);
-    return {turn, disclosure, summary, steps, currentTitle: "", currentStep: null, currentDetail: null};
+    return {turn, disclosure, summary, steps, title: "", current: null, detail: null};
   }
 
-  function setAssistantProgress(progress, title, detail, state = "running") {
+  function setProgress(progress, title, detail, state = "running") {
     progress.turn.className = `chat-turn assistant-turn chat-progress is-${state}`;
-    if (progress.currentTitle !== title) {
-      progress.currentStep?.classList.replace("is-active", "is-done");
+    if (progress.title !== title) {
+      progress.current?.classList.replace("is-active", "is-done");
       const step = document.createElement("li");
-      const indicator = document.createElement("span");
+      const dot = document.createElement("span");
       const content = document.createElement("div");
       const heading = document.createElement("strong");
       const description = document.createElement("p");
       step.className = "is-active";
-      indicator.className = "progress-indicator";
-      indicator.setAttribute("aria-hidden", "true");
+      dot.className = "progress-indicator";
       heading.textContent = title;
       content.append(heading, description);
-      step.append(indicator, content);
+      step.append(dot, content);
       progress.steps.append(step);
-      progress.currentTitle = title;
-      progress.currentStep = step;
-      progress.currentDetail = description;
+      progress.title = title;
+      progress.current = step;
+      progress.detail = description;
     }
-    progress.currentDetail.textContent = detail;
+    progress.detail.textContent = detail;
     progress.summary.textContent = state === "running" ? title : `${title} · ${detail}`;
-    if (state === "running") progress.disclosure.open = true;
     if (state !== "running") {
-      progress.currentStep.className = `is-${state}`;
+      progress.current.className = `is-${state}`;
       progress.disclosure.open = state === "error";
     }
     scrollChatToEnd();
   }
 
-  function appendAssistantNote(message, error = false) {
-    if (!message) return;
-    const turn = document.createElement("div");
-    const avatar = document.createElement("img");
-    const response = document.createElement("div");
-    turn.className = `chat-turn assistant-turn${error ? " is-error" : ""}`;
-    avatar.className = "chat-avatar";
-    avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
-    avatar.alt = "";
-    response.className = "chat-response";
-    response.textContent = message;
-    turn.append(avatar, response);
-    appendTurn(turn);
-  }
-
-  function appendUserConfirmation(questionText, answerText) {
-    const turn = document.createElement("div");
-    const content = document.createElement("div");
-    const heading = document.createElement("strong");
-    const question = document.createElement("p");
-    const answer = document.createElement("p");
-    turn.className = "chat-turn user-turn";
-    content.className = "chat-user-confirmation";
-    heading.textContent = "已确认题干与作答";
-    question.textContent = `题干：${questionText}`;
-    answer.textContent = `作答：${answerText || "未填写"}`;
-    content.append(heading, question, answer);
-    turn.append(content);
-    appendTurn(turn);
-  }
-
-  function appendGradeCandidate(candidate) {
-    if (!candidate.result_id || renderedCandidates.has(candidate.result_id)) return;
+  function appendCandidate(candidate) {
+    if (!candidate?.result_id || renderedCandidates.has(candidate.result_id)) return;
     renderedCandidates.add(candidate.result_id);
     const diagnosis = candidate.diagnosis || {};
     const turn = document.createElement("div");
@@ -323,7 +208,7 @@ function bindWorkbench() {
     const response = document.createElement("div");
     const heading = document.createElement("strong");
     const list = document.createElement("dl");
-    const verdict = candidate.verdict === "incorrect" ? "错误" : candidate.verdict === "partial" ? "部分正确" : candidate.verdict === "correct" ? "正确" : "证据不足";
+    const verdict = {incorrect: "错误", partial: "部分正确", correct: "正确", unclear: "证据不足"}[candidate.verdict] || candidate.verdict;
     turn.className = "chat-turn assistant-turn";
     avatar.className = "chat-avatar";
     avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
@@ -343,35 +228,79 @@ function bindWorkbench() {
     appendTurn(turn);
   }
 
-  function showManualComposer(show) {
-    $("#manual-flow").hidden = !show;
-    $("#upload-form").hidden = show;
-    $("#composer-note").hidden = show;
+  function appendIntake(intake) {
+    const turn = document.createElement("div");
+    const avatar = document.createElement("img");
+    const response = document.createElement("div");
+    const heading = document.createElement("strong");
+    const question = document.createElement("p");
+    const answer = document.createElement("p");
+    turn.className = "chat-turn assistant-turn";
+    avatar.className = "chat-avatar";
+    avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
+    avatar.alt = "";
+    response.className = "chat-response chat-intake-candidate";
+    heading.textContent = "题干与作答候选";
+    question.textContent = `题干：${intake.questionText || "尚未识别，请直接告诉我题干或需要修正的内容。"}`;
+    answer.textContent = `作答：${intake.answerText || "未识别或未作答"}`;
+    response.append(heading, question, answer);
+    turn.append(avatar, response);
+    appendTurn(turn);
   }
 
-  function activateNextIntake(message = "", error = false) {
-    appendAssistantNote(message, error);
-    activeIntake = pendingIntakes.shift() || null;
-    activeAttempt = null;
-    activeCandidate = null;
-    $("#manual-intake-form").reset();
-    $("#manual-grade-form").reset();
-    $("#grade-confirm").hidden = true;
-    $("#commit-grade").hidden = false;
-    $("#next-intake").hidden = true;
-    status($("#manual-status"), "");
-    if (!activeIntake) {
-      showManualComposer(false);
-      return;
+  function setComposerState() {
+    const retryable = uploadFiles.some(item => !item.submitted && ["queued", "failed"].includes(item.state));
+    chatInput.disabled = busy || stage === "upload";
+    chatInput.placeholder = stage === "upload"
+      ? "添加图片、PDF 或 DOCX，也可直接拖放、粘贴"
+      : stage === "intake"
+        ? "输入修正或补充；确认无误请发送“确认并判题”"
+        : "继续追问或修正；确认无误请发送“确认入本”";
+    sendButton.disabled = busy || (!retryable && (chatInput.disabled || !chatInput.value.trim()));
+    sendButton.textContent = retryable && uploadFiles.some(item => item.state === "failed") ? "↻" : "↑";
+  }
+
+  function renderUploadFiles() {
+    const labels = {queued: "等待上传", uploading: "上传中", processing: "处理中", done: "上传完成", failed: "上传失败"};
+    const cards = uploadFiles.filter(item => !item.submitted).map(item => {
+      const card = document.createElement("li");
+      const preview = document.createElement("div");
+      const name = document.createElement("small");
+      const state = document.createElement("span");
+      card.className = `upload-thumbnail is-${item.state}`;
+      preview.className = "upload-preview";
+      if (item.previewUrl) {
+        const image = document.createElement("img"); image.src = item.previewUrl; image.alt = ""; preview.append(image);
+      } else {
+        const type = document.createElement("strong"); type.textContent = item.extension.toUpperCase(); preview.append(type);
+      }
+      state.className = "upload-state";
+      state.textContent = item.state === "uploading" ? `${item.progress}%` : labels[item.state];
+      preview.append(state);
+      if (["queued", "failed"].includes(item.state)) {
+        const remove = document.createElement("button"); remove.type = "button"; remove.dataset.removeFile = item.id; remove.textContent = "×"; preview.append(remove);
+      }
+      name.textContent = item.file.name;
+      card.append(preview, name);
+      return card;
+    });
+    $("#upload-file-list").replaceChildren(...cards);
+    setComposerState();
+  }
+
+  function addUploadFiles(files) {
+    const rejected = [];
+    let duplicates = 0;
+    for (const file of files) {
+      const extension = file.name.split(".").pop().toLowerCase();
+      if (!allowedExtensions.has(extension)) rejected.push(`${file.name}：格式不支持`);
+      else if (file.size > maxFileBytes) rejected.push(`${file.name}：超过 25 MB`);
+      else if (uploadFiles.some(item => item.file.name.toLowerCase() === file.name.toLowerCase() && item.file.size === file.size && item.file.lastModified === file.lastModified)) duplicates += 1;
+      else uploadFiles.push({id: crypto.randomUUID(), file, extension, previewUrl: ["png", "jpg", "jpeg"].includes(extension) ? URL.createObjectURL(file) : "", state: "queued", progress: 0, error: "", submitted: false});
     }
-    showManualComposer(true);
-    $("#manual-intake-form").hidden = false;
-    $("#manual-grade-form").hidden = true;
-    $("#intake-context").textContent = `请确认“${activeIntake.fileName}”的题干与作答${pendingIntakes.length ? `，后面还有 ${pendingIntakes.length} 个文件` : ""}。`;
-    $("#question-text").value = activeIntake.questionText || "";
-    $("#answer-text").value = activeIntake.answerText || "";
-    scrollChatToEnd();
-    $("#question-text").focus();
+    renderUploadFiles();
+    const notice = [rejected.join("；"), duplicates ? `已忽略 ${duplicates} 个重复文件` : ""].filter(Boolean).join("；");
+    status($("#upload-status"), notice, Boolean(rejected.length));
   }
 
   function uploadFile(item, onProgress) {
@@ -390,224 +319,197 @@ function bindWorkbench() {
         onProgress(item.progress);
       });
       xhr.addEventListener("load", () => {
-        const value = (() => { try { return JSON.parse(xhr.responseText); } catch { return {}; } })();
-        if (xhr.status >= 200 && xhr.status < 300) return resolve(value);
-        const error = new Error(value.error?.code || "temporarily_unavailable");
-        error.status = xhr.status;
-        reject(error);
+        let value = {}; try { value = JSON.parse(xhr.responseText); } catch (_) {}
+        if (xhr.status >= 200 && xhr.status < 300) resolve(value);
+        else { const error = new Error(value.error?.code || "temporarily_unavailable"); error.status = xhr.status; reject(error); }
       });
-      xhr.addEventListener("error", () => {
-        const error = new Error("network_error");
-        error.status = 0;
-        reject(error);
-      });
+      xhr.addEventListener("error", () => reject(new Error("network_error")));
       xhr.send(form);
     });
   }
 
-  uploadInput.addEventListener("change", () => {
-    addUploadFiles(uploadInput.files);
-    uploadInput.value = "";
-  });
-  dropZone.addEventListener("click", event => {
-    if (!event.target.closest("button")) uploadInput.click();
-  });
-  $("#file-picker").addEventListener("click", () => uploadInput.click());
-  uploadSurface.addEventListener("dragover", event => {
-    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-    uploadSurface.classList.add("drag-active");
-  });
-  uploadSurface.addEventListener("dragleave", event => {
-    if (event.relatedTarget && uploadSurface.contains(event.relatedTarget)) return;
-    uploadSurface.classList.remove("drag-active");
-  });
-  uploadSurface.addEventListener("drop", event => {
-    if (!event.dataTransfer?.files?.length) return;
-    event.preventDefault();
-    uploadSurface.classList.remove("drag-active");
-    addUploadFiles(event.dataTransfer.files);
-  });
-  document.addEventListener("paste", event => {
-    if (event.target.closest?.("input, textarea, [contenteditable]")) return;
-    const files = event.clipboardData?.files;
-    if (files?.length) { event.preventDefault(); addUploadFiles(files); }
-  });
-  $("#upload-file-list").addEventListener("click", event => {
-    const id = event.target.dataset.removeFile;
-    if (!id) return;
-    const removed = uploadFiles.find(item => item.id === id);
-    if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
-    uploadFiles = uploadFiles.filter(item => item.id !== id);
-    renderUploadFiles();
-  });
+  function appendUserUpload(files) {
+    const turn = document.createElement("div");
+    const bubble = document.createElement("div");
+    const grid = document.createElement("div");
+    const label = document.createElement("p");
+    turn.className = "chat-turn user-turn";
+    bubble.className = "chat-upload-bubble";
+    grid.className = "chat-upload-grid";
+    for (const item of files) {
+      const card = document.createElement("div");
+      const preview = document.createElement("div");
+      const name = document.createElement("small");
+      card.className = "chat-upload-thumbnail";
+      preview.className = "chat-upload-preview";
+      if (item.previewUrl) { const image = document.createElement("img"); image.src = item.previewUrl; image.alt = ""; preview.append(image); }
+      else { const type = document.createElement("strong"); type.textContent = item.extension.toUpperCase(); preview.append(type); }
+      name.textContent = item.file.name; card.append(preview, name); grid.append(card);
+    }
+    label.textContent = `请整理这 ${files.length} 个文件`;
+    bubble.append(grid, label); turn.append(bubble); appendTurn(turn);
+  }
 
-  $("#upload-form").addEventListener("submit", async event => {
-    event.preventDefault();
-    const files = uploadFiles.filter(item => ["queued", "failed"].includes(item.state));
-    if (!files.length || uploadRunning) return;
-    uploadRunning = true;
+  function activateNextIntake(message = "") {
+    if (message) assistantTurn(message);
+    activeIntake = pendingIntakes.shift() || null;
+    activeAttempt = null;
+    activeCandidate = null;
+    stage = activeIntake ? "intake" : "upload";
+    if (activeIntake) {
+      appendIntake(activeIntake);
+      assistantTurn(`你可以直接输入修正或追问。内容无误时发送“确认并判题”${pendingIntakes.length ? `；后面还有 ${pendingIntakes.length} 个文件` : ""}。`);
+    }
+    setComposerState();
+    if (!chatInput.disabled) chatInput.focus();
+  }
+
+  async function uploadQueued() {
+    const files = uploadFiles.filter(item => !item.submitted && ["queued", "failed"].includes(item.state));
+    if (!files.length || busy) return;
+    busy = true;
     files.forEach(item => { item.submitted = true; });
     renderUploadFiles();
     appendUserUpload(files);
-    const progress = appendAssistantProgress();
-    status($("#upload-status"), "");
-    setAssistantProgress(progress, "准备发送附件", `共 ${files.length} 个文件，正在开始上传。`);
+    const progress = progressTurn();
     let completed = 0;
     let failed = 0;
     for (const [index, item] of files.entries()) {
       item.state = "uploading";
-      item.progress = 0;
-      item.error = "";
-      setAssistantProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · 0%`);
+      setProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · 0%`);
       try {
-        const uploaded = await uploadFile(item, percent => setAssistantProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · ${percent}%`));
+        const uploaded = await uploadFile(item, percent => setProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · ${percent}%`));
         item.state = "processing";
-        item.progress = 100;
-        setAssistantProgress(progress, "附件已安全保存", `${index + 1}/${files.length} · ${item.file.name} · 格式、大小和重复内容校验已完成`);
-        setAssistantProgress(progress, "正在创建录入任务", `${index + 1}/${files.length} · ${item.file.name}`);
+        setProgress(progress, "正在建立错题会话", `${index + 1}/${files.length} · ${item.file.name}`);
         const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-        let modelCandidate = {input_version: 1, question_text: "", answer_text: "", model_status: "manual"};
+        let candidate = {input_version: 1, question_text: "", answer_text: "", model_status: "unclear"};
         try {
-          setAssistantProgress(progress, "正在识别题目与作答", `${index + 1}/${files.length} · ${item.file.name} · Codex CLI 正在读取图片`);
-          modelCandidate = await api(`/v1/intakes/${task.resource_id}/model-candidate`, {method: "POST", body: "{}"});
-          const recognized = modelCandidate.model_status === "complete" || modelCandidate.model_status === "existing";
-          setAssistantProgress(progress, recognized ? "识别候选已生成" : "图片内容不够清晰", recognized ? `${index + 1}/${files.length} · ${item.file.name} · 请核对后再判题` : `${index + 1}/${files.length} · ${item.file.name} · 已切换为人工录入`, recognized ? "running" : "warning");
-        } catch (modelError) {
-          setAssistantProgress(progress, "自动识别未完成", `${index + 1}/${files.length} · ${item.file.name} · ${authError(modelError)}`, "warning");
-        }
-        pendingIntakes.push({intakeId: task.resource_id, inputVersion: modelCandidate.input_version || 1, fileName: item.file.name, questionText: modelCandidate.question_text || "", answerText: modelCandidate.answer_text || "", modelStatus: modelCandidate.model_status || "manual"});
+          setProgress(progress, "Codex 正在识别题目与作答", `${index + 1}/${files.length} · ${item.file.name}`);
+          candidate = await api(`/v1/intakes/${task.resource_id}/model-candidate`, {method: "POST", body: "{}"});
+        } catch (_) {}
+        pendingIntakes.push({intakeId: task.resource_id, inputVersion: candidate.input_version || 1, status: candidate.status || "extracting", fileName: item.file.name, questionText: candidate.question_text || "", answerText: candidate.answer_text || ""});
         item.state = "done";
         completed += 1;
-        setAssistantProgress(progress, "已加入确认队列", `${index + 1}/${files.length} · ${item.file.name} · 接下来由你核对题干与作答`);
       } catch (error) {
         item.state = "failed";
         item.error = authError(error);
         item.submitted = false;
         failed += 1;
-        setAssistantProgress(progress, "当前文件处理失败", `${index + 1}/${files.length} · ${item.file.name} · ${item.error}`, "warning");
       }
-      renderUploadFiles();
     }
-    uploadRunning = false;
+    busy = false;
     renderUploadFiles();
-    const summary = `${completed ? `已保存 ${completed} 个文件` : "没有文件上传成功"}${failed ? `，${failed} 个失败，可重试` : ""}。`;
     if (completed) {
-      const nextStep = activeIntake ? "已成功文件已加入待确认队列。" : "请从第一份开始核对题干与作答。";
-      setAssistantProgress(progress, "文件已准备好", `${summary} ${nextStep}`, failed ? "warning" : "complete");
-      if (!activeIntake && pendingIntakes.length) activateNextIntake();
-    } else {
-      setAssistantProgress(progress, "附件发送失败", `${summary} 文件仍保留在输入框中，你可以重试。`, "error");
-    }
-  });
+      setProgress(progress, "文件已准备好", `已建立 ${completed} 个错题会话${failed ? `，${failed} 个文件可重试` : ""}。`, failed ? "warning" : "complete");
+      if (!activeIntake) activateNextIntake();
+    } else setProgress(progress, "附件发送失败", "文件仍保留在输入框中，可以重试。", "error");
+  }
 
+  async function confirmAndGrade() {
+    if (!activeIntake?.questionText || activeIntake.status !== "waiting_confirmation") {
+      assistantTurn("当前还没有可确认的完整题干。请直接告诉我题干、作答或需要修正的内容。", true);
+      return;
+    }
+    const progress = progressTurn();
+    setProgress(progress, "正在确认题干与作答", "锁定当前版本，准备判题。" );
+    const confirmed = await api(`/v1/intakes/${activeIntake.intakeId}/confirm`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+    activeAttempt = confirmed.resource_id;
+    stage = "grade";
+    setComposerState();
+    setProgress(progress, "Codex 正在判题", "定位第一处实质错误并生成完整解法。" );
+    activeCandidate = await api(`/v1/attempts/${activeAttempt}/model-grade`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion})});
+    appendCandidate(activeCandidate);
+    const canCommit = ["incorrect", "partial"].includes(activeCandidate.verdict);
+    setProgress(progress, "判题候选已生成", canCommit ? "可继续追问或修正；确认后发送“确认入本”。" : "本题不会自动入本；可以继续追问或发送“下一题”。", "complete");
+  }
+
+  async function commitCurrent() {
+    if (!activeCandidate || !["incorrect", "partial"].includes(activeCandidate.verdict)) {
+      assistantTurn("当前结果不能写入错题本。可以继续追问，或发送“下一题”。", true);
+      return;
+    }
+    const entry = await api(`/v1/grade-results/${activeCandidate.result_id}/commit`, {method: "POST", body: JSON.stringify({input_version: activeCandidate.input_version}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+    let message = "已写入错题本并安排首次复习。";
+    try {
+      const recommendations = await api(`/v1/errors/${entry.error_id}/recommendations`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}});
+      message = `已写入错题本并安排首次复习，已匹配 ${recommendations.items.length} 道已验证练习。`;
+    } catch (_) {}
+    activateNextIntake(message);
+  }
+
+  async function chatTurn(message) {
+    const result = await api(`/v1/intakes/${activeIntake.intakeId}/chat-turn`, {
+      method: "POST",
+      body: JSON.stringify({message, stage, input_version: activeIntake.inputVersion, attempt_id: activeAttempt, candidate_id: activeCandidate?.result_id || null}),
+    });
+    assistantTurn(result.assistant_message);
+    if (result.intake) {
+      activeIntake.inputVersion = result.intake.input_version;
+      activeIntake.status = result.intake.status;
+      activeIntake.questionText = result.intake.question_text || "";
+      activeIntake.answerText = result.intake.answer_text || "";
+      if (result.action === "revise_intake") appendIntake(activeIntake);
+    }
+    if (result.candidate) {
+      activeCandidate = result.candidate;
+      appendCandidate(activeCandidate);
+    }
+  }
+
+  async function sendMessage() {
+    const message = chatInput.value.trim();
+    if (!message || busy || !activeIntake) return;
+    chatInput.value = "";
+    chatInput.style.height = "auto";
+    userTurn(message);
+    busy = true;
+    setComposerState();
+    try {
+      if (stage === "intake" && confirmIntakeCommands.has(message)) await confirmAndGrade();
+      else if (stage === "grade" && commitCommands.has(message)) await commitCurrent();
+      else if (stage === "grade" && nextCommands.has(message)) activateNextIntake("本题未写入错题本，继续处理下一份。" );
+      else {
+        const progress = progressTurn();
+        setProgress(progress, "Codex 正在思考", stage === "intake" ? "结合图片和当前题干理解你的修正。" : "结合当前判题候选理解你的问题。" );
+        await chatTurn(message);
+        setProgress(progress, "本轮已完成", "会话上下文已保留，可以继续输入。", "complete");
+      }
+    } catch (error) {
+      assistantTurn(`本轮未完成：${authError(error)}。你的消息没有触发写库，可以重试。`, true);
+    } finally {
+      busy = false;
+      setComposerState();
+      if (!chatInput.disabled) chatInput.focus();
+    }
+  }
+
+  $("#load-older").addEventListener("click", () => {
+    const thread = $("#chat-thread");
+    const height = thread.scrollHeight;
+    visibleTurnCount += CHAT_PAGE_SIZE;
+    renderConversationWindow();
+    requestAnimationFrame(() => { thread.scrollTop += thread.scrollHeight - height; });
+  });
+  uploadInput.addEventListener("change", () => { addUploadFiles(uploadInput.files); uploadInput.value = ""; });
+  $("#file-picker").addEventListener("click", () => uploadInput.click());
+  dropZone.addEventListener("click", event => { if (!event.target.closest("button, textarea")) chatInput.disabled ? uploadInput.click() : chatInput.focus(); });
+  chatInput.addEventListener("input", () => { chatInput.style.height = "auto"; chatInput.style.height = `${Math.min(chatInput.scrollHeight, 150)}px`; setComposerState(); });
+  chatInput.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#upload-form").requestSubmit(); } });
+  $("#upload-file-list").addEventListener("click", event => {
+    const id = event.target.dataset.removeFile;
+    if (!id) return;
+    const item = uploadFiles.find(value => value.id === id);
+    if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    uploadFiles = uploadFiles.filter(value => value.id !== id);
+    renderUploadFiles();
+  });
+  uploadSurface.addEventListener("dragover", event => { if (Array.from(event.dataTransfer?.types || []).includes("Files")) { event.preventDefault(); uploadSurface.classList.add("drag-active"); } });
+  uploadSurface.addEventListener("dragleave", event => { if (!event.relatedTarget || !uploadSurface.contains(event.relatedTarget)) uploadSurface.classList.remove("drag-active"); });
+  uploadSurface.addEventListener("drop", event => { if (event.dataTransfer?.files?.length) { event.preventDefault(); uploadSurface.classList.remove("drag-active"); addUploadFiles(event.dataTransfer.files); } });
+  document.addEventListener("paste", event => { const files = event.clipboardData?.files; if (files?.length) { event.preventDefault(); addUploadFiles(files); } });
+  $("#upload-form").addEventListener("submit", event => { event.preventDefault(); uploadFiles.some(item => !item.submitted && ["queued", "failed"].includes(item.state)) ? uploadQueued() : sendMessage(); });
   window.addEventListener("beforeunload", () => uploadFiles.forEach(item => item.previewUrl && URL.revokeObjectURL(item.previewUrl)));
-
-  $("#manual-intake-form").addEventListener("submit", async event => {
-    event.preventDefault();
-    if (!activeIntake) return;
-    const button = event.submitter;
-    button.disabled = true;
-    try {
-      const questionText = $("#question-text").value;
-      const answerText = $("#answer-text").value;
-      let intake;
-      if (["complete", "existing"].includes(activeIntake.modelStatus)) {
-        const changed = questionText !== activeIntake.questionText || answerText !== activeIntake.answerText;
-        intake = changed ? await api(`/v1/intakes/${activeIntake.intakeId}`, {method: "PATCH", body: JSON.stringify({input_version: activeIntake.inputVersion, question_text: questionText, answer_text: answerText})}) : {input_version: activeIntake.inputVersion};
-      } else {
-        intake = await api(`/v1/intakes/${activeIntake.intakeId}/manual-candidate`, {method: "POST", body: JSON.stringify({question_text: questionText, answer_text: answerText})});
-      }
-      const confirmed = await api(`/v1/intakes/${activeIntake.intakeId}/confirm`, {method: "POST", body: JSON.stringify({input_version: intake.input_version}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-      activeIntake.inputVersion = intake.input_version;
-      activeAttempt = confirmed.resource_id;
-      appendUserConfirmation(questionText, answerText);
-      $("#manual-intake-form").hidden = true;
-      $("#manual-grade-form").hidden = false;
-      const gradeProgress = appendAssistantProgress();
-      setAssistantProgress(gradeProgress, "题干与作答已确认", "正在把确认后的内容交给 Codex CLI 判题。");
-      setAssistantProgress(gradeProgress, "正在定位第一处错误", "模型只生成候选，不会自动写入错题本。");
-      try {
-        activeCandidate = await api(`/v1/attempts/${activeAttempt}/model-grade`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion})});
-        showGradeCandidate(activeCandidate);
-        setAssistantProgress(gradeProgress, "判题候选已生成", "请核对首错、错因和完整解法后，再确认是否入本。", "complete");
-      } catch (modelError) {
-        setAssistantProgress(gradeProgress, "自动判题未完成", `${authError(modelError)} 你仍可在下方人工填写。`, "warning");
-        status($("#manual-status"), "请人工记录判题候选。");
-        $("#verdict").focus();
-      }
-    } catch (error) {
-      status($("#manual-status"), `确认失败：${authError(error)}`, true);
-    } finally {
-      button.disabled = false;
-    }
-  });
-
-  function refreshDiagnosisFields() {
-    const required = ["incorrect", "partial"].includes($("#verdict").value);
-    $("#diagnosis-fields").hidden = !required;
-    for (const id of ["first-error", "cause-code", "grade-evidence", "correct-solution", "final-answer"]) $(`#${id}`).required = required;
-  }
-  $("#verdict").addEventListener("change", refreshDiagnosisFields);
-  refreshDiagnosisFields();
-
-  function showGradeCandidate(candidate) {
-    const diagnosis = candidate.diagnosis || {};
-    $("#verdict").value = candidate.verdict;
-    $("#first-error").value = candidate.first_error || "";
-    $("#cause-code").value = diagnosis.cause_code || "unclear";
-    $("#grade-evidence").value = diagnosis.cause_evidence || "";
-    $("#correct-solution").value = diagnosis.correct_solution || "";
-    $("#final-answer").value = diagnosis.final_answer || "";
-    $("#prevention-cue").value = diagnosis.prevention_cue || "";
-    refreshDiagnosisFields();
-    appendGradeCandidate(candidate);
-    const canCommit = ["incorrect", "partial"].includes(candidate.verdict);
-    $("#grade-summary").textContent = canCommit ? `候选结果：${candidate.verdict === "incorrect" ? "错误" : "部分正确"}；首错：${candidate.first_error}` : candidate.verdict === "correct" ? "候选结果：本题正确，不写入错题本。" : "证据不足，不能写入错题本。";
-    $("#grade-confirm").hidden = false;
-    $("#commit-grade").hidden = !canCommit;
-    $("#next-intake").hidden = canCommit;
-    status($("#manual-status"), canCommit ? "请核对候选后确认入本。" : "已安全停止，不会写入正式错题。");
-  }
-
-  $("#manual-grade-form").addEventListener("submit", async event => {
-    event.preventDefault();
-    if (!activeAttempt || !activeIntake) return;
-    const button = event.submitter;
-    button.disabled = true;
-    try {
-      activeCandidate = await api(`/v1/attempts/${activeAttempt}/manual-grade`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion, verdict: $("#verdict").value, first_error: $("#first-error").value, cause_code: $("#cause-code").value, evidence: $("#grade-evidence").value, correct_solution: $("#correct-solution").value, final_answer: $("#final-answer").value, prevention_cue: $("#prevention-cue").value})});
-      showGradeCandidate(activeCandidate);
-    } catch (error) {
-      status($("#manual-status"), `判题记录失败：${authError(error)}`, true);
-    } finally {
-      button.disabled = false;
-    }
-  });
-
-  $("#commit-grade").addEventListener("click", async event => {
-    if (!activeCandidate) return;
-    event.currentTarget.disabled = true;
-    try {
-      const entry = await api(`/v1/grade-results/${activeCandidate.result_id}/commit`, {method: "POST", body: JSON.stringify({input_version: activeCandidate.input_version}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-      let message = "已写入错题本并安排首次复习。";
-      try {
-        const recommendations = await api(`/v1/errors/${entry.error_id}/recommendations`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}});
-        message = `已写入错题本并安排首次复习，已匹配 ${recommendations.items.length} 道已验证练习${recommendations.gap ? "，题量不足部分已标记" : ""}。`;
-      } catch (_) {
-        message += "练习暂未匹配，可稍后在错题详情中重试。";
-      }
-      activateNextIntake(message);
-    } catch (error) {
-      status($("#manual-status"), `入本失败：${authError(error)}`, true);
-    } finally {
-      event.currentTarget.disabled = false;
-    }
-  });
-
-  $("#next-intake").addEventListener("click", () => activateNextIntake("本题不会写入错题本。"));
-
+  setComposerState();
 }
 
 function bindErrors() {

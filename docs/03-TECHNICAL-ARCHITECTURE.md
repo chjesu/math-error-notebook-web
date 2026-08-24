@@ -87,7 +87,7 @@ stateDiagram-v2
 
 ## 7. API 与错误
 
-当前机器可校验契约见 `openapi/web-v1.json`（34 paths）；认证细则见 `docs/13-LOGIN-REGISTER-PRD.md`。错误统一为 `{error:{code,message,retryable,request_id}}`；页面只依赖稳定 `code`，不解析文案。生产切换前仍需完成真实供应商、观测、压测、灾备和安全复核。
+当前机器可校验契约见 `openapi/web-v1.json`（35 paths）；认证细则见 `docs/13-LOGIN-REGISTER-PRD.md`。错误统一为 `{error:{code,message,retryable,request_id}}`；页面只依赖稳定 `code`，不解析文案。生产切换前仍需完成真实供应商、观测、压测、灾备和安全复核。
 
 ## 8. 安全和部署门
 

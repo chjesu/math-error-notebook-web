@@ -259,6 +259,41 @@ class NotebookE2ETests(unittest.TestCase):
         response = self.call("/v1/intakes/" + "a" * 32 + "/model-candidate", method="POST", cookie=cookie)
         self.assertEqual((response[0], response[2]["error"]["code"]), (503, "model_unavailable"))
 
+    def test_chat_loop_revises_model_candidates_without_bypassing_write_gates(self) -> None:
+        class FakeLoopModel:
+            def chat_turn(_, **values):
+                if values["stage"] == "intake":
+                    return {
+                        "action": "revise_intake", "assistant_message": "已按你的说明修正题干。",
+                        "question_text": "若 x+1=2，求 x。", "answer_text": "x=0", "confidence": 0.99,
+                        "route": {"task": "math-notebook-loop", "model": "test"},
+                    }
+                return {
+                    "action": "revise_grade", "assistant_message": "已重新判题。", "verdict": "incorrect",
+                    "first_error": "移项结果错误", "cause_code": "algebra_transform",
+                    "cause_evidence": "由 x+1=2 得到 x=0", "correct_solution": "x=2-1=1",
+                    "final_answer": "x=1", "prevention_cue": "代回验算", "confidence": 0.99,
+                    "route": {"task": "math-notebook-loop", "model": "test"},
+                }
+
+        self.app.model_runner = FakeLoopModel()
+        cookie = self.login("13000130000")
+        other_cookie = self.login("13000130001")
+        content_type, body = self.multipart("loop.png", self.png_bytes())
+        uploaded = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="loop-upload")
+        created = self.call("/v1/intakes", method="POST", payload={"file_id": uploaded[2]["file_id"]}, cookie=cookie, idempotency_key="loop-intake")
+        intake_id = created[2]["resource_id"]
+        request = {"message": "题干是 x+1=2", "stage": "intake", "input_version": 1, "attempt_id": None, "candidate_id": None}
+        denied = self.call(f"/v1/intakes/{intake_id}/chat-turn", method="POST", payload=request, cookie=other_cookie)
+        self.assertEqual(denied[0], 404)
+        revised = self.call(f"/v1/intakes/{intake_id}/chat-turn", method="POST", payload=request, cookie=cookie)
+        self.assertEqual((revised[0], revised[2]["intake"]["status"], revised[2]["intake"]["question_text"]), (200, "waiting_confirmation", "若 x+1=2，求 x。"))
+        confirmed = self.call(f"/v1/intakes/{intake_id}/confirm", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="loop-confirm")
+        grade_request = {"message": "请再检查第一处错误", "stage": "grade", "input_version": 1, "attempt_id": confirmed[2]["resource_id"], "candidate_id": None}
+        graded = self.call(f"/v1/intakes/{intake_id}/chat-turn", method="POST", payload=grade_request, cookie=cookie)
+        self.assertEqual((graded[0], graded[2]["candidate"]["verdict"], graded[2]["candidate"]["diagnosis"]["final_answer"]), (200, "incorrect", "x=1"))
+        self.assertEqual(self.call("/v1/errors", cookie=cookie)[2]["items"], [])
+
     def test_manual_grade_requires_first_error_and_large_body_is_413(self) -> None:
         cookie = self.login("13700137000")
         content_type, body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nimage")

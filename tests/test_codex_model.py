@@ -80,6 +80,34 @@ class CodexNotebookModelTests(unittest.TestCase):
             self.assertFalse(worker.is_alive())
             self.assertEqual(failures, [])
 
+    def test_chat_turn_reuses_server_held_session_and_validates_frozen_context(self) -> None:
+        sessions = []
+
+        def conversation(route, review_input, output, session_id):
+            packet = json.loads(review_input)
+            sessions.append(session_id)
+            return {"route": route, "session_id": "thread-abc", "result": {
+                "conversation_id": packet["conversation_id"], "stage": packet["stage"],
+                "resource_id": packet["resource_id"], "input_version": packet["input_version"],
+                "action": "revise_intake" if session_id is None else "ready",
+                "assistant_message": "已修正" if session_id is None else "可以确认",
+                "question_text": "修正后的题目", "answer_text": "作答", "verdict": None,
+                "first_error": None, "cause_code": None, "cause_evidence": None,
+                "correct_solution": None, "final_answer": None, "prevention_cue": None,
+                "confidence": 0.98,
+            }}
+
+        with tempfile.TemporaryDirectory() as directory:
+            model = CodexNotebookModel(
+                Path(directory), conversation_review=conversation,
+                route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"},
+            )
+            first = model.chat_turn(conversation_id="a" * 32, stage="intake", resource_id="a" * 32, input_version=1, user_message="第二行是题干", context={})
+            second = model.chat_turn(conversation_id="a" * 32, stage="intake", resource_id="a" * 32, input_version=2, user_message="还有吗", context={})
+            self.assertEqual(first["question_text"], "修正后的题目")
+            self.assertEqual(second["action"], "ready")
+            self.assertEqual(sessions, [None, "thread-abc"])
+
 
 if __name__ == "__main__":
     unittest.main()
