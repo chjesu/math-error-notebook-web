@@ -384,7 +384,7 @@ function bindWorkbench() {
         const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
         let candidate = {input_version: 1, question_text: "", answer_text: "", model_status: "unclear"};
         try {
-          setProgress(progress, "Codex 正在识别题目与作答", `${index + 1}/${files.length} · ${item.file.name}`);
+          setProgress(progress, "正在识别题目与作答", `${index + 1}/${files.length} · ${item.file.name}`);
           candidate = await api(`/v1/intakes/${task.resource_id}/model-candidate`, {method: "POST", body: "{}"});
         } catch (_) {}
         pendingIntakes.push({intakeId: task.resource_id, inputVersion: candidate.input_version || 1, status: candidate.status || "extracting", fileName: item.file.name, questionText: candidate.question_text || "", answerText: candidate.answer_text || ""});
@@ -416,7 +416,7 @@ function bindWorkbench() {
     activeAttempt = confirmed.resource_id;
     stage = "grade";
     setComposerState();
-    setProgress(progress, "Codex 正在判题", "定位第一处实质错误并生成完整解法。" );
+    setProgress(progress, "正在判题", "定位第一处实质错误并生成完整解法。" );
     activeCandidate = await api(`/v1/attempts/${activeAttempt}/model-grade`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion})});
     appendCandidate(activeCandidate);
     const canCommit = ["incorrect", "partial"].includes(activeCandidate.verdict);
@@ -476,7 +476,7 @@ function bindWorkbench() {
       else if (stage === "grade" && nextCommands.has(message)) activateNextIntake("本题未写入错题本，继续处理下一份。" );
       else {
         const progress = progressTurn();
-        setProgress(progress, "Codex 正在思考", stage === "intake" ? "结合图片和当前题干理解你的修正。" : "结合当前判题候选理解你的问题。" );
+        setProgress(progress, "正在思考", stage === "intake" ? "结合图片和当前题干理解你的修正。" : "结合当前判题候选理解你的问题。" );
         await chatTurn(message);
         setProgress(progress, "本轮已完成", "会话上下文已保留，可以继续输入。", "complete");
       }

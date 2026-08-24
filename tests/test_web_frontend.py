@@ -113,6 +113,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('"正在上传附件"', script)
         self.assertIn('"正在建立错题会话"', script)
         self.assertIn("正在识别题目与作答", script)
+        self.assertNotIn("Codex", html + script)
         self.assertIn("/model-candidate", script)
         self.assertIn("/model-grade", script)
         self.assertIn("/chat-turn", script)
