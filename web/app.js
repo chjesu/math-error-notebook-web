@@ -139,6 +139,7 @@ function bindWorkbench() {
 
   function addUploadFiles(files) {
     const rejected = [];
+    const duplicates = [];
     if (!activeIntake && !pendingIntakes.length && uploadFiles.length && uploadFiles.every(item => item.state === "done")) {
       uploadFiles.forEach(item => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
       uploadFiles = [];
@@ -147,11 +148,13 @@ function bindWorkbench() {
       const extension = file.name.split(".").pop().toLowerCase();
       if (!allowedExtensions.has(extension)) rejected.push(`${file.name}：格式不支持`);
       else if (file.size > maxFileBytes) rejected.push(`${file.name}：超过 25 MB`);
+      else if (uploadFiles.some(item => item.file.name.toLowerCase() === file.name.toLowerCase() && item.file.size === file.size && item.file.lastModified === file.lastModified)) duplicates.push(file.name);
       else uploadFiles.push({id: crypto.randomUUID(), file, extension, previewUrl: ["png", "jpg", "jpeg"].includes(extension) ? URL.createObjectURL(file) : "", state: "queued", progress: 0, error: ""});
     }
     renderUploadFiles();
     const waiting = uploadFiles.filter(item => item.state === "queued").length;
-    status($("#upload-status"), rejected.length ? rejected.join("；") : `已添加 ${waiting} 个待上传文件。`, rejected.length > 0);
+    const notice = [rejected.join("；"), duplicates.length ? `已忽略 ${duplicates.length} 个重复文件` : ""].filter(Boolean).join("；");
+    status($("#upload-status"), notice || `已添加 ${waiting} 个待上传文件。`, rejected.length > 0);
   }
 
   function activateNextIntake(message = "", error = false) {

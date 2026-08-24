@@ -62,6 +62,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('dropZone.addEventListener("click"', script)
         self.assertIn('dropZone.addEventListener("drop"', script)
         self.assertIn('document.addEventListener("paste"', script)
+        self.assertIn("item.file.lastModified === file.lastModified", script)
+        self.assertIn("已忽略 ${duplicates.length} 个重复文件", script)
         self.assertIn("for (const file of files)", script)
         self.assertIn("URL.createObjectURL(file)", script)
         self.assertIn("new XMLHttpRequest()", script)
