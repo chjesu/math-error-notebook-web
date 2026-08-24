@@ -161,10 +161,17 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .drop-zone.drag-active { border-color: var(--brand); background: #e3e9f5; box-shadow: 0 0 0 3px rgba(0, 32, 96, .14); }
 .drop-zone small { margin-top: 8px; color: var(--muted); font-weight: 400; }
 input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-.upload-file-list { display: grid; gap: 6px; padding: 0; margin: 0; list-style: none; }
-.upload-file-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 14px; }
-.upload-file-list span { min-width: 0; overflow-wrap: anywhere; }
-.upload-file-list button { flex: 0 0 auto; min-height: auto; padding: 4px 8px; background: transparent; color: var(--danger); font-size: 13px; }
+.upload-file-list { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; margin: 0; list-style: none; }
+.upload-thumbnail { display: grid; width: 88px; gap: 5px; color: var(--muted); font-size: 12px; }
+.upload-preview { position: relative; display: grid; width: 88px; height: 88px; overflow: hidden; place-items: center; border: 1px solid var(--line); border-radius: 16px; background: #e8e8e4; }
+.upload-preview img { width: 100%; height: 100%; object-fit: cover; }
+.upload-preview strong { color: var(--brand); font-size: 15px; }
+.upload-thumbnail small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
+.upload-state { position: absolute; inset: auto 5px 5px; padding: 3px 6px; border-radius: 999px; background: rgba(24, 34, 48, .78); color: #fff; font-size: 11px; line-height: 1; }
+.upload-thumbnail.is-done .upload-state { background: #18794e; }
+.upload-thumbnail.is-failed .upload-state { background: var(--danger); }
+.upload-preview button { position: absolute; inset: 5px 5px auto auto; width: 24px; min-height: 24px; padding: 0; border: 1px solid rgba(255,255,255,.8); border-radius: 50%; background: rgba(24,34,48,.72); color: #fff; font-size: 19px; line-height: 1; }
+.upload-progress { position: absolute; inset: auto auto 0 0; height: 4px; background: #4b6fd8; transition: width .15s linear; }
 .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .stats div { display: grid; gap: 6px; }
 .stats strong { font-size: 32px; }

@@ -61,8 +61,14 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('dropZone.addEventListener("drop"', script)
         self.assertIn('document.addEventListener("paste"', script)
         self.assertIn("for (const file of files)", script)
-        self.assertIn("files.slice(completed)", script)
+        self.assertIn("URL.createObjectURL(file)", script)
+        self.assertIn("new XMLHttpRequest()", script)
+        self.assertIn('xhr.upload.addEventListener("progress"', script)
+        for state in ('"queued"', '"uploading"', '"processing"', '"done"', '"failed"'):
+            self.assertIn(state, script)
         self.assertIn(".drop-zone.drag-active", css)
+        self.assertIn(".upload-thumbnail", css)
+        self.assertIn(".upload-progress", css)
 
     def test_login_and_register_are_separate_documents(self) -> None:
         login = (WEB / "login.html").read_text(encoding="utf-8")

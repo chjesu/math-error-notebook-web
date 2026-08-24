@@ -82,6 +82,7 @@ function bindWorkbench() {
   let activeAttempt = null;
   let activeCandidate = null;
   let uploadFiles = [];
+  let uploadRunning = false;
   const pendingIntakes = [];
   const uploadInput = $("#file");
   const uploadButton = $("#upload-button");
@@ -90,33 +91,70 @@ function bindWorkbench() {
   const maxFileBytes = 25 * 1024 * 1024;
 
   function renderUploadFiles() {
-    $("#upload-file-list").replaceChildren(...uploadFiles.map((file, index) => {
-      const item = document.createElement("li");
-      const name = document.createElement("span");
+    const stateLabels = {queued: "等待上传", uploading: "上传中", processing: "处理中", done: "上传完成", failed: "上传失败"};
+    $("#upload-file-list").replaceChildren(...uploadFiles.map(item => {
+      const card = document.createElement("li");
+      const preview = document.createElement("div");
+      const name = document.createElement("small");
+      const state = document.createElement("span");
       const remove = document.createElement("button");
-      name.textContent = `${file.name}（${(file.size / 1024 / 1024).toFixed(1)} MB）`;
-      remove.type = "button";
-      remove.dataset.removeFile = index;
-      remove.textContent = "移除";
-      item.append(name, remove);
-      return item;
+      card.className = `upload-thumbnail is-${item.state}`;
+      card.title = item.error ? `${item.file.name}：${item.error}` : item.file.name;
+      card.setAttribute("aria-label", `${item.file.name}，${stateLabels[item.state]}`);
+      preview.className = "upload-preview";
+      if (item.previewUrl) {
+        const image = document.createElement("img");
+        image.src = item.previewUrl;
+        image.alt = "";
+        preview.append(image);
+      } else {
+        const type = document.createElement("strong");
+        type.textContent = item.extension.toUpperCase();
+        preview.append(type);
+      }
+      state.className = "upload-state";
+      state.textContent = item.state === "uploading" ? `${item.progress}%` : stateLabels[item.state];
+      preview.append(state);
+      if (item.state === "uploading") {
+        const progress = document.createElement("i");
+        progress.className = "upload-progress";
+        progress.style.width = `${item.progress}%`;
+        preview.append(progress);
+      }
+      if (["queued", "failed"].includes(item.state)) {
+        remove.type = "button";
+        remove.dataset.removeFile = item.id;
+        remove.setAttribute("aria-label", `移除 ${item.file.name}`);
+        remove.textContent = "×";
+        preview.append(remove);
+      }
+      name.textContent = item.file.name;
+      card.append(preview, name);
+      return card;
     }));
-    uploadButton.disabled = uploadFiles.length === 0;
+    const retryable = uploadFiles.filter(item => ["queued", "failed"].includes(item.state));
+    uploadButton.disabled = uploadRunning || retryable.length === 0;
+    uploadButton.textContent = retryable.some(item => item.state === "failed") ? "重试失败文件" : "上传并录入";
   }
 
   function addUploadFiles(files) {
     const rejected = [];
+    if (!activeIntake && !pendingIntakes.length && uploadFiles.length && uploadFiles.every(item => item.state === "done")) {
+      uploadFiles.forEach(item => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
+      uploadFiles = [];
+    }
     for (const file of files) {
       const extension = file.name.split(".").pop().toLowerCase();
       if (!allowedExtensions.has(extension)) rejected.push(`${file.name}：格式不支持`);
       else if (file.size > maxFileBytes) rejected.push(`${file.name}：超过 25 MB`);
-      else uploadFiles.push(file);
+      else uploadFiles.push({id: crypto.randomUUID(), file, extension, previewUrl: ["png", "jpg", "jpeg"].includes(extension) ? URL.createObjectURL(file) : "", state: "queued", progress: 0, error: ""});
     }
     renderUploadFiles();
-    status($("#upload-status"), rejected.length ? rejected.join("；") : `已选择 ${uploadFiles.length} 个文件。`, rejected.length > 0);
+    const waiting = uploadFiles.filter(item => item.state === "queued").length;
+    status($("#upload-status"), rejected.length ? rejected.join("；") : `已添加 ${waiting} 个待上传文件。`, rejected.length > 0);
   }
 
-  function activateNextIntake(message = "") {
+  function activateNextIntake(message = "", error = false) {
     activeIntake = pendingIntakes.shift() || null;
     activeAttempt = null;
     activeCandidate = null;
@@ -127,14 +165,45 @@ function bindWorkbench() {
     $("#next-intake").hidden = true;
     if (!activeIntake) {
       $("#manual-flow").hidden = true;
-      if (message) status($("#upload-status"), message);
+      if (message) status($("#upload-status"), message, error);
       return;
     }
     $("#manual-flow").hidden = false;
     $("#manual-intake-form").hidden = false;
     $("#manual-grade-form").hidden = true;
-    status($("#upload-status"), `${message ? `${message} ` : ""}请确认“${activeIntake.fileName}”的题干与作答${pendingIntakes.length ? `，后面还有 ${pendingIntakes.length} 个文件` : ""}。`);
+    status($("#upload-status"), `${message ? `${message} ` : ""}请确认“${activeIntake.fileName}”的题干与作答${pendingIntakes.length ? `，后面还有 ${pendingIntakes.length} 个文件` : ""}。`, error);
     $("#question-text").focus();
+  }
+
+  function uploadFile(item) {
+    return new Promise((resolve, reject) => {
+      const form = new FormData();
+      form.append("purpose", "question_image");
+      form.append("file", item.file);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/v1/files");
+      xhr.withCredentials = true;
+      xhr.setRequestHeader("X-Device-ID", deviceId);
+      xhr.setRequestHeader("Idempotency-Key", crypto.randomUUID());
+      xhr.upload.addEventListener("progress", event => {
+        if (!event.lengthComputable) return;
+        item.progress = Math.min(99, Math.round(event.loaded / event.total * 100));
+        renderUploadFiles();
+      });
+      xhr.addEventListener("load", () => {
+        const value = (() => { try { return JSON.parse(xhr.responseText); } catch { return {}; } })();
+        if (xhr.status >= 200 && xhr.status < 300) return resolve(value);
+        const error = new Error(value.error?.code || "temporarily_unavailable");
+        error.status = xhr.status;
+        reject(error);
+      });
+      xhr.addEventListener("error", () => {
+        const error = new Error("network_error");
+        error.status = 0;
+        reject(error);
+      });
+      xhr.send(form);
+    });
   }
 
   async function loadWorkbench() {
@@ -169,47 +238,55 @@ function bindWorkbench() {
   });
   dropZone.addEventListener("drop", event => addUploadFiles(event.dataTransfer.files));
   document.addEventListener("paste", event => {
-    if (event.target.matches("input, textarea, [contenteditable]")) return;
+    if (event.target.closest?.("input, textarea, [contenteditable]")) return;
     const files = event.clipboardData?.files;
     if (files?.length) { event.preventDefault(); addUploadFiles(files); }
   });
   $("#upload-file-list").addEventListener("click", event => {
-    if (event.target.dataset.removeFile === undefined) return;
-    uploadFiles.splice(Number(event.target.dataset.removeFile), 1);
+    const id = event.target.dataset.removeFile;
+    if (!id) return;
+    const removed = uploadFiles.find(item => item.id === id);
+    if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+    uploadFiles = uploadFiles.filter(item => item.id !== id);
     renderUploadFiles();
   });
 
   $("#upload-form").addEventListener("submit", async event => {
     event.preventDefault();
-    if (!uploadFiles.length) return;
-    const files = [...uploadFiles];
-    const button = event.submitter;
-    button.disabled = true;
+    const files = uploadFiles.filter(item => ["queued", "failed"].includes(item.state));
+    if (!files.length || uploadRunning) return;
+    uploadRunning = true;
+    renderUploadFiles();
     let completed = 0;
-    try {
-      for (const file of files) {
-        status($("#upload-status"), `正在上传 ${completed + 1}/${files.length}：${file.name}`);
-        const form = new FormData();
-        form.append("purpose", "question_image");
-        form.append("file", file);
-        const uploaded = await api("/v1/files", {method: "POST", body: form, headers: {"Idempotency-Key": crypto.randomUUID()}});
+    let failed = 0;
+    for (const item of files) {
+      item.state = "uploading";
+      item.progress = 0;
+      item.error = "";
+      renderUploadFiles();
+      status($("#upload-status"), `正在上传 ${completed + failed + 1}/${files.length}：${item.file.name}`);
+      try {
+        const uploaded = await uploadFile(item);
+        item.state = "processing";
+        item.progress = 100;
+        renderUploadFiles();
         const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-        pendingIntakes.push({intakeId: task.resource_id, inputVersion: 1, fileName: file.name});
+        pendingIntakes.push({intakeId: task.resource_id, inputVersion: 1, fileName: item.file.name});
+        item.state = "done";
         completed += 1;
+      } catch (error) {
+        item.state = "failed";
+        item.error = authError(error);
+        failed += 1;
       }
-      uploadFiles = [];
       renderUploadFiles();
-      if (!activeIntake) activateNextIntake(`已保存 ${completed} 个文件。`);
-      else status($("#upload-status"), `已保存 ${completed} 个文件，已加入待确认队列。`);
-      await loadWorkbench();
-    } catch (error) {
-      uploadFiles = files.slice(completed);
-      renderUploadFiles();
-      if (!activeIntake && pendingIntakes.length) activateNextIntake(`已保存 ${completed} 个文件。`);
-      status($("#upload-status"), `${completed ? `已保存 ${completed} 个；` : ""}${authError(error)} 未处理文件已保留，可直接重试。`, true);
-    } finally {
-      button.disabled = uploadFiles.length === 0;
     }
+    uploadRunning = false;
+    renderUploadFiles();
+    const summary = `${completed ? `已保存 ${completed} 个文件` : "没有文件上传成功"}${failed ? `，${failed} 个失败，可重试` : ""}。`;
+    if (!activeIntake && pendingIntakes.length) activateNextIntake(summary, failed > 0);
+    else status($("#upload-status"), activeIntake ? `${summary} 已成功文件已加入待确认队列。` : summary, failed > 0);
+    await loadWorkbench();
   });
 
   $("#manual-intake-form").addEventListener("submit", async event => {
