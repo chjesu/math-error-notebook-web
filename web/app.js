@@ -134,7 +134,9 @@ function bindWorkbench() {
     }));
     const retryable = uploadFiles.filter(item => ["queued", "failed"].includes(item.state));
     uploadButton.disabled = uploadRunning || retryable.length === 0;
-    uploadButton.textContent = retryable.some(item => item.state === "failed") ? "重试失败文件" : "上传并录入";
+    const retrying = retryable.some(item => item.state === "failed");
+    uploadButton.textContent = retrying ? "↻" : "↑";
+    uploadButton.setAttribute("aria-label", retrying ? "重试失败文件" : "上传并录入");
   }
 
   function addUploadFiles(files) {
@@ -175,6 +177,7 @@ function bindWorkbench() {
     $("#manual-intake-form").hidden = false;
     $("#manual-grade-form").hidden = true;
     status($("#upload-status"), `${message ? `${message} ` : ""}请确认“${activeIntake.fileName}”的题干与作答${pendingIntakes.length ? `，后面还有 ${pendingIntakes.length} 个文件` : ""}。`, error);
+    $("#manual-flow").scrollIntoView({behavior: "smooth", block: "end"});
     $("#question-text").focus();
   }
 
@@ -207,21 +210,6 @@ function bindWorkbench() {
       });
       xhr.send(form);
     });
-  }
-
-  async function loadWorkbench() {
-    try {
-      const workbench = await api("/v1/workbench");
-      $("#error-count").textContent = workbench.error_count;
-      $("#task-count").textContent = workbench.pending_task_count;
-      $("#review-count").textContent = workbench.due_review_count;
-      $("#gap-count").textContent = workbench.recommendation_gap_count;
-      $("#error-list").innerHTML = workbench.recent_errors.length
-        ? workbench.recent_errors.map(item => `<li><strong>${escapeHtml(item.question_text)}</strong><br><small>${escapeHtml(item.first_error || "待整理错因")}</small><button class="text-button" type="button" data-recommend-error="${item.error_id}">获取已验证推荐</button></li>`).join("")
-        : '<li class="empty">还没有错题，上传第一道题吧。</li>';
-    } catch (error) {
-      status($("#upload-status"), authError(error), true);
-    }
   }
 
   uploadInput.addEventListener("change", () => {
@@ -290,7 +278,6 @@ function bindWorkbench() {
     const summary = `${completed ? `已保存 ${completed} 个文件` : "没有文件上传成功"}${failed ? `，${failed} 个失败，可重试` : ""}。`;
     if (!activeIntake && pendingIntakes.length) activateNextIntake(summary, failed > 0);
     else status($("#upload-status"), activeIntake ? `${summary} 已成功文件已加入待确认队列。` : summary, failed > 0);
-    await loadWorkbench();
   });
 
   $("#manual-intake-form").addEventListener("submit", async event => {
@@ -341,7 +328,6 @@ function bindWorkbench() {
     try {
       await api(`/v1/grade-results/${activeCandidate.result_id}/commit`, {method: "POST", body: JSON.stringify({input_version: activeCandidate.input_version}), headers: {"Idempotency-Key": crypto.randomUUID()}});
       activateNextIntake("已写入错题本，并安排首次复习。");
-      await loadWorkbench();
     } catch (error) {
       status($("#manual-status"), `入本失败：${authError(error)}`, true);
     } finally {
@@ -351,22 +337,6 @@ function bindWorkbench() {
 
   $("#next-intake").addEventListener("click", () => activateNextIntake("本题不会写入错题本。"));
 
-  $("#error-list").addEventListener("click", async event => {
-    const errorId = event.target.dataset.recommendError;
-    if (!errorId) return;
-    event.target.disabled = true;
-    try {
-      const result = await api(`/v1/errors/${errorId}/recommendations`, {method: "POST", body: "{}", headers: {"Idempotency-Key": crypto.randomUUID()}});
-      event.target.textContent = result.gap ? `已分配 ${result.items.length} 题，仍有缺口` : `已分配 ${result.items.length} 题`;
-      await loadWorkbench();
-    } catch (error) {
-      event.target.textContent = `推荐失败：${authError(error)}`;
-    } finally {
-      event.target.disabled = false;
-    }
-  });
-
-  loadWorkbench();
 }
 
 function bindErrors() {

@@ -70,9 +70,23 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('xhr.upload.addEventListener("progress"', script)
         for state in ('"queued"', '"uploading"', '"processing"', '"done"', '"failed"'):
             self.assertIn(state, script)
-        self.assertIn(".drop-zone.drag-active", css)
+        self.assertIn(".composer-surface.drag-active", css)
         self.assertIn(".upload-thumbnail", css)
         self.assertIn(".upload-progress", css)
+
+    def test_workbench_is_one_chat_flow_with_one_composer(self) -> None:
+        html = (WEB / "index.html").read_text(encoding="utf-8")
+        script = (WEB / "app.js").read_text(encoding="utf-8")
+        css = (WEB / "app.css").read_text(encoding="utf-8")
+        self.assertIn('class="chat-workspace"', html)
+        self.assertIn('id="chat-thread" class="chat-thread"', html)
+        self.assertIn('id="upload-form" class="chat-composer"', html)
+        self.assertIn('class="composer-surface"', html)
+        self.assertNotIn('id="error-count"', html)
+        self.assertNotIn('id="error-list"', html)
+        self.assertNotIn('api("/v1/workbench")', script)
+        self.assertIn(".chat-main", css)
+        self.assertIn(".chat-composer", css)
 
     def test_login_and_register_are_separate_documents(self) -> None:
         login = (WEB / "login.html").read_text(encoding="utf-8")
