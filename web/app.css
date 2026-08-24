@@ -158,8 +158,13 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .panel h2 { margin: 0; }
 .upload-panel { grid-row: span 2; }
 .drop-zone { display: grid; min-height: 180px; padding: 20px; place-items: center; border: 1px dashed #8ca2e8; border-radius: 14px; background: var(--brand-soft); color: var(--brand); cursor: pointer; text-align: center; }
+.drop-zone.drag-active { border-color: var(--brand); background: #e3e9f5; box-shadow: 0 0 0 3px rgba(0, 32, 96, .14); }
 .drop-zone small { margin-top: 8px; color: var(--muted); font-weight: 400; }
 input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.upload-file-list { display: grid; gap: 6px; padding: 0; margin: 0; list-style: none; }
+.upload-file-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 14px; }
+.upload-file-list span { min-width: 0; overflow-wrap: anywhere; }
+.upload-file-list button { flex: 0 0 auto; min-height: auto; padding: 4px 8px; background: transparent; color: var(--danger); font-size: 13px; }
 .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .stats div { display: grid; gap: 6px; }
 .stats strong { font-size: 32px; }

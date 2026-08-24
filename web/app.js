@@ -81,6 +81,61 @@ function bindWorkbench() {
   let activeIntake = null;
   let activeAttempt = null;
   let activeCandidate = null;
+  let uploadFiles = [];
+  const pendingIntakes = [];
+  const uploadInput = $("#file");
+  const uploadButton = $("#upload-button");
+  const dropZone = $("#drop-zone");
+  const allowedExtensions = new Set(["pdf", "png", "jpg", "jpeg", "docx"]);
+  const maxFileBytes = 25 * 1024 * 1024;
+
+  function renderUploadFiles() {
+    $("#upload-file-list").replaceChildren(...uploadFiles.map((file, index) => {
+      const item = document.createElement("li");
+      const name = document.createElement("span");
+      const remove = document.createElement("button");
+      name.textContent = `${file.name}（${(file.size / 1024 / 1024).toFixed(1)} MB）`;
+      remove.type = "button";
+      remove.dataset.removeFile = index;
+      remove.textContent = "移除";
+      item.append(name, remove);
+      return item;
+    }));
+    uploadButton.disabled = uploadFiles.length === 0;
+  }
+
+  function addUploadFiles(files) {
+    const rejected = [];
+    for (const file of files) {
+      const extension = file.name.split(".").pop().toLowerCase();
+      if (!allowedExtensions.has(extension)) rejected.push(`${file.name}：格式不支持`);
+      else if (file.size > maxFileBytes) rejected.push(`${file.name}：超过 25 MB`);
+      else uploadFiles.push(file);
+    }
+    renderUploadFiles();
+    status($("#upload-status"), rejected.length ? rejected.join("；") : `已选择 ${uploadFiles.length} 个文件。`, rejected.length > 0);
+  }
+
+  function activateNextIntake(message = "") {
+    activeIntake = pendingIntakes.shift() || null;
+    activeAttempt = null;
+    activeCandidate = null;
+    $("#manual-intake-form").reset();
+    $("#manual-grade-form").reset();
+    $("#grade-confirm").hidden = true;
+    $("#commit-grade").hidden = false;
+    $("#next-intake").hidden = true;
+    if (!activeIntake) {
+      $("#manual-flow").hidden = true;
+      if (message) status($("#upload-status"), message);
+      return;
+    }
+    $("#manual-flow").hidden = false;
+    $("#manual-intake-form").hidden = false;
+    $("#manual-grade-form").hidden = true;
+    status($("#upload-status"), `${message ? `${message} ` : ""}请确认“${activeIntake.fileName}”的题干与作答${pendingIntakes.length ? `，后面还有 ${pendingIntakes.length} 个文件` : ""}。`);
+    $("#question-text").focus();
+  }
 
   async function loadWorkbench() {
     try {
@@ -97,32 +152,63 @@ function bindWorkbench() {
     }
   }
 
+  uploadInput.addEventListener("change", () => {
+    addUploadFiles(uploadInput.files);
+    uploadInput.value = "";
+  });
+  dropZone.addEventListener("keydown", event => {
+    if (["Enter", " "].includes(event.key)) { event.preventDefault(); uploadInput.click(); }
+  });
+  for (const eventName of ["dragenter", "dragover"]) dropZone.addEventListener(eventName, event => {
+    event.preventDefault();
+    dropZone.classList.add("drag-active");
+  });
+  for (const eventName of ["dragleave", "drop"]) dropZone.addEventListener(eventName, event => {
+    event.preventDefault();
+    dropZone.classList.remove("drag-active");
+  });
+  dropZone.addEventListener("drop", event => addUploadFiles(event.dataTransfer.files));
+  document.addEventListener("paste", event => {
+    if (event.target.matches("input, textarea, [contenteditable]")) return;
+    const files = event.clipboardData?.files;
+    if (files?.length) { event.preventDefault(); addUploadFiles(files); }
+  });
+  $("#upload-file-list").addEventListener("click", event => {
+    if (event.target.dataset.removeFile === undefined) return;
+    uploadFiles.splice(Number(event.target.dataset.removeFile), 1);
+    renderUploadFiles();
+  });
+
   $("#upload-form").addEventListener("submit", async event => {
     event.preventDefault();
-    const file = $("#file").files[0];
-    if (!file) return;
-    const form = new FormData();
-    form.append("purpose", "question_image");
-    form.append("file", file);
+    if (!uploadFiles.length) return;
+    const files = [...uploadFiles];
     const button = event.submitter;
     button.disabled = true;
+    let completed = 0;
     try {
-      const uploaded = await api("/v1/files", {method: "POST", body: form, headers: {"Idempotency-Key": crypto.randomUUID()}});
-      const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-      activeIntake = {intakeId: task.resource_id, inputVersion: 1};
-      activeAttempt = null;
-      activeCandidate = null;
-      $("#manual-flow").hidden = false;
-      $("#manual-intake-form").hidden = false;
-      $("#manual-grade-form").hidden = true;
-      $("#grade-confirm").hidden = true;
-      status($("#upload-status"), "文件已保存。请手工确认题干与作答；自动识别接入后也会保留确认步骤。");
-      $("#question-text").focus();
+      for (const file of files) {
+        status($("#upload-status"), `正在上传 ${completed + 1}/${files.length}：${file.name}`);
+        const form = new FormData();
+        form.append("purpose", "question_image");
+        form.append("file", file);
+        const uploaded = await api("/v1/files", {method: "POST", body: form, headers: {"Idempotency-Key": crypto.randomUUID()}});
+        const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+        pendingIntakes.push({intakeId: task.resource_id, inputVersion: 1, fileName: file.name});
+        completed += 1;
+      }
+      uploadFiles = [];
+      renderUploadFiles();
+      if (!activeIntake) activateNextIntake(`已保存 ${completed} 个文件。`);
+      else status($("#upload-status"), `已保存 ${completed} 个文件，已加入待确认队列。`);
       await loadWorkbench();
     } catch (error) {
-      status($("#upload-status"), `${authError(error)} 文件未丢失时可重试。`, true);
+      uploadFiles = files.slice(completed);
+      renderUploadFiles();
+      if (!activeIntake && pendingIntakes.length) activateNextIntake(`已保存 ${completed} 个文件。`);
+      status($("#upload-status"), `${completed ? `已保存 ${completed} 个；` : ""}${authError(error)} 未处理文件已保留，可直接重试。`, true);
     } finally {
-      button.disabled = false;
+      button.disabled = uploadFiles.length === 0;
     }
   });
 
@@ -159,6 +245,7 @@ function bindWorkbench() {
       $("#grade-summary").textContent = canCommit ? `候选结果：${activeCandidate.verdict === "incorrect" ? "错误" : "部分正确"}；首错：${activeCandidate.first_error}` : activeCandidate.verdict === "correct" ? "候选结果：本题正确，不写入错题本。" : "证据不足，不能写入错题本。";
       $("#grade-confirm").hidden = false;
       $("#commit-grade").hidden = !canCommit;
+      $("#next-intake").hidden = canCommit;
       status($("#manual-status"), canCommit ? "请核对候选后确认入本。" : "已安全停止，不会写入正式错题。");
     } catch (error) {
       status($("#manual-status"), `判题记录失败：${authError(error)}`, true);
@@ -172,10 +259,7 @@ function bindWorkbench() {
     event.currentTarget.disabled = true;
     try {
       await api(`/v1/grade-results/${activeCandidate.result_id}/commit`, {method: "POST", body: JSON.stringify({input_version: activeCandidate.input_version}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-      status($("#upload-status"), "已写入错题本，并安排首次复习。");
-      $("#manual-flow").hidden = true;
-      $("#upload-form").reset();
-      activeIntake = activeAttempt = activeCandidate = null;
+      activateNextIntake("已写入错题本，并安排首次复习。");
       await loadWorkbench();
     } catch (error) {
       status($("#manual-status"), `入本失败：${authError(error)}`, true);
@@ -183,6 +267,8 @@ function bindWorkbench() {
       event.currentTarget.disabled = false;
     }
   });
+
+  $("#next-intake").addEventListener("click", () => activateNextIntake("本题不会写入错题本。"));
 
   $("#error-list").addEventListener("click", async event => {
     const errorId = event.target.dataset.recommendError;

@@ -52,6 +52,18 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(":focus-visible", css)
         self.assertNotIn("min-width:720px", css)
 
+    def test_workbench_upload_supports_multiple_files_drag_and_paste(self) -> None:
+        html = (WEB / "index.html").read_text(encoding="utf-8")
+        script = (WEB / "app.js").read_text(encoding="utf-8")
+        css = (WEB / "app.css").read_text(encoding="utf-8")
+        self.assertIn('type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" multiple', html)
+        self.assertIn('id="upload-file-list"', html)
+        self.assertIn('dropZone.addEventListener("drop"', script)
+        self.assertIn('document.addEventListener("paste"', script)
+        self.assertIn("for (const file of files)", script)
+        self.assertIn("files.slice(completed)", script)
+        self.assertIn(".drop-zone.drag-active", css)
+
     def test_login_and_register_are_separate_documents(self) -> None:
         login = (WEB / "login.html").read_text(encoding="utf-8")
         register = (WEB / "register.html").read_text(encoding="utf-8")

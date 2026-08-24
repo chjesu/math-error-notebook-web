@@ -17,13 +17,13 @@
       <header class="page-header"><div><p class="eyebrow">个人错题本</p><h1>今天从哪道题开始？</h1></div><button id="logout" class="ghost" type="button">退出</button></header>
       <div class="grid">
         <section class="panel upload-panel">
-          <h2>录入一道错题</h2><p>支持 PDF、PNG、JPG 和 DOCX；上传后先确认题干与作答。</p>
-          <form id="upload-form"><label class="drop-zone" for="file"><span>选择试卷或题目图片</span><small>单个文件不超过 25 MB</small></label><input id="file" name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" required><button type="submit">上传并录入</button></form>
+          <h2>录入错题</h2><p>支持 PDF、PNG、JPG 和 DOCX；可一次选择、拖放或粘贴多个文件。</p>
+          <form id="upload-form"><label id="drop-zone" class="drop-zone" for="file" tabindex="0"><span>点击选择，或将多个文件拖放、粘贴到这里</span><small>支持 PDF、PNG、JPG、DOCX，单个文件不超过 25 MB</small></label><input id="file" name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" multiple><ul id="upload-file-list" class="upload-file-list" aria-label="待上传文件"></ul><button id="upload-button" type="submit" disabled>上传并录入</button></form>
           <p id="upload-status" class="status" role="status" aria-live="polite"></p>
           <div id="manual-flow" class="manual-flow" hidden>
             <form id="manual-intake-form"><h3>确认题干与作答</h3><p>本地版可直接手工补录；自动识别接入后仍会先经过这里确认。</p><label for="question-text">完整题干</label><textarea id="question-text" rows="5" required></textarea><label for="answer-text">你的作答</label><textarea id="answer-text" rows="4"></textarea><button type="submit">确认题干与作答</button></form>
             <form id="manual-grade-form" hidden><h3>记录判题候选</h3><label for="verdict">结果</label><select id="verdict" required><option value="incorrect">错误</option><option value="partial">部分正确</option><option value="correct">正确</option><option value="unclear">暂时无法判断</option></select><label for="first-error">首个错误步骤</label><textarea id="first-error" rows="3" required></textarea><label for="grade-evidence">正确方法或核对依据</label><textarea id="grade-evidence" rows="3"></textarea><button type="submit">生成候选</button></form>
-            <div id="grade-confirm" hidden><p id="grade-summary"></p><button id="commit-grade" type="button">确认写入错题本</button></div><p id="manual-status" class="status" role="status" aria-live="polite"></p>
+            <div id="grade-confirm" hidden><p id="grade-summary"></p><button id="commit-grade" type="button">确认写入错题本</button><button id="next-intake" class="ghost" type="button" hidden>处理下一个文件</button></div><p id="manual-status" class="status" role="status" aria-live="polite"></p>
           </div>
         </section>
         <section class="panel stats" aria-label="错题摘要"><div><strong id="error-count">0</strong><span>道错题</span></div><div><strong id="task-count">0</strong><span>个待处理任务</span></div><div><strong id="review-count">0</strong><span>项今日复习</span></div><div><strong id="gap-count">0</strong><span>个推荐缺口</span></div></section>
