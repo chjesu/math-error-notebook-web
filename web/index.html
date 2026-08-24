@@ -19,10 +19,15 @@
         <div id="chat-thread" class="chat-thread">
           <div class="chat-welcome"><img src="/assets/branding/logo-symbol-color-64-v1.png" alt=""><h2>今天要整理哪道错题？</h2><p>添加题目图片或试卷，我会带你逐步确认题干、作答和错误原因。</p></div>
           <p id="upload-status" class="status chat-status" role="status" aria-live="polite"></p>
-          <div id="manual-flow" class="chat-message manual-flow" hidden>
-            <form id="manual-intake-form"><h3>确认题干与作答</h3><p>先核对内容，再进入判题。</p><label for="question-text">完整题干</label><textarea id="question-text" rows="5" required></textarea><label for="answer-text">你的作答</label><textarea id="answer-text" rows="4"></textarea><button type="submit">确认题干与作答</button></form>
-            <form id="manual-grade-form" hidden><h3>记录判题候选</h3><label for="verdict">结果</label><select id="verdict" required><option value="incorrect">错误</option><option value="partial">部分正确</option><option value="correct">正确</option><option value="unclear">暂时无法判断</option></select><label for="first-error">首个错误步骤</label><textarea id="first-error" rows="3" required></textarea><label for="grade-evidence">正确方法或核对依据</label><textarea id="grade-evidence" rows="3"></textarea><button type="submit">生成候选</button></form>
-            <div id="grade-confirm" hidden><p id="grade-summary"></p><button id="commit-grade" type="button">确认写入错题本</button><button id="next-intake" class="ghost" type="button" hidden>处理下一个文件</button></div><p id="manual-status" class="status" role="status" aria-live="polite"></p>
+          <div id="chat-stream" class="chat-stream">
+            <div id="manual-flow" class="chat-turn assistant-turn manual-flow" hidden>
+              <img class="chat-avatar" src="/assets/branding/logo-symbol-color-64-v1.png" alt="">
+              <div class="chat-response">
+                <form id="manual-intake-form"><h3>确认题干与作答</h3><p id="intake-context">先核对内容，再进入判题。</p><label for="question-text">完整题干</label><textarea id="question-text" rows="5" required></textarea><label for="answer-text">你的作答</label><textarea id="answer-text" rows="4"></textarea><button type="submit">确认题干与作答</button></form>
+                <form id="manual-grade-form" hidden><h3>记录判题候选</h3><label for="verdict">结果</label><select id="verdict" required><option value="incorrect">错误</option><option value="partial">部分正确</option><option value="correct">正确</option><option value="unclear">暂时无法判断</option></select><label for="first-error">首个错误步骤</label><textarea id="first-error" rows="3" required></textarea><label for="grade-evidence">正确方法或核对依据</label><textarea id="grade-evidence" rows="3"></textarea><button type="submit">生成候选</button></form>
+                <div id="grade-confirm" hidden><p id="grade-summary"></p><button id="commit-grade" type="button">确认写入错题本</button><button id="next-intake" class="ghost" type="button" hidden>处理下一个文件</button></div><p id="manual-status" class="status" role="status" aria-live="polite"></p>
+              </div>
+            </div>
           </div>
         </div>
         <form id="upload-form" class="chat-composer"><div id="drop-zone" class="composer-surface"><ul id="upload-file-list" class="upload-file-list" aria-label="待上传文件"></ul><div class="composer-row"><button id="file-picker" class="attach-button" type="button" aria-label="添加附件" title="添加附件">＋</button><span class="composer-placeholder">添加图片、PDF 或 DOCX，也可直接拖放、粘贴</span><button id="upload-button" class="send-button" type="submit" aria-label="上传并录入" disabled>↑</button></div></div><input id="file" name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" multiple></form>

@@ -88,7 +88,8 @@ function bindWorkbench() {
 
   function renderUploadFiles() {
     const stateLabels = {queued: "等待上传", uploading: "上传中", processing: "处理中", done: "上传完成", failed: "上传失败"};
-    $("#upload-file-list").replaceChildren(...uploadFiles.map(item => {
+    const composerFiles = uploadFiles.filter(item => !item.submitted);
+    $("#upload-file-list").replaceChildren(...composerFiles.map(item => {
       const card = document.createElement("li");
       const preview = document.createElement("div");
       const name = document.createElement("small");
@@ -128,7 +129,7 @@ function bindWorkbench() {
       card.append(preview, name);
       return card;
     }));
-    const retryable = uploadFiles.filter(item => ["queued", "failed"].includes(item.state));
+    const retryable = composerFiles.filter(item => ["queued", "failed"].includes(item.state));
     uploadButton.disabled = uploadRunning || retryable.length === 0;
     const retrying = retryable.some(item => item.state === "failed");
     uploadButton.textContent = retrying ? "↻" : "↑";
@@ -138,16 +139,12 @@ function bindWorkbench() {
   function addUploadFiles(files) {
     const rejected = [];
     const duplicates = [];
-    if (!activeIntake && !pendingIntakes.length && uploadFiles.length && uploadFiles.every(item => item.state === "done")) {
-      uploadFiles.forEach(item => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
-      uploadFiles = [];
-    }
     for (const file of files) {
       const extension = file.name.split(".").pop().toLowerCase();
       if (!allowedExtensions.has(extension)) rejected.push(`${file.name}：格式不支持`);
       else if (file.size > maxFileBytes) rejected.push(`${file.name}：超过 25 MB`);
       else if (uploadFiles.some(item => item.file.name.toLowerCase() === file.name.toLowerCase() && item.file.size === file.size && item.file.lastModified === file.lastModified)) duplicates.push(file.name);
-      else uploadFiles.push({id: crypto.randomUUID(), file, extension, previewUrl: ["png", "jpg", "jpeg"].includes(extension) ? URL.createObjectURL(file) : "", state: "queued", progress: 0, error: ""});
+      else uploadFiles.push({id: crypto.randomUUID(), file, extension, previewUrl: ["png", "jpg", "jpeg"].includes(extension) ? URL.createObjectURL(file) : "", state: "queued", progress: 0, error: "", submitted: false});
     }
     renderUploadFiles();
     const waiting = uploadFiles.filter(item => item.state === "queued").length;
@@ -155,7 +152,102 @@ function bindWorkbench() {
     status($("#upload-status"), notice || `已添加 ${waiting} 个待上传文件。`, rejected.length > 0);
   }
 
+  function scrollChatToEnd() {
+    requestAnimationFrame(() => { $("#chat-thread").scrollTop = $("#chat-thread").scrollHeight; });
+  }
+
+  function createConversationPreview(item) {
+    const card = document.createElement("div");
+    const preview = document.createElement("div");
+    const name = document.createElement("small");
+    card.className = "chat-upload-thumbnail";
+    preview.className = "chat-upload-preview";
+    if (item.previewUrl) {
+      const image = document.createElement("img");
+      image.src = item.previewUrl;
+      image.alt = "";
+      preview.append(image);
+    } else {
+      const type = document.createElement("strong");
+      type.textContent = item.extension.toUpperCase();
+      preview.append(type);
+    }
+    name.textContent = item.file.name;
+    card.title = item.file.name;
+    card.append(preview, name);
+    return card;
+  }
+
+  function appendTurn(turn) {
+    $("#chat-stream").insertBefore(turn, $("#manual-flow"));
+    $(".chat-welcome").hidden = true;
+    scrollChatToEnd();
+  }
+
+  function appendUserUpload(files) {
+    const turn = document.createElement("div");
+    const bubble = document.createElement("div");
+    const grid = document.createElement("div");
+    const label = document.createElement("p");
+    turn.className = "chat-turn user-turn";
+    bubble.className = "chat-upload-bubble";
+    grid.className = "chat-upload-grid";
+    label.textContent = `请整理这 ${files.length} 个文件`;
+    grid.append(...files.map(createConversationPreview));
+    bubble.append(grid, label);
+    turn.append(bubble);
+    appendTurn(turn);
+  }
+
+  function appendAssistantProgress() {
+    const turn = document.createElement("div");
+    const avatar = document.createElement("img");
+    const response = document.createElement("div");
+    const heading = document.createElement("div");
+    const indicator = document.createElement("span");
+    const title = document.createElement("strong");
+    const detail = document.createElement("p");
+    turn.className = "chat-turn assistant-turn chat-progress is-running";
+    avatar.className = "chat-avatar";
+    avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
+    avatar.alt = "";
+    response.className = "chat-response";
+    heading.className = "chat-progress-heading";
+    indicator.className = "progress-indicator";
+    indicator.setAttribute("aria-hidden", "true");
+    detail.setAttribute("role", "status");
+    detail.setAttribute("aria-live", "polite");
+    heading.append(indicator, title);
+    response.append(heading, detail);
+    turn.append(avatar, response);
+    appendTurn(turn);
+    return {turn, title, detail};
+  }
+
+  function setAssistantProgress(progress, title, detail, state = "running") {
+    progress.turn.className = `chat-turn assistant-turn chat-progress is-${state}`;
+    progress.title.textContent = title;
+    progress.detail.textContent = detail;
+    scrollChatToEnd();
+  }
+
+  function appendAssistantNote(message, error = false) {
+    if (!message) return;
+    const turn = document.createElement("div");
+    const avatar = document.createElement("img");
+    const response = document.createElement("div");
+    turn.className = `chat-turn assistant-turn${error ? " is-error" : ""}`;
+    avatar.className = "chat-avatar";
+    avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
+    avatar.alt = "";
+    response.className = "chat-response";
+    response.textContent = message;
+    turn.append(avatar, response);
+    appendTurn(turn);
+  }
+
   function activateNextIntake(message = "", error = false) {
+    appendAssistantNote(message, error);
     activeIntake = pendingIntakes.shift() || null;
     activeAttempt = null;
     activeCandidate = null;
@@ -164,20 +256,20 @@ function bindWorkbench() {
     $("#grade-confirm").hidden = true;
     $("#commit-grade").hidden = false;
     $("#next-intake").hidden = true;
+    status($("#manual-status"), "");
     if (!activeIntake) {
       $("#manual-flow").hidden = true;
-      if (message) status($("#upload-status"), message, error);
       return;
     }
     $("#manual-flow").hidden = false;
     $("#manual-intake-form").hidden = false;
     $("#manual-grade-form").hidden = true;
-    status($("#upload-status"), `${message ? `${message} ` : ""}请确认“${activeIntake.fileName}”的题干与作答${pendingIntakes.length ? `，后面还有 ${pendingIntakes.length} 个文件` : ""}。`, error);
-    $("#manual-flow").scrollIntoView({behavior: "smooth", block: "end"});
+    $("#intake-context").textContent = `请确认“${activeIntake.fileName}”的题干与作答${pendingIntakes.length ? `，后面还有 ${pendingIntakes.length} 个文件` : ""}。`;
+    scrollChatToEnd();
     $("#question-text").focus();
   }
 
-  function uploadFile(item) {
+  function uploadFile(item, onProgress) {
     return new Promise((resolve, reject) => {
       const form = new FormData();
       form.append("purpose", "question_image");
@@ -190,7 +282,7 @@ function bindWorkbench() {
       xhr.upload.addEventListener("progress", event => {
         if (!event.lengthComputable) return;
         item.progress = Math.min(99, Math.round(event.loaded / event.total * 100));
-        renderUploadFiles();
+        onProgress(item.progress);
       });
       xhr.addEventListener("load", () => {
         const value = (() => { try { return JSON.parse(xhr.responseText); } catch { return {}; } })();
@@ -244,20 +336,24 @@ function bindWorkbench() {
     const files = uploadFiles.filter(item => ["queued", "failed"].includes(item.state));
     if (!files.length || uploadRunning) return;
     uploadRunning = true;
+    files.forEach(item => { item.submitted = true; });
     renderUploadFiles();
+    appendUserUpload(files);
+    const progress = appendAssistantProgress();
+    status($("#upload-status"), "");
+    setAssistantProgress(progress, "准备发送附件", `共 ${files.length} 个文件，正在开始上传。`);
     let completed = 0;
     let failed = 0;
-    for (const item of files) {
+    for (const [index, item] of files.entries()) {
       item.state = "uploading";
       item.progress = 0;
       item.error = "";
-      renderUploadFiles();
-      status($("#upload-status"), `正在上传 ${completed + failed + 1}/${files.length}：${item.file.name}`);
+      setAssistantProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · 0%`);
       try {
-        const uploaded = await uploadFile(item);
+        const uploaded = await uploadFile(item, percent => setAssistantProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · ${percent}%`));
         item.state = "processing";
         item.progress = 100;
-        renderUploadFiles();
+        setAssistantProgress(progress, "正在创建录入任务", `${index + 1}/${files.length} · ${item.file.name}`);
         const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
         pendingIntakes.push({intakeId: task.resource_id, inputVersion: 1, fileName: item.file.name});
         item.state = "done";
@@ -265,6 +361,7 @@ function bindWorkbench() {
       } catch (error) {
         item.state = "failed";
         item.error = authError(error);
+        item.submitted = false;
         failed += 1;
       }
       renderUploadFiles();
@@ -272,9 +369,16 @@ function bindWorkbench() {
     uploadRunning = false;
     renderUploadFiles();
     const summary = `${completed ? `已保存 ${completed} 个文件` : "没有文件上传成功"}${failed ? `，${failed} 个失败，可重试` : ""}。`;
-    if (!activeIntake && pendingIntakes.length) activateNextIntake(summary, failed > 0);
-    else status($("#upload-status"), activeIntake ? `${summary} 已成功文件已加入待确认队列。` : summary, failed > 0);
+    if (completed) {
+      const nextStep = activeIntake ? "已成功文件已加入待确认队列。" : "本地版暂未接入自动识别，请从第一份开始核对题干与作答。";
+      setAssistantProgress(progress, "文件已准备好", `${summary} ${nextStep}`, failed ? "warning" : "complete");
+      if (!activeIntake && pendingIntakes.length) activateNextIntake();
+    } else {
+      setAssistantProgress(progress, "附件发送失败", `${summary} 文件仍保留在输入框中，你可以重试。`, "error");
+    }
   });
+
+  window.addEventListener("beforeunload", () => uploadFiles.forEach(item => item.previewUrl && URL.revokeObjectURL(item.previewUrl)));
 
   $("#manual-intake-form").addEventListener("submit", async event => {
     event.preventDefault();
