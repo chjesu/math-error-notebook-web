@@ -109,6 +109,29 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("/model-candidate", script)
         self.assertIn("/model-grade", script)
 
+    def test_workbench_uses_harness_style_history_window_and_docked_interactions(self) -> None:
+        html = (WEB / "index.html").read_text(encoding="utf-8")
+        script = (WEB / "app.js").read_text(encoding="utf-8")
+        css = (WEB / "app.css").read_text(encoding="utf-8")
+        stream = html.split('id="chat-stream"', 1)[1].split("</div>", 1)[0]
+        self.assertNotIn("textarea", stream)
+        self.assertNotIn("button", stream)
+        self.assertGreater(html.index('id="manual-flow"'), html.index('id="chat-stream"'))
+        self.assertLess(html.index('id="manual-flow"'), html.index('id="upload-form"'))
+        self.assertIn('id="load-older"', html)
+        self.assertIn("const CHAT_PAGE_SIZE = 10", script)
+        self.assertIn("conversationTurns.slice(start)", script)
+        self.assertIn("visibleTurnCount += CHAT_PAGE_SIZE", script)
+        self.assertIn("thread.scrollHeight - previousHeight", script)
+        self.assertIn('document.createElement("details")', script)
+        self.assertIn("progress.disclosure.open = state === \"error\"", script)
+        self.assertIn("showManualComposer(true)", script)
+        self.assertIn("appendUserConfirmation(questionText, answerText)", script)
+        self.assertIn("appendGradeCandidate(candidate)", script)
+        self.assertIn(".history-pagination", css)
+        self.assertIn(".composer-interaction", css)
+        self.assertIn(".chat-disclosure-summary", css)
+
     def test_logout_only_appears_in_settings(self) -> None:
         settings = (WEB / "settings.html").read_text(encoding="utf-8")
         self.assertIn('id="logout"', settings)

@@ -87,6 +87,10 @@ function bindWorkbench() {
   let activeCandidate = null;
   let uploadFiles = [];
   let uploadRunning = false;
+  const CHAT_PAGE_SIZE = 10;
+  const conversationTurns = [];
+  const renderedCandidates = new Set();
+  let visibleTurnCount = CHAT_PAGE_SIZE;
   const pendingIntakes = [];
   const uploadInput = $("#file");
   const uploadButton = $("#upload-button");
@@ -164,6 +168,20 @@ function bindWorkbench() {
     requestAnimationFrame(() => { $("#chat-thread").scrollTop = $("#chat-thread").scrollHeight; });
   }
 
+  function renderConversationWindow() {
+    const start = Math.max(0, conversationTurns.length - visibleTurnCount);
+    $("#chat-stream").replaceChildren(...conversationTurns.slice(start));
+    $("#history-pagination").hidden = start === 0;
+  }
+
+  $("#load-older").addEventListener("click", () => {
+    const thread = $("#chat-thread");
+    const previousHeight = thread.scrollHeight;
+    visibleTurnCount += CHAT_PAGE_SIZE;
+    renderConversationWindow();
+    requestAnimationFrame(() => { thread.scrollTop += thread.scrollHeight - previousHeight; });
+  });
+
   function createConversationPreview(item) {
     const card = document.createElement("div");
     const preview = document.createElement("div");
@@ -187,7 +205,8 @@ function bindWorkbench() {
   }
 
   function appendTurn(turn) {
-    $("#chat-stream").insertBefore(turn, $("#manual-flow"));
+    conversationTurns.push(turn);
+    renderConversationWindow();
     $(".chat-welcome").hidden = true;
     scrollChatToEnd();
   }
@@ -211,19 +230,26 @@ function bindWorkbench() {
     const turn = document.createElement("div");
     const avatar = document.createElement("img");
     const response = document.createElement("div");
+    const disclosure = document.createElement("details");
+    const summary = document.createElement("summary");
     const steps = document.createElement("ol");
     turn.className = "chat-turn assistant-turn chat-progress is-running";
     avatar.className = "chat-avatar";
     avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
     avatar.alt = "";
     response.className = "chat-response";
+    disclosure.className = "chat-disclosure";
+    disclosure.open = true;
+    summary.className = "chat-disclosure-summary";
+    summary.textContent = "正在处理";
     steps.className = "chat-progress-steps";
     steps.setAttribute("role", "status");
     steps.setAttribute("aria-live", "polite");
-    response.append(steps);
+    disclosure.append(summary, steps);
+    response.append(disclosure);
     turn.append(avatar, response);
     appendTurn(turn);
-    return {turn, steps, currentTitle: "", currentStep: null, currentDetail: null};
+    return {turn, disclosure, summary, steps, currentTitle: "", currentStep: null, currentDetail: null};
   }
 
   function setAssistantProgress(progress, title, detail, state = "running") {
@@ -247,7 +273,12 @@ function bindWorkbench() {
       progress.currentDetail = description;
     }
     progress.currentDetail.textContent = detail;
-    if (state !== "running") progress.currentStep.className = `is-${state}`;
+    progress.summary.textContent = state === "running" ? title : `${title} · ${detail}`;
+    if (state === "running") progress.disclosure.open = true;
+    if (state !== "running") {
+      progress.currentStep.className = `is-${state}`;
+      progress.disclosure.open = state === "error";
+    }
     scrollChatToEnd();
   }
 
@@ -266,6 +297,57 @@ function bindWorkbench() {
     appendTurn(turn);
   }
 
+  function appendUserConfirmation(questionText, answerText) {
+    const turn = document.createElement("div");
+    const content = document.createElement("div");
+    const heading = document.createElement("strong");
+    const question = document.createElement("p");
+    const answer = document.createElement("p");
+    turn.className = "chat-turn user-turn";
+    content.className = "chat-user-confirmation";
+    heading.textContent = "已确认题干与作答";
+    question.textContent = `题干：${questionText}`;
+    answer.textContent = `作答：${answerText || "未填写"}`;
+    content.append(heading, question, answer);
+    turn.append(content);
+    appendTurn(turn);
+  }
+
+  function appendGradeCandidate(candidate) {
+    if (!candidate.result_id || renderedCandidates.has(candidate.result_id)) return;
+    renderedCandidates.add(candidate.result_id);
+    const diagnosis = candidate.diagnosis || {};
+    const turn = document.createElement("div");
+    const avatar = document.createElement("img");
+    const response = document.createElement("div");
+    const heading = document.createElement("strong");
+    const list = document.createElement("dl");
+    const verdict = candidate.verdict === "incorrect" ? "错误" : candidate.verdict === "partial" ? "部分正确" : candidate.verdict === "correct" ? "正确" : "证据不足";
+    turn.className = "chat-turn assistant-turn";
+    avatar.className = "chat-avatar";
+    avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
+    avatar.alt = "";
+    response.className = "chat-response chat-candidate";
+    heading.textContent = `判题候选 · ${verdict}`;
+    for (const [label, value] of [["第一处错误", candidate.first_error], ["主要错因", causeLabels[diagnosis.cause_code] || diagnosis.cause_code], ["判断依据", diagnosis.cause_evidence], ["正确过程", diagnosis.correct_solution], ["最终答案", diagnosis.final_answer], ["防错提示", diagnosis.prevention_cue]]) {
+      if (!value) continue;
+      const term = document.createElement("dt");
+      const detail = document.createElement("dd");
+      term.textContent = label;
+      detail.textContent = value;
+      list.append(term, detail);
+    }
+    response.append(heading, list);
+    turn.append(avatar, response);
+    appendTurn(turn);
+  }
+
+  function showManualComposer(show) {
+    $("#manual-flow").hidden = !show;
+    $("#upload-form").hidden = show;
+    $("#composer-note").hidden = show;
+  }
+
   function activateNextIntake(message = "", error = false) {
     appendAssistantNote(message, error);
     activeIntake = pendingIntakes.shift() || null;
@@ -278,10 +360,10 @@ function bindWorkbench() {
     $("#next-intake").hidden = true;
     status($("#manual-status"), "");
     if (!activeIntake) {
-      $("#manual-flow").hidden = true;
+      showManualComposer(false);
       return;
     }
-    $("#manual-flow").hidden = false;
+    showManualComposer(true);
     $("#manual-intake-form").hidden = false;
     $("#manual-grade-form").hidden = true;
     $("#intake-context").textContent = `请确认“${activeIntake.fileName}”的题干与作答${pendingIntakes.length ? `，后面还有 ${pendingIntakes.length} 个文件` : ""}。`;
@@ -432,6 +514,7 @@ function bindWorkbench() {
       const confirmed = await api(`/v1/intakes/${activeIntake.intakeId}/confirm`, {method: "POST", body: JSON.stringify({input_version: intake.input_version}), headers: {"Idempotency-Key": crypto.randomUUID()}});
       activeIntake.inputVersion = intake.input_version;
       activeAttempt = confirmed.resource_id;
+      appendUserConfirmation(questionText, answerText);
       $("#manual-intake-form").hidden = true;
       $("#manual-grade-form").hidden = false;
       const gradeProgress = appendAssistantProgress();
@@ -471,6 +554,7 @@ function bindWorkbench() {
     $("#final-answer").value = diagnosis.final_answer || "";
     $("#prevention-cue").value = diagnosis.prevention_cue || "";
     refreshDiagnosisFields();
+    appendGradeCandidate(candidate);
     const canCommit = ["incorrect", "partial"].includes(candidate.verdict);
     $("#grade-summary").textContent = canCommit ? `候选结果：${candidate.verdict === "incorrect" ? "错误" : "部分正确"}；首错：${candidate.first_error}` : candidate.verdict === "correct" ? "候选结果：本题正确，不写入错题本。" : "证据不足，不能写入错题本。";
     $("#grade-confirm").hidden = false;
