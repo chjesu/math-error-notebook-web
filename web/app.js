@@ -63,6 +63,34 @@ function escapeHtml(value) {
   return span.innerHTML;
 }
 
+function renderMath(target) {
+  if (!target) return;
+  const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    node.nodeValue = node.nodeValue
+      .replace(/\\\\([()[\]])/g, "\\$1")
+      .replace(/\\\\(?=[A-Za-z])/g, "\\")
+      .replace(/^(\s*[A-D][.、．]\s*)\\+\s*$/gm, "$1");
+  }
+  target.classList.add("math-content");
+  if (typeof window.renderMathInElement !== "function") return;
+  window.renderMathInElement(target, {
+    delimiters: [
+      {left: "\\[", right: "\\]", display: true},
+      {left: "\\(", right: "\\)", display: false},
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ],
+    output: "mathml",
+    throwOnError: false,
+    strict: "ignore",
+    trust: false,
+    errorColor: "currentColor"
+  });
+}
+
 const causeLabels = {
   knowledge_gap: "知识点未掌握", concept_confusion: "概念理解不准确", formula_condition: "公式或定理使用条件遗漏",
   method_choice: "解题思路选择错误", reasoning_gap: "推理或步骤跳跃", algebra_transform: "代数变形错误",
@@ -132,6 +160,7 @@ function bindWorkbench() {
     avatar.alt = "";
     response.className = "chat-response";
     response.textContent = message;
+    renderMath(response);
     turn.append(avatar, response);
     appendTurn(turn);
   }
@@ -142,6 +171,7 @@ function bindWorkbench() {
     turn.className = "chat-turn user-turn";
     bubble.className = "chat-user-message";
     bubble.textContent = message;
+    renderMath(bubble);
     turn.append(bubble);
     appendTurn(turn);
   }
@@ -221,6 +251,7 @@ function bindWorkbench() {
       const detail = document.createElement("dd");
       term.textContent = label;
       detail.textContent = value;
+      renderMath(detail);
       list.append(term, detail);
     }
     response.append(heading, list);
@@ -243,6 +274,8 @@ function bindWorkbench() {
     heading.textContent = "题干与作答候选";
     question.textContent = `题干：${intake.questionText || "尚未识别，请直接告诉我题干或需要修正的内容。"}`;
     answer.textContent = `作答：${intake.answerText || "未识别或未作答"}`;
+    renderMath(question);
+    renderMath(answer);
     response.append(heading, question, answer);
     turn.append(avatar, response);
     appendTurn(turn);
@@ -527,11 +560,13 @@ function bindErrors() {
     const recommendationHtml = recommendations.items.length ? recommendations.items.map((recommendation, index) => `<li><strong>练习 ${index + 1}</strong><p>${escapeHtml(recommendation.stem_text)}</p><small>${escapeHtml(recommendation.source)} · ${escapeHtml(recommendation.reason)}</small></li>`).join("") : '<li class="empty">还没有匹配练习。</li>';
     $("#error-detail").hidden = false;
     $("#error-detail").innerHTML = `<h2>错题详情</h2><dl class="diagnosis-list"><dt>原题</dt><dd>${escapeHtml(item.question_text)}</dd><dt>你的作答</dt><dd>${escapeHtml(item.answer_text || "未填写")}</dd><dt>第一处实质错误</dt><dd>${escapeHtml(item.first_error || "待整理")}</dd><dt>主要错因</dt><dd>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</dd><dt>判断依据</dt><dd>${escapeHtml(diagnosis.cause_evidence || "待整理")}</dd><dt>完整正确过程</dt><dd>${escapeHtml(diagnosis.correct_solution || "待整理")}</dd><dt>最终答案</dt><dd>${escapeHtml(diagnosis.final_answer || "待整理")}</dd><dt>防错提示</dt><dd>${escapeHtml(diagnosis.prevention_cue || "待整理")}</dd></dl><h3>已验证练习</h3><ol class="recommendation-list">${recommendationHtml}</ol><div class="actions"><button type="button" data-error-action="recommend" class="ghost">匹配练习</button><button type="button" data-error-action="master" class="ghost">标记已掌握</button><button type="button" data-error-action="remove" class="danger">移除错题</button></div>`;
+    renderMath($("#error-detail"));
   }
   async function loadErrors() {
     try {
       const result = await api("/v1/errors");
       $("#all-errors").innerHTML = result.items.map(item => `<li><button class="text-button" data-error-id="${item.error_id}">${escapeHtml(item.question_text)}</button><br><small>${escapeHtml(item.first_error || "待整理错因")} · ${item.status === "mastered" ? "已掌握" : "复习中"}</small></li>`).join("") || '<li class="empty">还没有错题。</li>';
+      renderMath($("#all-errors"));
     } catch (error) {
       status($("#page-status"), authError(error), true);
     }
@@ -582,6 +617,7 @@ function bindReviews() {
       if (dueReview) {
         const practice = dueReview.recommendations.length ? `<h3>同类型练习</h3><ol>${dueReview.recommendations.map(item => `<li>${escapeHtml(item.stem_text)}<br><small>${escapeHtml(item.source)} · ${escapeHtml(item.reason)}</small></li>`).join("")}</ol>` : "";
         $("#review-question").innerHTML = `<p><strong>先遮住解析，独立重做：</strong></p><div class="review-stem">${escapeHtml(dueReview.question_text)}</div><details><summary>需要时查看上次首错</summary><p>${escapeHtml(dueReview.first_error || "待整理")}</p></details>${practice}`;
+        renderMath($("#review-question"));
       } else $("#review-question").textContent = "今天没有到期复习。";
       $("#review-actions").hidden = !dueReview;
     } catch (error) {
@@ -610,6 +646,7 @@ function bindPractice() {
   function refreshCreateButton() { $("#create-pdf").disabled = selectedErrorIds().length === 0; }
   api("/v1/errors").then(result => {
     $("#practice-errors").innerHTML = result.items.length ? result.items.map(item => `<label class="check selection-item"><input name="practice-error" type="checkbox" value="${item.error_id}"> <span>${escapeHtml(item.question_text)}</span></label>`).join("") : '<p class="empty">还没有错题，请先在工作台录入。</p>';
+    renderMath($("#practice-errors"));
     $("#practice-errors").addEventListener("change", event => {
       if (event.target.name !== "practice-error") return;
       const selected = selectedErrorIds();

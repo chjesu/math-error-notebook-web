@@ -75,6 +75,10 @@ class NotebookE2ETests(unittest.TestCase):
         icons = self.call("/web/nav-icons.svg")
         self.assertEqual((icons[0], icons[1]["content-type"]), (200, "image/svg+xml"))
         self.assertIn(b'<symbol id="workbench"', icons[2])
+        katex = self.call("/web/vendor/katex/katex.min.js")
+        self.assertEqual((katex[0], katex[1]["content-type"]), (200, "text/javascript; charset=utf-8"))
+        self.assertIn(b"KaTeX", katex[2])
+        self.assertEqual(self.call("/web/vendor/katex/auto-render.min.js")[0], 200)
         self.assertEqual(self.call("/assets/branding/../README.md")[0], 401)
 
     def test_public_upload_cannot_claim_internal_pdf_purpose(self) -> None:

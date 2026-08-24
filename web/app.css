@@ -211,6 +211,9 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .chat-user-confirmation { max-width: min(100%, 620px); padding: 13px 16px; border-radius: 18px 18px 5px 18px; background: #e9edf3; line-height: 1.55; }
 .chat-user-confirmation p { margin: 5px 0 0; white-space: pre-wrap; }
 .chat-user-message { max-width: min(100%, 620px); padding: 11px 15px; border-radius: 18px 18px 5px 18px; background: #e9edf3; line-height: 1.55; white-space: pre-wrap; }
+.math-content { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.math-content math { display: inline-block; max-width: 100%; overflow-x: auto; overflow-y: hidden; vertical-align: -.15em; white-space: normal; }
+.math-content .katex-display { display: block; margin: .7em 0; overflow-x: auto; text-align: center; }
 .chat-intake-candidate { padding: 2px 0; }
 .chat-intake-candidate p { margin: 7px 0 0; white-space: pre-wrap; }
 .chat-candidate { padding: 2px 0; }

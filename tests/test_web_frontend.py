@@ -22,6 +22,8 @@ class FrontendContractTests(unittest.TestCase):
             self.assertIn(page_marker, html)
             self.assertIn(own_marker, html)
             self.assertIn('/assets/branding/logo-symbol-color-64-v1.png', html)
+            self.assertIn('/web/vendor/katex/katex.min.js', html)
+            self.assertIn('/web/vendor/katex/auto-render.min.js', html)
             self.assertIn('李兆霖数学错题本', html)
             for route in ('href="/"', 'href="/errors"', 'href="/reviews"', 'href="/practice"', 'href="/progress"', 'href="/settings"'):
                 self.assertIn(route, html)
@@ -138,11 +140,18 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("请先添加题目图片、PDF 或 DOCX", script)
         self.assertIn("userTurn(message)", script)
         self.assertIn("appendCandidate(activeCandidate)", script)
+        self.assertIn("window.renderMathInElement", script)
+        self.assertIn('output: "mathml"', script)
+        self.assertIn('throwOnError: false', script)
+        self.assertIn('replace(/^(\\s*[A-D][.、．]\\s*)\\\\+\\s*$/gm, "$1")', script)
+        self.assertIn("renderMath(question)", script)
+        self.assertIn('renderMath($("#error-detail"))', script)
         self.assertIn('new Set(["确认并判题", "确认题干与作答", "开始判题"])', script)
         self.assertIn('new Set(["确认入本", "确认写入错题本", "加入错题本"])', script)
         self.assertIn(".history-pagination", css)
         self.assertIn("#chat-input", css)
         self.assertIn(".chat-disclosure-summary", css)
+        self.assertIn(".math-content math", css)
 
     def test_logout_only_appears_in_settings(self) -> None:
         settings = (WEB / "settings.html").read_text(encoding="utf-8")

@@ -55,6 +55,8 @@ class NotebookAsgiApp:
             "/web/app.js": (root / "web" / "app.js", "text/javascript; charset=utf-8", False),
             "/web/auth.js": (root / "web" / "auth.js", "text/javascript; charset=utf-8", False),
             "/web/nav-icons.svg": (root / "web" / "nav-icons.svg", "image/svg+xml", False),
+            "/web/vendor/katex/katex.min.js": (root / "web" / "vendor" / "katex" / "katex.min.js", "text/javascript; charset=utf-8", False),
+            "/web/vendor/katex/auto-render.min.js": (root / "web" / "vendor" / "katex" / "auto-render.min.js", "text/javascript; charset=utf-8", False),
             "/assets/branding/favicon-v1.ico": (root / "assets" / "branding" / "favicon-v1.ico", "image/x-icon", True),
             "/assets/branding/logo-symbol-color-64-v1.png": (root / "assets" / "branding" / "logo-symbol-color-64-v1.png", "image/png", True),
             "/assets/branding/logo-symbol-color-128-v1.png": (root / "assets" / "branding" / "logo-symbol-color-128-v1.png", "image/png", True),
