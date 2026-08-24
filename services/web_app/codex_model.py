@@ -52,14 +52,27 @@ class CodexNotebookModel:
         if result.get("intake_id") != intake.intake_id or result.get("input_version") != intake.input_version:
             raise ModelUnavailableError("model response does not match the frozen intake")
         status = result.get("status")
-        question = self._text(result.get("question_text"), "question_text", required=status == "complete")
-        answer = self._text(result.get("answer_text"), "answer_text")
         if status not in {"complete", "unclear"}:
             raise ModelUnavailableError("model returned an unsupported intake status")
+        raw_items = result.get("items")
+        if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= 20:
+            raise ModelUnavailableError("model returned an invalid intake item list")
+        items = []
+        for expected_item_no, raw_item in enumerate(raw_items, 1):
+            if not isinstance(raw_item, dict) or raw_item.get("item_no") != expected_item_no:
+                raise ModelUnavailableError("model returned unordered intake items")
+            item_status = raw_item.get("status")
+            if item_status not in {"complete", "unclear"}:
+                raise ModelUnavailableError("model returned an unsupported intake item status")
+            items.append({
+                **raw_item,
+                "item_no": expected_item_no,
+                "question_text": self._text(raw_item.get("question_text"), "question_text", required=True),
+                "answer_text": self._text(raw_item.get("answer_text"), "answer_text"),
+            })
         return {
             **result,
-            "question_text": question,
-            "answer_text": answer,
+            "items": items,
             "route": self._route_metadata(value),
         }
 

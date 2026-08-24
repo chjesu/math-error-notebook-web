@@ -235,7 +235,10 @@ class NotebookE2ETests(unittest.TestCase):
                 self.assertTrue(image_path.is_file())
                 self.assertEqual(image_path.parent.name, "model-previews")
                 self.assertEqual(file_record.media_type, "image/png")
-                return {"intake_id": intake.intake_id, "input_version": intake.input_version, "status": "complete", "question_text": "若 x+1=2，求 x。", "answer_text": "x=0", "confidence": 0.98, "route": {"task": "math-intake-candidate", "model": "test"}}
+                return {"intake_id": intake.intake_id, "input_version": intake.input_version, "status": "complete", "items": [
+                    {"item_no": 1, "status": "complete", "question_text": "若 x+1=2，求 x。", "answer_text": "x=0", "confidence": 0.98},
+                    {"item_no": 2, "status": "complete", "question_text": "若 y-1=2，求 y。", "answer_text": "y=2", "confidence": 0.97},
+                ], "confidence": 0.98, "route": {"task": "math-intake-candidate", "model": "test"}}
 
             def grade(_, *, attempt):
                 return {"attempt_id": attempt.attempt_id, "input_version": attempt.input_version, "verdict": "incorrect", "first_error": "移项后结果错误", "cause_code": "algebra_transform", "cause_evidence": "由 x+1=2 得到 x=0", "correct_solution": "x=2-1=1", "final_answer": "x=1", "prevention_cue": "移项后验算", "confidence": 0.97, "route": {"task": "math-grade-candidate", "model": "test"}}
@@ -250,6 +253,14 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(self.call(f"/v1/intakes/{intake_id}/model-candidate", method="POST", cookie=other_cookie)[0], 404)
         extracted = self.call(f"/v1/intakes/{intake_id}/model-candidate", method="POST", cookie=cookie)
         self.assertEqual((extracted[0], extracted[2]["status"], extracted[2]["question_text"]), (201, "waiting_confirmation", "若 x+1=2，求 x。"))
+        self.assertEqual(
+            [(item["item_no"], item["question_text"], item["answer_text"]) for item in extracted[2]["items"]],
+            [(1, "若 x+1=2，求 x。", "x=0"), (2, "若 y-1=2，求 y。", "y=2")],
+        )
+        repeated = self.call(f"/v1/intakes/{intake_id}/model-candidate", method="POST", cookie=cookie)
+        self.assertEqual((repeated[0], repeated[2]["model_status"], len(repeated[2]["items"])), (200, "existing", 2))
+        refreshed = self.call(f"/v1/intakes/{intake_id}/model-candidate", method="POST", payload={"refresh": True}, cookie=cookie)
+        self.assertEqual((refreshed[0], refreshed[2]["model_status"], len(refreshed[2]["items"])), (201, "complete", 2))
         confirmed = self.call(f"/v1/intakes/{intake_id}/confirm", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="model-grade")
         self.assertEqual(self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/model-grade", method="POST", payload={"input_version": 1}, cookie=other_cookie)[0], 404)
         graded = self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/model-grade", method="POST", payload={"input_version": 1}, cookie=cookie)

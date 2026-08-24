@@ -131,6 +131,29 @@ function bindWorkbench() {
   const confirmIntakeCommands = new Set(["确认并判题", "确认题干与作答", "开始判题"]);
   const commitCommands = new Set(["确认入本", "确认写入错题本", "加入错题本"]);
   const nextCommands = new Set(["下一题", "处理下一个", "跳过"]);
+  const previewDialog = $("#image-preview-dialog");
+  const previewContent = $("#image-preview-content");
+
+  function openImagePreview(url, name) {
+    if (!url || !previewDialog || !previewContent) return;
+    previewContent.src = url;
+    previewContent.alt = name ? `${name} 原图` : "上传原图";
+    previewDialog.showModal();
+  }
+
+  function imagePreviewButton(item) {
+    const button = document.createElement("button");
+    const image = document.createElement("img");
+    button.type = "button";
+    button.className = "image-preview-trigger";
+    button.dataset.previewUrl = item.previewUrl;
+    button.dataset.previewName = item.file.name;
+    button.setAttribute("aria-label", `查看 ${item.file.name} 原图`);
+    image.src = item.previewUrl;
+    image.alt = "";
+    button.append(image);
+    return button;
+  }
 
   function scrollChatToEnd() {
     requestAnimationFrame(() => { $("#chat-thread").scrollTop = $("#chat-thread").scrollHeight; });
@@ -303,7 +326,7 @@ function bindWorkbench() {
       card.className = `upload-thumbnail is-${item.state}`;
       preview.className = "upload-preview";
       if (item.previewUrl) {
-        const image = document.createElement("img"); image.src = item.previewUrl; image.alt = ""; preview.append(image);
+        preview.append(imagePreviewButton(item));
       } else {
         const type = document.createElement("strong"); type.textContent = item.extension.toUpperCase(); preview.append(type);
       }
@@ -375,7 +398,7 @@ function bindWorkbench() {
       const name = document.createElement("small");
       card.className = "chat-upload-thumbnail";
       preview.className = "chat-upload-preview";
-      if (item.previewUrl) { const image = document.createElement("img"); image.src = item.previewUrl; image.alt = ""; preview.append(image); }
+      if (item.previewUrl) preview.append(imagePreviewButton(item));
       else { const type = document.createElement("strong"); type.textContent = item.extension.toUpperCase(); preview.append(type); }
       name.textContent = item.file.name; card.append(preview, name); grid.append(card);
     }
@@ -406,6 +429,7 @@ function bindWorkbench() {
     appendUserUpload(files);
     const progress = progressTurn();
     let completed = 0;
+    let recognized = 0;
     let failed = 0;
     for (const [index, item] of files.entries()) {
       item.state = "uploading";
@@ -418,9 +442,21 @@ function bindWorkbench() {
         let candidate = {input_version: 1, question_text: "", answer_text: "", model_status: "unclear"};
         try {
           setProgress(progress, "正在识别题目与作答", `${index + 1}/${files.length} · ${item.file.name}`);
-          candidate = await api(`/v1/intakes/${task.resource_id}/model-candidate`, {method: "POST", body: "{}"});
+          candidate = await api(`/v1/intakes/${task.resource_id}/model-candidate`, {method: "POST", body: JSON.stringify({refresh: true})});
         } catch (_) {}
-        pendingIntakes.push({intakeId: task.resource_id, inputVersion: candidate.input_version || 1, status: candidate.status || "extracting", fileName: item.file.name, questionText: candidate.question_text || "", answerText: candidate.answer_text || ""});
+        const extractedItems = Array.isArray(candidate.items) && candidate.items.length ? candidate.items : [candidate];
+        for (const extracted of extractedItems) {
+          pendingIntakes.push({
+            intakeId: extracted.intake_id || task.resource_id,
+            itemNo: extracted.item_no || 1,
+            inputVersion: extracted.input_version || 1,
+            status: extracted.status || "extracting",
+            fileName: extractedItems.length > 1 ? `${item.file.name} · 第 ${extracted.item_no || 1} 题` : item.file.name,
+            questionText: extracted.question_text || "",
+            answerText: extracted.answer_text || "",
+          });
+        }
+        recognized += extractedItems.filter(extracted => extracted.question_text).length;
         item.state = "done";
         completed += 1;
       } catch (error) {
@@ -433,7 +469,7 @@ function bindWorkbench() {
     busy = false;
     renderUploadFiles();
     if (completed) {
-      setProgress(progress, "文件已准备好", `已建立 ${completed} 个错题会话${failed ? `，${failed} 个文件可重试` : ""}。`, failed ? "warning" : "complete");
+      setProgress(progress, "文件已准备好", `已从 ${completed} 个文件识别 ${recognized} 道题${failed ? `，${failed} 个文件可重试` : ""}。`, failed ? "warning" : "complete");
       if (!activeIntake) activateNextIntake();
     } else setProgress(progress, "附件发送失败", "文件仍保留在输入框中，可以重试。", "error");
   }
@@ -535,6 +571,11 @@ function bindWorkbench() {
   chatInput.addEventListener("input", () => { chatInput.style.height = "auto"; chatInput.style.height = `${Math.min(chatInput.scrollHeight, 150)}px`; setComposerState(); });
   chatInput.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#upload-form").requestSubmit(); } });
   $("#upload-file-list").addEventListener("click", event => {
+    const opener = event.target.closest("[data-preview-url]");
+    if (opener) {
+      openImagePreview(opener.dataset.previewUrl, opener.dataset.previewName);
+      return;
+    }
     const id = event.target.dataset.removeFile;
     if (!id) return;
     const item = uploadFiles.find(value => value.id === id);
@@ -542,6 +583,12 @@ function bindWorkbench() {
     uploadFiles = uploadFiles.filter(value => value.id !== id);
     renderUploadFiles();
   });
+  $("#chat-stream").addEventListener("click", event => {
+    const opener = event.target.closest("[data-preview-url]");
+    if (opener) openImagePreview(opener.dataset.previewUrl, opener.dataset.previewName);
+  });
+  previewDialog?.addEventListener("click", event => { if (event.target === previewDialog) previewDialog.close(); });
+  previewDialog?.addEventListener("close", () => { previewContent.removeAttribute("src"); });
   uploadSurface.addEventListener("dragover", event => { if (Array.from(event.dataTransfer?.types || []).includes("Files")) { event.preventDefault(); uploadSurface.classList.add("drag-active"); } });
   uploadSurface.addEventListener("dragleave", event => { if (!event.relatedTarget || !uploadSurface.contains(event.relatedTarget)) uploadSurface.classList.remove("drag-active"); });
   uploadSurface.addEventListener("drop", event => { if (event.dataTransfer?.files?.length) { event.preventDefault(); uploadSurface.classList.remove("drag-active"); addUploadFiles(event.dataTransfer.files); } });

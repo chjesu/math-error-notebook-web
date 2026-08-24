@@ -53,6 +53,7 @@ class IntakeItem:
     status: str
     question_text: str
     answer_text: str
+    item_no: int = 1
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,21 @@ def _required(value: str, label: str, maximum: int = 64) -> str:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def normalize_extraction_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(items, list) or not 1 <= len(items) <= 20:
+        raise ValueError("one to twenty extraction items are required")
+    normalized = []
+    for expected_item_no, item in enumerate(items, 1):
+        if not isinstance(item, dict) or item.get("item_no") != expected_item_no:
+            raise ValueError("extraction item numbers must be sequential")
+        question = _required(item.get("question_text", ""), "question_text", 200_000)
+        answer = item.get("answer_text", "")
+        if not isinstance(answer, str) or len(answer) > 200_000:
+            raise ValueError("answer_text must be a string of at most 200000 characters")
+        normalized.append({"item_no": expected_item_no, "question_text": question, "answer_text": answer.strip()})
+    return normalized
 
 
 class MySqlDomainStore:
@@ -195,12 +211,29 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             cursor.execute(
-                "SELECT file_id,input_version,status,COALESCE(question_text,''),COALESCE(answer_text,'') "
+                "SELECT file_id,input_version,status,COALESCE(question_text,''),COALESCE(answer_text,''),item_no "
                 "FROM intake_items WHERE id=%s AND user_id=%s",
                 (intake_id, user_id),
             )
             row = cursor.fetchone()
-            return IntakeItem(intake_id, user_id, str(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4])) if row else None
+            return IntakeItem(intake_id, user_id, str(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4]), int(row[5])) if row else None
+        finally:
+            cursor.close()
+            connection.close()
+
+    def get_file_intakes(self, *, user_id: str, file_id: str) -> list[IntakeItem]:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT id,input_version,status,COALESCE(question_text,''),COALESCE(answer_text,''),item_no "
+                "FROM intake_items WHERE file_id=%s AND user_id=%s ORDER BY item_no",
+                (file_id, user_id),
+            )
+            return [
+                IntakeItem(str(row[0]), user_id, file_id, int(row[1]), str(row[2]), str(row[3]), str(row[4]), int(row[5]))
+                for row in cursor.fetchall()
+            ]
         finally:
             cursor.close()
             connection.close()
@@ -296,10 +329,71 @@ class MySqlDomainStore:
                 (question, answer_text, json.dumps(evidence, ensure_ascii=False), now, intake_id, user_id),
             )
             cursor.execute("UPDATE web_jobs SET status='waiting_confirmation',checkpoint_json=%s,updated_at=%s WHERE user_id=%s AND resource_type='intake' AND resource_id=%s AND job_type='extract'", (json.dumps({"stage": "candidate_saved"}), now, user_id, intake_id))
-            cursor.execute("SELECT file_id,input_version,status,question_text,answer_text FROM intake_items WHERE id=%s AND user_id=%s", (intake_id, user_id))
+            cursor.execute("SELECT file_id,input_version,status,question_text,answer_text,item_no FROM intake_items WHERE id=%s AND user_id=%s", (intake_id, user_id))
             row = cursor.fetchone()
             connection.commit()
-            return IntakeItem(intake_id, user_id, str(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4]))
+            return IntakeItem(intake_id, user_id, str(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4]), int(row[5]))
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def save_extraction_candidates(
+        self, *, user_id: str, intake_id: str, items: list[dict[str, Any]], evidence: dict[str, Any], replace_existing: bool = False
+    ) -> list[IntakeItem]:
+        values = normalize_extraction_items(items)
+        connection = self._connect()
+        cursor = connection.cursor()
+        now = _utcnow()
+        try:
+            connection.begin()
+            cursor.execute(
+                "SELECT file_id,input_version,status FROM intake_items WHERE id=%s AND user_id=%s AND item_no=1 FOR UPDATE",
+                (intake_id, user_id),
+            )
+            primary = cursor.fetchone()
+            if not primary:
+                raise LookupError("intake not found")
+            current_status = str(primary[2])
+            if current_status == "waiting_confirmation" and replace_existing:
+                cursor.execute(
+                    "SELECT status FROM intake_items WHERE file_id=%s AND user_id=%s FOR UPDATE",
+                    (str(primary[0]), user_id),
+                )
+                if any(str(row[0]) != "waiting_confirmation" for row in cursor.fetchall()):
+                    raise RuntimeError("conflict")
+                cursor.execute("DELETE FROM intake_items WHERE file_id=%s AND user_id=%s AND item_no>1", (str(primary[0]), user_id))
+            elif current_status != "extracting":
+                raise RuntimeError("conflict")
+            file_id, input_version = str(primary[0]), int(primary[1])
+            encoded_evidence = json.dumps(evidence, ensure_ascii=False)
+            first = values[0]
+            cursor.execute(
+                "UPDATE intake_items SET question_text=%s,answer_text=%s,evidence_json=%s,status='waiting_confirmation',updated_at=%s "
+                "WHERE id=%s AND user_id=%s AND status IN ('extracting','waiting_confirmation')",
+                (first["question_text"], first["answer_text"], encoded_evidence, now, intake_id, user_id),
+            )
+            ids = [intake_id]
+            for item in values[1:]:
+                child_id = uuid.uuid4().hex
+                cursor.execute(
+                    "INSERT INTO intake_items (id,user_id,file_id,item_no,input_version,status,question_text,answer_text,evidence_json,created_at,updated_at) "
+                    "VALUES (%s,%s,%s,%s,1,'waiting_confirmation',%s,%s,%s,%s,%s)",
+                    (child_id, user_id, file_id, item["item_no"], item["question_text"], item["answer_text"], encoded_evidence, now, now),
+                )
+                ids.append(child_id)
+            cursor.execute(
+                "UPDATE web_jobs SET status='waiting_confirmation',checkpoint_json=%s,updated_at=%s "
+                "WHERE user_id=%s AND resource_type='intake' AND resource_id=%s AND job_type='extract'",
+                (json.dumps({"stage": "candidates_saved", "item_count": len(values)}), now, user_id, intake_id),
+            )
+            connection.commit()
+            return [
+                IntakeItem(item_id, user_id, file_id, input_version if item_no == 1 else 1, "waiting_confirmation", item["question_text"], item["answer_text"], item_no)
+                for item_id, item_no, item in zip(ids, range(1, len(values) + 1), values)
+            ]
         except Exception:
             connection.rollback()
             raise
@@ -326,10 +420,10 @@ class MySqlDomainStore:
                 if cursor.fetchone():
                     raise RuntimeError("input_version_changed")
                 raise LookupError("intake not found")
-            cursor.execute("SELECT file_id,input_version,status,question_text,answer_text FROM intake_items WHERE id=%s AND user_id=%s", (intake_id, user_id))
+            cursor.execute("SELECT file_id,input_version,status,question_text,answer_text,item_no FROM intake_items WHERE id=%s AND user_id=%s", (intake_id, user_id))
             row = cursor.fetchone()
             connection.commit()
-            return IntakeItem(intake_id, user_id, str(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4]))
+            return IntakeItem(intake_id, user_id, str(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4]), int(row[5]))
         except Exception:
             connection.rollback()
             raise

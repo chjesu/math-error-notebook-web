@@ -192,13 +192,20 @@ class NotebookAsgiApp:
                 if self.model_runner is None:
                     raise ModelUnavailableError("local model processing is disabled")
                 intake_id = path.split("/")[-2]
+                raw_payload = await self._read(receive)
+                payload = json.loads(raw_payload.decode("utf-8")) if raw_payload else {}
+                if not isinstance(payload, dict) or set(payload) - {"refresh"} or not isinstance(payload.get("refresh", False), bool):
+                    raise ValueError("invalid model candidate request")
+                refresh = payload.get("refresh", False)
                 intake = await self._sync(self.notebook.store.get_intake, user_id=user.user_id, intake_id=intake_id)
                 if not intake:
                     raise LookupError
-                if intake.status == "waiting_confirmation":
-                    await self._json(send, 200, self._intake(intake) | {"model_status": "existing"})
+                if intake.status == "waiting_confirmation" and not refresh:
+                    intakes = await self._sync(self.notebook.store.get_file_intakes, user_id=user.user_id, file_id=intake.file_id)
+                    payloads = [self._intake(value) for value in intakes]
+                    await self._json(send, 200, payloads[0] | {"items": payloads, "model_status": "existing"})
                     return
-                if intake.status != "extracting":
+                if intake.status not in ({"extracting", "waiting_confirmation"} if refresh else {"extracting"}):
                     raise RuntimeError("conflict")
                 file_record = await self._sync(self.notebook.store.get_file, user_id=user.user_id, file_id=intake.file_id)
                 if not file_record:
@@ -214,20 +221,36 @@ class NotebookAsgiApp:
                     )
                 if result.get("intake_id") != intake.intake_id or result.get("input_version") != intake.input_version:
                     raise ModelUnavailableError("model response does not match the frozen intake")
-                question_text = str(result.get("question_text", "")).strip()
-                answer_text = str(result.get("answer_text", "")).strip()
-                if result.get("status") == "complete" and question_text:
-                    intake = await self._sync(
-                        self.notebook.store.save_extraction_candidate,
+                model_items = result.get("items")
+                if not isinstance(model_items, list):
+                    model_items = [{
+                        "item_no": 1,
+                        "question_text": str(result.get("question_text", "")).strip(),
+                        "answer_text": str(result.get("answer_text", "")).strip(),
+                    }]
+                readable_items = [
+                    item for item in model_items
+                    if isinstance(item, dict) and str(item.get("question_text", "")).strip()
+                ]
+                candidates = [
+                    {"item_no": index, "question_text": str(item["question_text"]).strip(), "answer_text": str(item.get("answer_text", "")).strip()}
+                    for index, item in enumerate(readable_items, 1)
+                ]
+                if candidates:
+                    intakes = await self._sync(
+                        self.notebook.store.save_extraction_candidates,
                         user_id=user.user_id,
                         intake_id=intake_id,
-                        question_text=question_text,
-                        answer_text=answer_text,
+                        items=candidates,
                         evidence={"source": "codex_cli", "route": result.get("route"), "confidence": result.get("confidence")},
+                        replace_existing=refresh,
                     )
-                    await self._json(send, 201, self._intake(intake) | {"model_status": "complete", "model": result.get("route")})
+                    payloads = [self._intake(value) for value in intakes]
+                    await self._json(send, 201, payloads[0] | {
+                        "items": payloads, "model_status": result.get("status"), "model": result.get("route"),
+                    })
                 else:
-                    await self._json(send, 200, self._intake(intake) | {"model_status": "unclear", "question_text": question_text, "answer_text": answer_text, "model": result.get("route")})
+                    await self._json(send, 200, self._intake(intake) | {"items": [], "model_status": "unclear", "model": result.get("route")})
             elif path.startswith("/v1/intakes/") and path.endswith("/chat-turn") and method == "POST":
                 if self.model_runner is None:
                     raise ModelUnavailableError("local model processing is disabled")
@@ -540,7 +563,7 @@ class NotebookAsgiApp:
 
     @staticmethod
     def _intake(value: IntakeItem) -> dict[str, Any]:
-        return {"intake_id": value.intake_id, "input_version": value.input_version, "status": value.status, "question_text": value.question_text, "answer_text": value.answer_text}
+        return {"intake_id": value.intake_id, "item_no": value.item_no, "input_version": value.input_version, "status": value.status, "question_text": value.question_text, "answer_text": value.answer_text}
 
     @staticmethod
     def _candidate(value: GradeCandidate) -> dict[str, Any]:

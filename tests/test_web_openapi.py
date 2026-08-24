@@ -71,6 +71,14 @@ class WebOpenApiContractTests(unittest.TestCase):
         self.assertEqual(required, {"first_error", "cause_code", "evidence", "correct_solution", "final_answer"})
         self.assertIn("200", self.operation("/v1/bank/status", "get")["responses"])
 
+    def test_model_extraction_returns_all_questions_in_one_file(self) -> None:
+        operation = self.operation("/v1/intakes/{intake_id}/model-candidate", "post")
+        self.assertEqual(operation["responses"]["201"]["$ref"], "#/components/responses/IntakeBatch")
+        self.assertEqual(operation["requestBody"]["content"]["application/json"]["schema"]["$ref"], "#/components/schemas/ModelCandidateRequest")
+        batch = self.document["components"]["schemas"]["IntakeBatch"]
+        self.assertEqual(batch["allOf"][1]["properties"]["items"]["maxItems"], 20)
+        self.assertIn("item_no", self.document["components"]["schemas"]["Intake"]["required"])
+
 
 if __name__ == "__main__":
     unittest.main()

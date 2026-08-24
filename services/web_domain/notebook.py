@@ -13,7 +13,7 @@ import uuid
 from services.web_files import FileIntake
 
 from .learning import Question, Recommendation, ReviewTask, next_review, rank_questions
-from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job
+from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job, normalize_extraction_items
 from .practice_pdf import build_practice_pdf
 
 
@@ -85,6 +85,12 @@ class InMemoryNotebookStore:
         value = self.intakes.get(intake_id)
         return value if value and value.user_id == user_id else None
 
+    def get_file_intakes(self, *, user_id: str, file_id: str) -> list[IntakeItem]:
+        return sorted(
+            (item for item in self.intakes.values() if item.user_id == user_id and item.file_id == file_id),
+            key=lambda item: item.item_no,
+        )
+
     def get_attempt(self, *, user_id: str, attempt_id: str) -> Attempt | None:
         value = self.attempts.get(attempt_id)
         return value if value and value.user_id == user_id else None
@@ -114,10 +120,36 @@ class InMemoryNotebookStore:
             return current
         if current.status != "extracting":
             raise RuntimeError("conflict")
-        updated = IntakeItem(current.intake_id, user_id, current.file_id, current.input_version, "waiting_confirmation", question, answer_text)
+        updated = IntakeItem(current.intake_id, user_id, current.file_id, current.input_version, "waiting_confirmation", question, answer_text, current.item_no)
         self.intakes[intake_id] = updated
         self._update_job(user_id, "extract", intake_id, "waiting_confirmation", {"stage": "candidate_saved"})
         return updated
+
+    def save_extraction_candidates(
+        self, *, user_id: str, intake_id: str, items: list[dict[str, Any]], evidence: dict[str, Any], replace_existing: bool = False
+    ) -> list[IntakeItem]:
+        del evidence
+        values = normalize_extraction_items(items)
+        current = self._intake(user_id, intake_id)
+        if current.item_no != 1 or current.status != "extracting" and not (replace_existing and current.status == "waiting_confirmation"):
+            raise RuntimeError("conflict")
+        if current.status == "waiting_confirmation":
+            existing = self.get_file_intakes(user_id=user_id, file_id=current.file_id)
+            if any(item.status != "waiting_confirmation" for item in existing):
+                raise RuntimeError("conflict")
+            for item in existing[1:]:
+                self.intakes.pop(item.intake_id, None)
+        saved = []
+        for item in values:
+            item_id = intake_id if item["item_no"] == 1 else uuid.uuid4().hex
+            value = IntakeItem(
+                item_id, user_id, current.file_id, current.input_version if item["item_no"] == 1 else 1,
+                "waiting_confirmation", item["question_text"], item["answer_text"], item["item_no"],
+            )
+            self.intakes[item_id] = value
+            saved.append(value)
+        self._update_job(user_id, "extract", intake_id, "waiting_confirmation", {"stage": "candidates_saved", "item_count": len(saved)})
+        return saved
 
     def revise_intake(self, *, user_id: str, intake_id: str, expected_version: int, question_text: str, answer_text: str) -> IntakeItem:
         current = self._intake(user_id, intake_id)
@@ -127,7 +159,7 @@ class InMemoryNotebookStore:
             raise RuntimeError("waiting_confirmation")
         if not question_text.strip():
             raise ValueError("question_text is required")
-        updated = IntakeItem(intake_id, user_id, current.file_id, expected_version + 1, current.status, question_text.strip(), answer_text)
+        updated = IntakeItem(intake_id, user_id, current.file_id, expected_version + 1, current.status, question_text.strip(), answer_text, current.item_no)
         self.intakes[intake_id] = updated
         return updated
 
@@ -148,7 +180,7 @@ class InMemoryNotebookStore:
         self._attempt_keys[key] = attempt.attempt_id
         self.jobs[job.job_id] = job
         self._job_keys[(user_id, "grade", idempotency_key)] = job.job_id
-        self.intakes[intake_id] = IntakeItem(current.intake_id, user_id, current.file_id, current.input_version, "confirmed", current.question_text, current.answer_text)
+        self.intakes[intake_id] = IntakeItem(current.intake_id, user_id, current.file_id, current.input_version, "confirmed", current.question_text, current.answer_text, current.item_no)
         return attempt.attempt_id, job
 
     def record_grade_candidate(self, *, user_id: str, attempt_id: str, input_version: int, verdict: str, first_error: str | None, evidence: str | None, confidence: float | None = None) -> GradeCandidate:
@@ -403,7 +435,7 @@ class InMemoryNotebookStore:
                 self.jobs[job_id] = Job(item.job_id, item.user_id, item.job_type, item.resource_id, "cancelled", item.checkpoint, item.last_error_code)
         for intake_id, item in list(self.intakes.items()):
             if item.user_id == user_id and item.status in {"extracting", "waiting_confirmation", "confirmed"}:
-                self.intakes[intake_id] = IntakeItem(item.intake_id, item.user_id, item.file_id, item.input_version, "cancelled", item.question_text, item.answer_text)
+                self.intakes[intake_id] = IntakeItem(item.intake_id, item.user_id, item.file_id, item.input_version, "cancelled", item.question_text, item.answer_text, item.item_no)
         for attempt_id, item in list(self.attempts.items()):
             if item.user_id == user_id and item.status in {"grading", "grade_ready"}:
                 self.attempts[attempt_id] = Attempt(item.attempt_id, item.user_id, item.intake_id, item.input_version, item.question_text, item.answer_text, "cancelled")

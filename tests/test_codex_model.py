@@ -21,7 +21,7 @@ class CodexNotebookModelTests(unittest.TestCase):
                 frozen = json.loads(review_input)
                 self.assertEqual(images, [image] if route["task"].startswith("math-intake") else [])
                 if route["task"].startswith("math-intake"):
-                    result = {"intake_id": frozen["intake_id"], "input_version": 1, "status": "complete", "question_text": "题目", "answer_text": "作答", "notes": None, "confidence": 0.99}
+                    result = {"intake_id": frozen["intake_id"], "input_version": 1, "status": "complete", "items": [{"item_no": 1, "status": "complete", "question_text": "题目", "answer_text": "作答", "notes": None, "confidence": 0.99}], "notes": None, "confidence": 0.99}
                 else:
                     result = {"attempt_id": frozen["attempt_id"], "input_version": 1, "verdict": "incorrect", "first_error": "首错", "cause_code": "calculation", "cause_evidence": "证据", "correct_solution": "过程", "final_answer": "答案", "prevention_cue": "验算", "confidence": 0.98}
                 return {"route": route, "result": result}
@@ -33,7 +33,7 @@ class CodexNotebookModelTests(unittest.TestCase):
             intake = SimpleNamespace(intake_id="a" * 32, input_version=1)
             file_record = SimpleNamespace(media_type="image/png", original_name="q.png")
             extracted = model.extract(intake=intake, file_record=file_record, image_path=image)
-            self.assertEqual(extracted["question_text"], "题目")
+            self.assertEqual(extracted["items"][0]["question_text"], "题目")
             attempt = SimpleNamespace(attempt_id="b" * 32, input_version=1, question_text="题目", answer_text="作答")
             graded = model.grade(attempt=attempt)
             self.assertEqual((graded["verdict"], graded["cause_code"]), ("incorrect", "calculation"))

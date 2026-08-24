@@ -183,7 +183,16 @@ def invoke(route: dict, review_input: str, output_path: Path, images: list[Path]
         raise RuntimeError("codex CLI is not installed or not on PATH")
     output_path = output_path.resolve()
     if route["task"].startswith("math-intake"):
-        purpose = "Read the attached math-work image and produce a transcription candidate. Separate the complete question from the student's answer. Preserve mathematical notation. Never invent unreadable content; use unclear when evidence is insufficient."
+        purpose = (
+            "Inspect the entire attached math-work image and identify every distinct question in reading order, "
+            "not just the first one. Return one sequential item for each visible question, including all options, "
+            "and never merge two questions into one item. For each item, separate the complete printed question "
+            "from the student's answer or work. Look carefully for handwriting, ticks, circles, underlines, selected "
+            "options, and worked steps near or below that question; associate them with the correct item. Printed "
+            "answer choices are part of question_text, not answer_text. Use an empty answer_text only when no student "
+            "answer or work is visible. Preserve mathematical notation. Never invent unreadable content; mark only the "
+            "affected item unclear when evidence is insufficient."
+        )
     elif route["task"].startswith("math-grade"):
         purpose = "Produce a read-only math grading candidate from the frozen attempt. Find the first substantive error, classify its cause, give direct evidence, a complete correct solution, final answer, and a short prevention cue. Never invent unreadable content; use unclear when evidence is insufficient."
     else:
