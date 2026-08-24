@@ -95,6 +95,7 @@ function bindWorkbench() {
   const uploadInput = $("#file");
   const uploadButton = $("#upload-button");
   const dropZone = $("#drop-zone");
+  const uploadSurface = $(".chat-main");
   const allowedExtensions = new Set(["pdf", "png", "jpg", "jpeg", "docx"]);
   const maxFileBytes = 25 * 1024 * 1024;
 
@@ -412,15 +413,22 @@ function bindWorkbench() {
     if (!event.target.closest("button")) uploadInput.click();
   });
   $("#file-picker").addEventListener("click", () => uploadInput.click());
-  for (const eventName of ["dragenter", "dragover"]) dropZone.addEventListener(eventName, event => {
+  uploadSurface.addEventListener("dragover", event => {
+    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
     event.preventDefault();
-    dropZone.classList.add("drag-active");
+    event.dataTransfer.dropEffect = "copy";
+    uploadSurface.classList.add("drag-active");
   });
-  for (const eventName of ["dragleave", "drop"]) dropZone.addEventListener(eventName, event => {
+  uploadSurface.addEventListener("dragleave", event => {
+    if (event.relatedTarget && uploadSurface.contains(event.relatedTarget)) return;
+    uploadSurface.classList.remove("drag-active");
+  });
+  uploadSurface.addEventListener("drop", event => {
+    if (!event.dataTransfer?.files?.length) return;
     event.preventDefault();
-    dropZone.classList.remove("drag-active");
+    uploadSurface.classList.remove("drag-active");
+    addUploadFiles(event.dataTransfer.files);
   });
-  dropZone.addEventListener("drop", event => addUploadFiles(event.dataTransfer.files));
   document.addEventListener("paste", event => {
     if (event.target.closest?.("input, textarea, [contenteditable]")) return;
     const files = event.clipboardData?.files;

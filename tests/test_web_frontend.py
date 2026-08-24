@@ -63,7 +63,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="upload-file-list"', html)
         self.assertLess(html.index('id="upload-file-list"'), html.index('</div><input id="file"'))
         self.assertIn('dropZone.addEventListener("click"', script)
-        self.assertIn('dropZone.addEventListener("drop"', script)
+        self.assertIn('const uploadSurface = $(".chat-main")', script)
+        self.assertIn('uploadSurface.addEventListener("dragover"', script)
+        self.assertIn('uploadSurface.addEventListener("drop"', script)
+        self.assertIn('uploadSurface.contains(event.relatedTarget)', script)
         self.assertIn('document.addEventListener("paste"', script)
         self.assertIn("item.file.lastModified === file.lastModified", script)
         self.assertIn("已忽略 ${duplicates.length} 个重复文件", script)
@@ -73,7 +76,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('xhr.upload.addEventListener("progress"', script)
         for state in ('"queued"', '"uploading"', '"processing"', '"done"', '"failed"'):
             self.assertIn(state, script)
-        self.assertIn(".composer-surface.drag-active", css)
+        self.assertIn(".chat-main.drag-active::after", css)
+        self.assertIn('content: "松开即可添加文件"', css)
         self.assertIn(".upload-thumbnail", css)
         self.assertIn(".upload-progress", css)
 
