@@ -250,13 +250,13 @@ function bindWorkbench() {
 
   function setComposerState() {
     const retryable = uploadFiles.some(item => !item.submitted && ["queued", "failed"].includes(item.state));
-    chatInput.disabled = busy || stage === "upload";
+    chatInput.disabled = false;
     chatInput.placeholder = stage === "upload"
-      ? "添加图片、PDF 或 DOCX，也可直接拖放、粘贴"
+      ? "输入消息，或添加图片、PDF、DOCX"
       : stage === "intake"
         ? "输入修正或补充；确认无误请发送“确认并判题”"
         : "继续追问或修正；确认无误请发送“确认入本”";
-    sendButton.disabled = busy || (!retryable && (chatInput.disabled || !chatInput.value.trim()));
+    sendButton.disabled = busy || (!retryable && !chatInput.value.trim());
     sendButton.textContent = retryable && uploadFiles.some(item => item.state === "failed") ? "↻" : "↑";
   }
 
@@ -458,10 +458,16 @@ function bindWorkbench() {
 
   async function sendMessage() {
     const message = chatInput.value.trim();
-    if (!message || busy || !activeIntake) return;
+    if (!message || busy) return;
     chatInput.value = "";
     chatInput.style.height = "auto";
     userTurn(message);
+    if (!activeIntake) {
+      assistantTurn("请先添加题目图片、PDF 或 DOCX，我才能结合题目继续处理。");
+      setComposerState();
+      chatInput.focus();
+      return;
+    }
     busy = true;
     setComposerState();
     try {
@@ -492,7 +498,7 @@ function bindWorkbench() {
   });
   uploadInput.addEventListener("change", () => { addUploadFiles(uploadInput.files); uploadInput.value = ""; });
   $("#file-picker").addEventListener("click", () => uploadInput.click());
-  dropZone.addEventListener("click", event => { if (!event.target.closest("button, textarea")) chatInput.disabled ? uploadInput.click() : chatInput.focus(); });
+  dropZone.addEventListener("click", event => { if (!event.target.closest("button, textarea")) chatInput.focus(); });
   chatInput.addEventListener("input", () => { chatInput.style.height = "auto"; chatInput.style.height = `${Math.min(chatInput.scrollHeight, 150)}px`; setComposerState(); });
   chatInput.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#upload-form").requestSubmit(); } });
   $("#upload-file-list").addEventListener("click", event => {

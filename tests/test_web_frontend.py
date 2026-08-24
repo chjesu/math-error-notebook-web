@@ -89,6 +89,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="chat-stream" class="chat-stream"', html)
         self.assertIn('id="upload-form" class="chat-composer"', html)
         self.assertIn('id="chat-input" rows="1"', html)
+        chat_input = html.split('id="chat-input"', 1)[1].split("</textarea>", 1)[0]
+        self.assertNotIn("disabled", chat_input)
         self.assertNotIn('id="manual-flow"', html)
         self.assertNotIn('id="manual-intake-form"', html)
         self.assertNotIn('id="manual-grade-form"', html)
@@ -130,6 +132,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('document.createElement("details")', script)
         self.assertIn("progress.disclosure.open = state === \"error\"", script)
         self.assertIn("setComposerState()", script)
+        self.assertIn("chatInput.disabled = false", script)
+        self.assertIn("请先添加题目图片、PDF 或 DOCX", script)
         self.assertIn("userTurn(message)", script)
         self.assertIn("appendCandidate(activeCandidate)", script)
         self.assertIn('new Set(["确认并判题", "确认题干与作答", "开始判题"])', script)
