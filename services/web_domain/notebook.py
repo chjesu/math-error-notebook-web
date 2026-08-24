@@ -192,7 +192,7 @@ class InMemoryNotebookStore:
         if existing:
             self._ensure_review(user_id, existing.error_id)
             return existing
-        entry = ErrorEntry(uuid.uuid4().hex, user_id, attempt.attempt_id, attempt.question_text, attempt.answer_text, candidate.first_error, "open", _now())
+        entry = ErrorEntry(uuid.uuid4().hex, user_id, attempt.attempt_id, attempt.question_text, attempt.answer_text, candidate.first_error, "open", _now(), candidate.evidence)
         self.errors[entry.error_id] = entry
         self.candidates[candidate_id] = GradeCandidate(candidate.candidate_id, candidate.attempt_id, candidate.input_version, candidate.verdict, candidate.first_error, candidate.evidence, "committed")
         self.attempts[attempt.attempt_id] = Attempt(attempt.attempt_id, user_id, attempt.intake_id, attempt.input_version, attempt.question_text, attempt.answer_text, "committed")
@@ -255,7 +255,7 @@ class InMemoryNotebookStore:
         next_task = None
         if target is None:
             error = self.errors[task.error_id]
-            self.errors[task.error_id] = ErrorEntry(error.error_id, user_id, error.attempt_id, error.question_text, error.answer_text, error.first_error, "mastered", error.created_at)
+            self.errors[task.error_id] = ErrorEntry(error.error_id, user_id, error.attempt_id, error.question_text, error.answer_text, error.first_error, "mastered", error.created_at, error.evidence)
         else:
             stage, due_at = target
             review_key = (user_id, task.error_id, stage)
@@ -271,7 +271,31 @@ class InMemoryNotebookStore:
         errors = [item for item in self.errors.values() if item.user_id == user_id and item.status != "removed"]
         due = self.list_due_reviews(user_id=user_id, now=current)
         gaps = sum(not any(rec.user_id == user_id and rec.error_id == item.error_id and rec.status == "assigned" for rec in self.recommendations.values()) for item in errors)
-        return {"error_count": len(errors), "mastered_count": sum(item.status == "mastered" for item in errors), "due_review_count": len(due), "recommendation_gap_count": gaps, "sample_sufficient": len(errors) >= 3}
+        reviews = [item for (owner, _), item in self.review_attempts.items() if owner == user_id]
+        correct = sum(item["result"] == "correct" for item in reviews)
+        return {"error_count": len(errors), "mastered_count": sum(item.status == "mastered" for item in errors), "due_review_count": len(due), "recommendation_gap_count": gaps, "completed_review_count": len(reviews), "correct_review_count": correct, "partial_review_count": sum(item["result"] == "partial" for item in reviews), "wrong_review_count": sum(item["result"] == "wrong" for item in reviews), "review_accuracy_percent": round(correct * 100 / len(reviews)) if reviews else 0, "sample_sufficient": len(errors) >= 3}
+
+    def bank_status(self) -> dict[str, int]:
+        recommendable = sum(self.question_rules.get(question_id) in {("verified", "open", True), ("verified", "user_authorized", True)} for question_id in self.questions)
+        candidate = sum(self.question_rules.get(question_id, ("candidate", "restricted", False))[0] == "candidate" for question_id in self.questions)
+        return {"question_count": len(self.questions), "recommendable_count": recommendable, "candidate_count": candidate}
+
+    def set_error_status(self, *, user_id: str, error_id: str, status: str) -> ErrorEntry:
+        if status not in {"mastered", "removed"}:
+            raise ValueError("unsupported error status")
+        error = self.get_error(user_id=user_id, error_id=error_id)
+        if not error or error.status == "removed":
+            raise LookupError("error not found")
+        updated = ErrorEntry(error.error_id, user_id, error.attempt_id, error.question_text, error.answer_text, error.first_error, status, error.created_at, error.evidence)
+        self.errors[error_id] = updated
+        for task_id, task in list(self.review_tasks.items()):
+            if task.user_id == user_id and task.error_id == error_id and task.status in {"pending", "ready"}:
+                self.review_tasks[task_id] = ReviewTask(task.task_id, user_id, error_id, task.stage, task.due_at, "cancelled")
+        if status == "removed":
+            for recommendation_id, item in list(self.recommendations.items()):
+                if item.user_id == user_id and item.error_id == error_id and item.status in {"candidate", "assigned"}:
+                    self.recommendations[recommendation_id] = Recommendation(item.recommendation_id, user_id, error_id, item.question, item.reason, "withdrawn")
+        return updated
 
     def pending_job_count(self, *, user_id: str) -> int:
         return sum(job.user_id == user_id and job.status not in {"completed", "cancelled", "failed_final"} for job in self.jobs.values())
@@ -383,7 +407,7 @@ class InMemoryNotebookStore:
                 self.recommendations[recommendation_id] = Recommendation(item.recommendation_id, item.user_id, item.error_id, item.question, item.reason, "withdrawn")
         for error_id, item in list(self.errors.items()):
             if item.user_id == user_id and item.status != "removed":
-                self.errors[error_id] = ErrorEntry(item.error_id, item.user_id, item.attempt_id, item.question_text, item.answer_text, item.first_error, "removed", item.created_at)
+                self.errors[error_id] = ErrorEntry(item.error_id, item.user_id, item.attempt_id, item.question_text, item.answer_text, item.first_error, "removed", item.created_at, item.evidence)
 
     @staticmethod
     def _file_export(item: FileRecord) -> dict[str, Any]:
@@ -403,7 +427,7 @@ class InMemoryNotebookStore:
 
     @staticmethod
     def _error_export(item: ErrorEntry) -> dict[str, Any]:
-        return {"error_id": item.error_id, "attempt_id": item.attempt_id, "question_text": item.question_text, "answer_text": item.answer_text, "first_error": item.first_error, "status": item.status, "created_at": item.created_at}
+        return {"error_id": item.error_id, "attempt_id": item.attempt_id, "question_text": item.question_text, "answer_text": item.answer_text, "first_error": item.first_error, "evidence": item.evidence, "status": item.status, "created_at": item.created_at}
 
     @staticmethod
     def _recommendation_export(item: Recommendation) -> dict[str, Any]:

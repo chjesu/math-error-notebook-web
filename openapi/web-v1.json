@@ -167,6 +167,22 @@
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/ErrorId"}],
         "responses": {"200": {"$ref": "#/components/responses/ErrorEntry"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      },
+      "delete": {
+        "operationId": "removeError",
+        "description": "将错题移出当前错题本，并取消未完成复习和未完成推荐。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/ErrorId"}],
+        "responses": {"200": {"$ref": "#/components/responses/ErrorEntry"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/errors/{error_id}/master": {
+      "post": {
+        "operationId": "markErrorMastered",
+        "description": "将错题标记为已掌握，并取消未完成复习。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/ErrorId"}],
+        "responses": {"200": {"$ref": "#/components/responses/ErrorEntry"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/errors/{error_id}/recommendations": {
@@ -204,6 +220,14 @@
         "operationId": "getProgress",
         "security": [{"sessionCookie": []}],
         "responses": {"200": {"$ref": "#/components/responses/Progress"}, "401": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/bank/status": {
+      "get": {
+        "operationId": "getLocalQuestionBankStatus",
+        "description": "返回当前本地 MySQL 题库的同步与可推荐数量。",
+        "security": [{"sessionCookie": []}],
+        "responses": {"200": {"$ref": "#/components/responses/BankStatus"}, "401": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/practice-pdfs": {
@@ -310,6 +334,7 @@
       "ReviewList": {"description": "每个错题最多一个当前到期阶段", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewList"}}}},
       "ReviewCompleted": {"description": "复习阶段结果", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewCompleted"}}}},
       "Progress": {"description": "当前用户学习进度", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Progress"}}}},
+      "BankStatus": {"description": "本地题库同步状态", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BankStatus"}}}},
       "PracticeJob": {"description": "练习 PDF 任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PracticeJob"}}}},
       "ExportJob": {"description": "当前用户的短时导出任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExportJob"}}}},
       "ExportCreated": {"description": "已创建并可立即下载的个人数据导出", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExportCreated"}}}},
@@ -333,20 +358,22 @@
       "CreateIntake": {"type": "object", "additionalProperties": false, "required": ["file_id"], "properties": {"file_id": {"$ref": "#/components/schemas/Id"}}},
       "IntakeRevision": {"type": "object", "additionalProperties": false, "required": ["input_version", "question_text", "answer_text"], "properties": {"input_version": {"type": "integer", "minimum": 1}, "question_text": {"type": "string", "minLength": 1}, "answer_text": {"type": "string"}}},
       "ManualIntakeCandidate": {"type": "object", "additionalProperties": false, "required": ["question_text"], "properties": {"question_text": {"type": "string", "minLength": 1}, "answer_text": {"type": "string", "default": ""}}},
-      "ManualGradeCandidate": {"type": "object", "additionalProperties": false, "required": ["input_version", "verdict"], "properties": {"input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "first_error": {"type": "string"}, "evidence": {"type": "string"}}},
+      "ManualGradeCandidate": {"type": "object", "additionalProperties": false, "required": ["input_version", "verdict"], "properties": {"input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "first_error": {"type": "string"}, "cause_code": {"enum": ["knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear"]}, "evidence": {"type": "string"}, "correct_solution": {"type": "string"}, "final_answer": {"type": "string"}, "prevention_cue": {"type": "string"}}, "allOf": [{"if": {"properties": {"verdict": {"enum": ["partial", "incorrect"]}}, "required": ["verdict"]}, "then": {"required": ["first_error", "cause_code", "evidence", "correct_solution", "final_answer"]}}]},
       "Version": {"type": "object", "additionalProperties": false, "required": ["input_version"], "properties": {"input_version": {"type": "integer", "minimum": 1}}},
       "TaskAccepted": {"type": "object", "required": ["resource_id", "task_id"], "properties": {"resource_id": {"$ref": "#/components/schemas/Id"}, "task_id": {"$ref": "#/components/schemas/Id"}}},
       "Task": {"type": "object", "required": ["task_id", "type", "status"], "properties": {"task_id": {"$ref": "#/components/schemas/Id"}, "type": {"enum": ["extract", "grade", "import", "practice_pdf", "export"]}, "status": {"enum": ["queued", "running", "waiting_confirmation", "completed", "failed_retryable", "failed_final", "cancelled"]}, "checkpoint": {"type": ["object", "null"]}, "last_error_code": {"type": ["string", "null"]}}},
       "Intake": {"type": "object", "required": ["intake_id", "input_version", "status", "question_text", "answer_text"], "properties": {"intake_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "status": {"enum": ["extracting", "waiting_confirmation", "confirmed", "cancelled"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}}},
-      "GradeCandidate": {"type": "object", "required": ["result_id", "input_version", "verdict", "status"], "properties": {"result_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "status": {"enum": ["candidate", "committed", "superseded", "rejected"]}, "first_error": {"type": ["string", "null"]}, "evidence": {"type": ["string", "null"]}}},
-      "ErrorEntry": {"type": "object", "required": ["error_id", "status", "question_text", "created_at"], "properties": {"error_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["open", "reviewing", "mastered", "removed"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}, "first_error": {"type": ["string", "null"]}, "created_at": {"type": "string", "format": "date-time"}}},
+      "Diagnosis": {"type": "object", "properties": {"cause_code": {"type": ["string", "null"]}, "cause_evidence": {"type": ["string", "null"]}, "correct_solution": {"type": ["string", "null"]}, "final_answer": {"type": ["string", "null"]}, "prevention_cue": {"type": ["string", "null"]}}},
+      "GradeCandidate": {"type": "object", "required": ["result_id", "input_version", "verdict", "status"], "properties": {"result_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "status": {"enum": ["candidate", "committed", "superseded", "rejected"]}, "first_error": {"type": ["string", "null"]}, "diagnosis": {"$ref": "#/components/schemas/Diagnosis"}}},
+      "ErrorEntry": {"type": "object", "required": ["error_id", "status", "question_text", "created_at"], "properties": {"error_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["open", "reviewing", "mastered", "removed"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}, "first_error": {"type": ["string", "null"]}, "diagnosis": {"$ref": "#/components/schemas/Diagnosis"}, "created_at": {"type": "string", "format": "date-time"}}},
       "Recommendation": {"type": "object", "required": ["recommendation_id", "question_id", "stem_text", "source", "reason", "status"], "properties": {"recommendation_id": {"$ref": "#/components/schemas/Id"}, "question_id": {"$ref": "#/components/schemas/Id"}, "stem_text": {"type": "string"}, "grade": {"type": ["integer", "null"]}, "difficulty": {"type": ["number", "null"]}, "source": {"type": "string"}, "reason": {"type": "string"}, "status": {"enum": ["assigned", "completed"]}}},
       "RecommendationList": {"type": "object", "required": ["items", "gap"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Recommendation"}}, "gap": {"type": "boolean"}}},
-      "ReviewTask": {"type": "object", "required": ["review_id", "error_id", "stage", "due_at", "status"], "properties": {"review_id": {"$ref": "#/components/schemas/Id"}, "error_id": {"$ref": "#/components/schemas/Id"}, "stage": {"type": "integer", "minimum": 1, "maximum": 6}, "due_at": {"type": "string", "format": "date-time"}, "status": {"enum": ["pending", "ready", "completed", "cancelled"]}}},
+      "ReviewTask": {"type": "object", "required": ["review_id", "error_id", "stage", "due_at", "status"], "properties": {"review_id": {"$ref": "#/components/schemas/Id"}, "error_id": {"$ref": "#/components/schemas/Id"}, "stage": {"type": "integer", "minimum": 1, "maximum": 6}, "due_at": {"type": "string", "format": "date-time"}, "status": {"enum": ["pending", "ready", "completed", "cancelled"]}, "question_text": {"type": "string"}, "first_error": {"type": ["string", "null"]}, "recommendations": {"type": "array", "items": {"$ref": "#/components/schemas/Recommendation"}}}},
       "ReviewList": {"type": "object", "required": ["items", "count"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/ReviewTask"}}, "count": {"type": "integer", "minimum": 0}}},
       "ReviewResult": {"type": "object", "additionalProperties": false, "required": ["result"], "properties": {"result": {"enum": ["correct", "partial", "wrong"]}}},
       "ReviewCompleted": {"type": "object", "required": ["completed", "next_review", "mastered"], "properties": {"completed": {"const": true}, "next_review": {"oneOf": [{"$ref": "#/components/schemas/ReviewTask"}, {"type": "null"}]}, "mastered": {"type": "boolean"}}},
-      "Progress": {"type": "object", "required": ["error_count", "mastered_count", "due_review_count", "recommendation_gap_count", "sample_sufficient"], "properties": {"error_count": {"type": "integer", "minimum": 0}, "mastered_count": {"type": "integer", "minimum": 0}, "due_review_count": {"type": "integer", "minimum": 0}, "recommendation_gap_count": {"type": "integer", "minimum": 0}, "sample_sufficient": {"type": "boolean"}}},
+      "Progress": {"type": "object", "required": ["error_count", "mastered_count", "due_review_count", "recommendation_gap_count", "sample_sufficient", "completed_review_count", "correct_review_count", "partial_review_count", "wrong_review_count", "review_accuracy_percent"], "properties": {"error_count": {"type": "integer", "minimum": 0}, "mastered_count": {"type": "integer", "minimum": 0}, "due_review_count": {"type": "integer", "minimum": 0}, "recommendation_gap_count": {"type": "integer", "minimum": 0}, "completed_review_count": {"type": "integer", "minimum": 0}, "correct_review_count": {"type": "integer", "minimum": 0}, "partial_review_count": {"type": "integer", "minimum": 0}, "wrong_review_count": {"type": "integer", "minimum": 0}, "review_accuracy_percent": {"type": "number", "minimum": 0, "maximum": 100}, "sample_sufficient": {"type": "boolean"}}},
+      "BankStatus": {"type": "object", "required": ["question_count", "recommendable_count", "candidate_count"], "properties": {"question_count": {"type": "integer", "minimum": 0}, "recommendable_count": {"type": "integer", "minimum": 0}, "candidate_count": {"type": "integer", "minimum": 0}}},
       "PracticePdfRequest": {"type": "object", "additionalProperties": false, "required": ["error_ids"], "properties": {"error_ids": {"type": "array", "minItems": 1, "maxItems": 12, "uniqueItems": true, "items": {"$ref": "#/components/schemas/Id"}}, "include_answers": {"type": "boolean", "default": false}}},
       "PracticeJob": {"allOf": [{"$ref": "#/components/schemas/Task"}, {"type": "object", "properties": {"download_url": {"type": "string"}}}]},
       "ExportJob": {"type": "object", "additionalProperties": false, "required": ["job_id", "status", "expires_at"], "properties": {"job_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["queued", "running", "completed", "failed_final", "cancelled"]}, "expires_at": {"type": "string", "format": "date-time"}, "download_url": {"type": "string"}}},

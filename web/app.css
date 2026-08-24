@@ -189,13 +189,18 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .chat-upload-preview img { width: 100%; height: 100%; object-fit: cover; }
 .chat-upload-preview strong { color: var(--brand); font-size: 14px; }
 .chat-upload-thumbnail small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.chat-progress-heading { display: flex; align-items: center; gap: 9px; }
-.chat-progress p { margin: 5px 0 0; color: var(--muted); }
+.chat-progress-steps { display: grid; margin: 0; padding: 0; list-style: none; gap: 12px; }
+.chat-progress-steps li { display: grid; grid-template-columns: 9px minmax(0, 1fr); align-items: start; gap: 9px; color: var(--muted); }
+.chat-progress-steps li.is-active,
+.chat-progress-steps li.is-complete { color: var(--ink); }
+.chat-progress-steps strong { display: block; line-height: 1.45; }
+.chat-progress-steps p { margin: 3px 0 0; color: var(--muted); }
 .progress-indicator { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: var(--brand); }
-.chat-progress.is-running .progress-indicator { animation: status-pulse 1.2s ease-in-out infinite; }
-.chat-progress.is-complete .progress-indicator { background: #18794e; }
-.chat-progress.is-warning .progress-indicator { background: #9a6700; }
-.chat-progress.is-error .progress-indicator,
+.chat-progress-steps li.is-active .progress-indicator { animation: status-pulse 1.2s ease-in-out infinite; }
+.chat-progress-steps li.is-done .progress-indicator,
+.chat-progress-steps li.is-complete .progress-indicator { background: #18794e; }
+.chat-progress-steps li.is-warning .progress-indicator { background: #9a6700; }
+.chat-progress-steps li.is-error .progress-indicator,
 .assistant-turn.is-error { color: var(--danger); }
 @keyframes status-pulse { 50% { opacity: .35; transform: scale(.72); } }
 .chat-composer { margin: 0; }
@@ -251,6 +256,16 @@ textarea:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset
 #grade-confirm { padding: 14px; margin-top: 16px; border-radius: 12px; background: var(--brand-soft); }
 .danger { background: var(--danger); }
 .error-detail { margin-top: 20px; padding: 18px; border-radius: 12px; background: var(--brand-soft); white-space: pre-wrap; }
+.diagnosis-list { display: grid; grid-template-columns: minmax(110px, 150px) 1fr; gap: 10px 16px; white-space: normal; }
+.diagnosis-list dt { color: var(--muted); font-weight: 700; }
+.diagnosis-list dd { margin: 0; white-space: pre-wrap; }
+.recommendation-list { display: grid; gap: 10px; padding-left: 22px; white-space: normal; }
+.recommendation-list li { padding: 10px 12px; border-radius: 10px; background: var(--paper); }
+.recommendation-list p { margin: 5px 0; white-space: pre-wrap; }
+.review-content { line-height: 1.7; }
+.review-stem { padding: 16px; border-radius: 12px; background: var(--brand-soft); white-space: pre-wrap; }
+.review-content details { margin: 12px 0; }
+.bank-status { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
 .selection-list { display: grid; gap: 8px; }
 .selection-item { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
 .selection-item span { min-width: 0; overflow-wrap: anywhere; }
@@ -284,6 +299,8 @@ textarea:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset
   .chat-turn { gap: 9px; }
   .chat-avatar { width: 28px; height: 28px; flex-basis: 28px; }
   .chat-upload-bubble { max-width: calc(100% - 20px); }
+  .diagnosis-list { grid-template-columns: 1fr; gap: 4px; }
+  .diagnosis-list dd { margin-bottom: 10px; }
   .recent { grid-column: auto; }
   .actions button { flex: 1 1 130px; }
   .bottom-nav { position: fixed; inset: auto 0 0; display: grid; grid-template-columns: repeat(5, 1fr); padding: 8px 4px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--paper); text-align: center; }

@@ -45,6 +45,8 @@ class WebOpenApiContractTests(unittest.TestCase):
             ("/v1/attempts/{attempt_id}/manual-grade", "post"),
             ("/v1/grade-results/{result_id}/commit", "post"),
             ("/v1/errors/{error_id}/recommendations", "post"),
+            ("/v1/errors/{error_id}/master", "post"),
+            ("/v1/errors/{error_id}", "delete"),
             ("/v1/reviews/{review_id}/complete", "post"),
             ("/v1/practice-pdfs", "post"),
             ("/v1/exports", "post"),
@@ -62,6 +64,12 @@ class WebOpenApiContractTests(unittest.TestCase):
 
     def test_upload_idempotency_conflict_is_in_the_contract(self) -> None:
         self.assertIn("409", self.operation("/v1/files", "post")["responses"])
+
+    def test_full_diagnosis_and_local_bank_status_are_documented(self) -> None:
+        manual = self.document["components"]["schemas"]["ManualGradeCandidate"]
+        required = set(manual["allOf"][0]["then"]["required"])
+        self.assertEqual(required, {"first_error", "cause_code", "evidence", "correct_solution", "final_answer"})
+        self.assertIn("200", self.operation("/v1/bank/status", "get")["responses"])
 
 
 if __name__ == "__main__":

@@ -62,6 +62,13 @@ function escapeHtml(value) {
   return span.innerHTML;
 }
 
+const causeLabels = {
+  knowledge_gap: "知识点未掌握", concept_confusion: "概念理解不准确", formula_condition: "公式或定理使用条件遗漏",
+  method_choice: "解题思路选择错误", reasoning_gap: "推理或步骤跳跃", algebra_transform: "代数变形错误",
+  calculation: "计算错误", misreading: "审题错误", incomplete_cases: "漏解或分类不完整",
+  expression: "表达或书写不规范", careless: "有直接证据的粗心错误", unclear: "信息不足"
+};
+
 async function requireSession() {
   try {
     await api("/v1/session");
@@ -203,31 +210,43 @@ function bindWorkbench() {
     const turn = document.createElement("div");
     const avatar = document.createElement("img");
     const response = document.createElement("div");
-    const heading = document.createElement("div");
-    const indicator = document.createElement("span");
-    const title = document.createElement("strong");
-    const detail = document.createElement("p");
+    const steps = document.createElement("ol");
     turn.className = "chat-turn assistant-turn chat-progress is-running";
     avatar.className = "chat-avatar";
     avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
     avatar.alt = "";
     response.className = "chat-response";
-    heading.className = "chat-progress-heading";
-    indicator.className = "progress-indicator";
-    indicator.setAttribute("aria-hidden", "true");
-    detail.setAttribute("role", "status");
-    detail.setAttribute("aria-live", "polite");
-    heading.append(indicator, title);
-    response.append(heading, detail);
+    steps.className = "chat-progress-steps";
+    steps.setAttribute("role", "status");
+    steps.setAttribute("aria-live", "polite");
+    response.append(steps);
     turn.append(avatar, response);
     appendTurn(turn);
-    return {turn, title, detail};
+    return {turn, steps, currentTitle: "", currentStep: null, currentDetail: null};
   }
 
   function setAssistantProgress(progress, title, detail, state = "running") {
     progress.turn.className = `chat-turn assistant-turn chat-progress is-${state}`;
-    progress.title.textContent = title;
-    progress.detail.textContent = detail;
+    if (progress.currentTitle !== title) {
+      progress.currentStep?.classList.replace("is-active", "is-done");
+      const step = document.createElement("li");
+      const indicator = document.createElement("span");
+      const content = document.createElement("div");
+      const heading = document.createElement("strong");
+      const description = document.createElement("p");
+      step.className = "is-active";
+      indicator.className = "progress-indicator";
+      indicator.setAttribute("aria-hidden", "true");
+      heading.textContent = title;
+      content.append(heading, description);
+      step.append(indicator, content);
+      progress.steps.append(step);
+      progress.currentTitle = title;
+      progress.currentStep = step;
+      progress.currentDetail = description;
+    }
+    progress.currentDetail.textContent = detail;
+    if (state !== "running") progress.currentStep.className = `is-${state}`;
     scrollChatToEnd();
   }
 
@@ -353,16 +372,19 @@ function bindWorkbench() {
         const uploaded = await uploadFile(item, percent => setAssistantProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · ${percent}%`));
         item.state = "processing";
         item.progress = 100;
+        setAssistantProgress(progress, "附件已安全保存", `${index + 1}/${files.length} · ${item.file.name} · 格式、大小和重复内容校验已完成`);
         setAssistantProgress(progress, "正在创建录入任务", `${index + 1}/${files.length} · ${item.file.name}`);
         const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
         pendingIntakes.push({intakeId: task.resource_id, inputVersion: 1, fileName: item.file.name});
         item.state = "done";
         completed += 1;
+        setAssistantProgress(progress, "已加入确认队列", `${index + 1}/${files.length} · ${item.file.name} · 接下来由你核对题干与作答`);
       } catch (error) {
         item.state = "failed";
         item.error = authError(error);
         item.submitted = false;
         failed += 1;
+        setAssistantProgress(progress, "当前文件处理失败", `${index + 1}/${files.length} · ${item.file.name} · ${item.error}`, "warning");
       }
       renderUploadFiles();
     }
@@ -401,14 +423,20 @@ function bindWorkbench() {
     }
   });
 
-  $("#verdict").addEventListener("change", event => { $("#first-error").required = ["incorrect", "partial"].includes(event.target.value); });
+  function refreshDiagnosisFields() {
+    const required = ["incorrect", "partial"].includes($("#verdict").value);
+    $("#diagnosis-fields").hidden = !required;
+    for (const id of ["first-error", "cause-code", "grade-evidence", "correct-solution", "final-answer"]) $(`#${id}`).required = required;
+  }
+  $("#verdict").addEventListener("change", refreshDiagnosisFields);
+  refreshDiagnosisFields();
   $("#manual-grade-form").addEventListener("submit", async event => {
     event.preventDefault();
     if (!activeAttempt || !activeIntake) return;
     const button = event.submitter;
     button.disabled = true;
     try {
-      activeCandidate = await api(`/v1/attempts/${activeAttempt}/manual-grade`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion, verdict: $("#verdict").value, first_error: $("#first-error").value, evidence: $("#grade-evidence").value})});
+      activeCandidate = await api(`/v1/attempts/${activeAttempt}/manual-grade`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion, verdict: $("#verdict").value, first_error: $("#first-error").value, cause_code: $("#cause-code").value, evidence: $("#grade-evidence").value, correct_solution: $("#correct-solution").value, final_answer: $("#final-answer").value, prevention_cue: $("#prevention-cue").value})});
       const canCommit = ["incorrect", "partial"].includes(activeCandidate.verdict);
       $("#grade-summary").textContent = canCommit ? `候选结果：${activeCandidate.verdict === "incorrect" ? "错误" : "部分正确"}；首错：${activeCandidate.first_error}` : activeCandidate.verdict === "correct" ? "候选结果：本题正确，不写入错题本。" : "证据不足，不能写入错题本。";
       $("#grade-confirm").hidden = false;
@@ -426,8 +454,15 @@ function bindWorkbench() {
     if (!activeCandidate) return;
     event.currentTarget.disabled = true;
     try {
-      await api(`/v1/grade-results/${activeCandidate.result_id}/commit`, {method: "POST", body: JSON.stringify({input_version: activeCandidate.input_version}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-      activateNextIntake("已写入错题本，并安排首次复习。");
+      const entry = await api(`/v1/grade-results/${activeCandidate.result_id}/commit`, {method: "POST", body: JSON.stringify({input_version: activeCandidate.input_version}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+      let message = "已写入错题本并安排首次复习。";
+      try {
+        const recommendations = await api(`/v1/errors/${entry.error_id}/recommendations`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}});
+        message = `已写入错题本并安排首次复习，已匹配 ${recommendations.items.length} 道已验证练习${recommendations.gap ? "，题量不足部分已标记" : ""}。`;
+      } catch (_) {
+        message += "练习暂未匹配，可稍后在错题详情中重试。";
+      }
+      activateNextIntake(message);
     } catch (error) {
       status($("#manual-status"), `入本失败：${authError(error)}`, true);
     } finally {
@@ -440,10 +475,19 @@ function bindWorkbench() {
 }
 
 function bindErrors() {
+  let currentErrorId = null;
+  async function showError(id) {
+    const [item, recommendations] = await Promise.all([api(`/v1/errors/${id}`), api(`/v1/errors/${id}/recommendations`)]);
+    currentErrorId = id;
+    const diagnosis = item.diagnosis || {};
+    const recommendationHtml = recommendations.items.length ? recommendations.items.map((recommendation, index) => `<li><strong>练习 ${index + 1}</strong><p>${escapeHtml(recommendation.stem_text)}</p><small>${escapeHtml(recommendation.source)} · ${escapeHtml(recommendation.reason)}</small></li>`).join("") : '<li class="empty">还没有匹配练习。</li>';
+    $("#error-detail").hidden = false;
+    $("#error-detail").innerHTML = `<h2>错题详情</h2><dl class="diagnosis-list"><dt>原题</dt><dd>${escapeHtml(item.question_text)}</dd><dt>你的作答</dt><dd>${escapeHtml(item.answer_text || "未填写")}</dd><dt>第一处实质错误</dt><dd>${escapeHtml(item.first_error || "待整理")}</dd><dt>主要错因</dt><dd>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</dd><dt>判断依据</dt><dd>${escapeHtml(diagnosis.cause_evidence || "待整理")}</dd><dt>完整正确过程</dt><dd>${escapeHtml(diagnosis.correct_solution || "待整理")}</dd><dt>最终答案</dt><dd>${escapeHtml(diagnosis.final_answer || "待整理")}</dd><dt>防错提示</dt><dd>${escapeHtml(diagnosis.prevention_cue || "待整理")}</dd></dl><h3>已验证练习</h3><ol class="recommendation-list">${recommendationHtml}</ol><div class="actions"><button type="button" data-error-action="recommend" class="ghost">匹配练习</button><button type="button" data-error-action="master" class="ghost">标记已掌握</button><button type="button" data-error-action="remove" class="danger">移除错题</button></div>`;
+  }
   async function loadErrors() {
     try {
       const result = await api("/v1/errors");
-      $("#all-errors").innerHTML = result.items.map(item => `<li><button class="text-button" data-error-id="${item.error_id}">${escapeHtml(item.question_text)}</button><br><small>${escapeHtml(item.first_error || "待整理错因")}</small></li>`).join("") || '<li class="empty">还没有错题。</li>';
+      $("#all-errors").innerHTML = result.items.map(item => `<li><button class="text-button" data-error-id="${item.error_id}">${escapeHtml(item.question_text)}</button><br><small>${escapeHtml(item.first_error || "待整理错因")} · ${item.status === "mastered" ? "已掌握" : "复习中"}</small></li>`).join("") || '<li class="empty">还没有错题。</li>';
     } catch (error) {
       status($("#page-status"), authError(error), true);
     }
@@ -453,11 +497,32 @@ function bindErrors() {
     const id = event.target.dataset.errorId;
     if (!id) return;
     try {
-      const item = await api(`/v1/errors/${id}`);
-      $("#error-detail").hidden = false;
-      $("#error-detail").innerHTML = `<h2>错题详情</h2><p>${escapeHtml(item.question_text)}</p><p><strong>首个错误步骤：</strong>${escapeHtml(item.first_error || "待整理")}</p>`;
+      await showError(id);
     } catch (error) {
       status($("#page-status"), authError(error), true);
+    }
+  });
+  $("#error-detail").addEventListener("click", async event => {
+    const action = event.target.dataset.errorAction;
+    if (!action || !currentErrorId) return;
+    event.target.disabled = true;
+    try {
+      if (action === "recommend") await api(`/v1/errors/${currentErrorId}/recommendations`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}});
+      else if (action === "master") await api(`/v1/errors/${currentErrorId}/master`, {method: "POST"});
+      else if (action === "remove") {
+        if (!confirm("移除后将取消这道错题的待复习和未完成推荐，确认继续？")) return;
+        await api(`/v1/errors/${currentErrorId}`, {method: "DELETE"});
+        currentErrorId = null;
+        $("#error-detail").hidden = true;
+        await loadErrors();
+        return;
+      }
+      await showError(currentErrorId);
+      await loadErrors();
+    } catch (error) {
+      status($("#page-status"), authError(error), true);
+    } finally {
+      event.target.disabled = false;
     }
   });
   loadErrors();
@@ -470,7 +535,10 @@ function bindReviews() {
       const result = await api("/v1/reviews/today");
       dueReview = result.items[0] || null;
       $("#review-stage").textContent = dueReview ? `第 ${dueReview.stage} 阶段` : "暂无任务";
-      $("#review-question").textContent = dueReview ? "请先遮住解析，独立重做原题，再如实记录结果。" : "今天没有到期复习。";
+      if (dueReview) {
+        const practice = dueReview.recommendations.length ? `<h3>同类型练习</h3><ol>${dueReview.recommendations.map(item => `<li>${escapeHtml(item.stem_text)}<br><small>${escapeHtml(item.source)} · ${escapeHtml(item.reason)}</small></li>`).join("")}</ol>` : "";
+        $("#review-question").innerHTML = `<p><strong>先遮住解析，独立重做：</strong></p><div class="review-stem">${escapeHtml(dueReview.question_text)}</div><details><summary>需要时查看上次首错</summary><p>${escapeHtml(dueReview.first_error || "待整理")}</p></details>${practice}`;
+      } else $("#review-question").textContent = "今天没有到期复习。";
       $("#review-actions").hidden = !dueReview;
     } catch (error) {
       status($("#review-status"), authError(error), true);
@@ -528,11 +596,16 @@ function bindPractice() {
 }
 
 function bindProgress() {
-  api("/v1/progress").then(result => {
+  Promise.all([api("/v1/progress"), api("/v1/bank/status")]).then(([result, bank]) => {
     $("#progress-errors").textContent = result.error_count || 0;
+    $("#progress-mastered").textContent = result.mastered_count || 0;
     $("#progress-reviews").textContent = result.completed_review_count || 0;
+    $("#progress-accuracy").textContent = `${result.review_accuracy_percent || 0}%`;
     $("#progress-due").textContent = result.due_review_count || 0;
     $("#progress-gaps").textContent = result.recommendation_gap_count || 0;
+    $("#bank-questions").textContent = bank.question_count || 0;
+    $("#bank-recommendable").textContent = bank.recommendable_count || 0;
+    $("#bank-candidates").textContent = bank.candidate_count || 0;
   }).catch(error => status($("#page-status"), authError(error), true));
 }
 

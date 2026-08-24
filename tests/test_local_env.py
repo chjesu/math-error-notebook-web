@@ -47,13 +47,18 @@ class LocalEnvironmentTests(unittest.TestCase):
         self.assertIn("DELETE FROM question_sources WHERE id=%s", scoped_cleanup)
         self.assertIn("if not recommendations or len(reviews) != 1", domain_smoke)
 
-    def test_smoke_refuses_to_clear_existing_local_users(self) -> None:
-        with mock.patch.object(local_env, "start"), mock.patch.object(
-            local_env, "_existing_user_count", return_value=1
-        ), mock.patch.object(local_env, "_clear_test_data") as clear:
-            with self.assertRaisesRegex(RuntimeError, "empty local user database"):
-                local_env.smoke()
-        clear.assert_not_called()
+    def test_smoke_preserves_existing_local_users(self) -> None:
+        source = inspect.getsource(local_env.smoke)
+        self.assertIn("preserved_user_count = _existing_user_count()", source)
+        self.assertNotIn("_clear_test_data()", source)
+        self.assertIn("_clear_smoke_auth(service, [phone], [smoke_user.user_id])", source)
+
+    def test_smoke_auth_cleanup_is_scoped_to_created_identities(self) -> None:
+        source = inspect.getsource(local_env._clear_smoke_auth)
+        self.assertIn("WHERE id IN", source)
+        self.assertIn("WHERE user_id IN", source)
+        self.assertIn("WHERE phone_lookup_hash IN", source)
+        self.assertNotIn("DELETE FROM web_users\"", source)
 
     def test_live_schema_check_requires_matching_ledger_and_tables(self) -> None:
         ledger = "\n".join(

@@ -74,6 +74,52 @@ class QuestionBankMigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "required"):
             migrate_question_bank.map_question(broken, {})
 
+    def test_commit_refreshes_existing_rows_and_uses_actual_version_id(self) -> None:
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, args):
+                self.calls.append((sql, args))
+
+            def fetchone(self):
+                return ("existing-version-id",)
+
+            def close(self):
+                pass
+
+        class Connection:
+            def __init__(self):
+                self.cursor_instance = Cursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+            def begin(self):
+                pass
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+
+        connection = Connection()
+        item = migrate_question_bank.map_question(QUESTION, {"rights_confirmed": 1})
+        with mock.patch.object(migrate_question_bank, "_connection", return_value=connection):
+            migrate_question_bank.commit({"questions": [item]})
+        statements = [sql for sql, _ in connection.cursor_instance.calls]
+        self.assertTrue(all("ON DUPLICATE KEY UPDATE id=id" not in sql for sql in statements))
+        verification = next(args for sql, args in connection.cursor_instance.calls if sql.startswith("INSERT INTO question_verifications"))
+        self.assertEqual(verification[1], "existing-version-id")
+
+    def test_connection_falls_back_to_local_environment_without_exporting_secrets(self) -> None:
+        with mock.patch.dict("os.environ", {}, clear=True), mock.patch("scripts.local_env._connection_factory", return_value=lambda: "local-connection"):
+            self.assertEqual(migrate_question_bank._connection(), "local-connection")
+
     def test_grade_candidate_schema_has_unclear_and_first_error_gates(self) -> None:
         schema = json.loads((Path(__file__).resolve().parents[1] / "schemas" / "grade-candidate.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(set(schema["properties"]["verdict"]["enum"]), {"correct", "partial", "incorrect", "unclear"})

@@ -198,13 +198,25 @@ class NotebookAsgiApp:
                 payload = await self._json_body(receive)
                 verdict = str(payload["verdict"])
                 first_error = str(payload.get("first_error", "")).strip() or None
-                evidence = str(payload.get("evidence", "")).strip() or None
                 if verdict not in {"correct", "partial", "incorrect", "unclear"}:
                     raise ValueError("unsupported verdict")
                 if verdict in {"partial", "incorrect"} and not first_error:
                     raise ValueError("first_error is required")
                 if verdict in {"correct", "unclear"}:
                     first_error = None
+                cause_code = str(payload.get("cause_code", "")).strip()
+                cause_evidence = str(payload.get("evidence", "")).strip()
+                correct_solution = str(payload.get("correct_solution", "")).strip()
+                final_answer = str(payload.get("final_answer", "")).strip()
+                prevention_cue = str(payload.get("prevention_cue", "")).strip()
+                allowed_causes = {"knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear"}
+                if any(len(value) > 12000 for value in (first_error or "", cause_evidence, correct_solution, final_answer, prevention_cue)):
+                    raise ValueError("grade field is too long")
+                if verdict in {"partial", "incorrect"} and (cause_code not in allowed_causes or not cause_evidence or not correct_solution or not final_answer):
+                    raise ValueError("complete diagnosis is required")
+                if cause_code == "careless" and not cause_evidence:
+                    raise ValueError("careless requires direct evidence")
+                evidence = json.dumps({"schema": "math-error-diagnosis/v1", "cause_code": cause_code or None, "cause_evidence": cause_evidence or None, "correct_solution": correct_solution or None, "final_answer": final_answer or None, "prevention_cue": prevention_cue or None}, ensure_ascii=False, separators=(",", ":"))
                 candidate = await self._sync(
                     self.notebook.store.record_grade_candidate,
                     user_id=user.user_id,
@@ -228,6 +240,9 @@ class NotebookAsgiApp:
             elif path == "/v1/errors" and method == "GET":
                 items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
                 await self._json(send, 200, {"items": [self._error_entry(item) for item in items]})
+            elif path.startswith("/v1/errors/") and path.endswith("/master") and method == "POST":
+                entry = await self._sync(self.notebook.store.set_error_status, user_id=user.user_id, error_id=path.split("/")[-2], status="mastered")
+                await self._json(send, 200, self._error_entry(entry))
             elif path.startswith("/v1/errors/") and path.endswith("/recommendations") and method in {"GET", "POST"}:
                 error_id = path.split("/")[-2]
                 if method == "POST":
@@ -237,6 +252,9 @@ class NotebookAsgiApp:
                     recommendations = await self._sync(self.notebook.store.list_recommendations, user_id=user.user_id, error_id=error_id)
                     gap = len(recommendations) < 2
                 await self._json(send, 200, {"items": [self._recommendation(item) for item in recommendations], "gap": gap})
+            elif path.startswith("/v1/errors/") and method == "DELETE":
+                entry = await self._sync(self.notebook.store.set_error_status, user_id=user.user_id, error_id=path.rsplit("/", 1)[1], status="removed")
+                await self._json(send, 200, self._error_entry(entry))
             elif path.startswith("/v1/errors/") and method == "GET":
                 entry = await self._sync(self.notebook.store.get_error, user_id=user.user_id, error_id=path.rsplit("/", 1)[1])
                 if not entry:
@@ -244,7 +262,12 @@ class NotebookAsgiApp:
                 await self._json(send, 200, self._error_entry(entry))
             elif path == "/v1/reviews/today" and method == "GET":
                 tasks = await self._sync(self.notebook.store.list_due_reviews, user_id=user.user_id)
-                await self._json(send, 200, {"items": [self._review(item) for item in tasks], "count": len(tasks)})
+                items = []
+                for task in tasks:
+                    entry = await self._sync(self.notebook.store.get_error, user_id=user.user_id, error_id=task.error_id)
+                    recommendations = await self._sync(self.notebook.store.list_recommendations, user_id=user.user_id, error_id=task.error_id)
+                    items.append(self._review(task) | {"question_text": entry.question_text if entry else "", "first_error": entry.first_error if entry else None, "recommendations": [self._recommendation(item) for item in recommendations[:2]]})
+                await self._json(send, 200, {"items": items, "count": len(items)})
             elif path.startswith("/v1/reviews/") and path.endswith("/complete") and method == "POST":
                 payload = await self._json_body(receive)
                 next_task = await self._sync(self.notebook.store.complete_review, user_id=user.user_id, task_id=path.split("/")[-2], result=str(payload["result"]), idempotency_key=self._key(headers))
@@ -252,6 +275,8 @@ class NotebookAsgiApp:
             elif path == "/v1/progress" and method == "GET":
                 progress = await self._sync(self.notebook.store.progress, user_id=user.user_id)
                 await self._json(send, 200, progress)
+            elif path == "/v1/bank/status" and method == "GET":
+                await self._json(send, 200, await self._sync(self.notebook.store.bank_status))
             elif path == "/v1/practice-pdfs" and method == "POST":
                 payload = await self._json_body(receive)
                 error_ids = payload.get("error_ids")
@@ -373,11 +398,21 @@ class NotebookAsgiApp:
 
     @staticmethod
     def _candidate(value: GradeCandidate) -> dict[str, Any]:
-        return {"result_id": value.candidate_id, "input_version": value.input_version, "verdict": value.verdict, "status": value.status, "first_error": value.first_error, "evidence": value.evidence}
+        return {"result_id": value.candidate_id, "input_version": value.input_version, "verdict": value.verdict, "status": value.status, "first_error": value.first_error, "diagnosis": NotebookAsgiApp._diagnosis(value.evidence)}
 
     @staticmethod
     def _error_entry(value: ErrorEntry) -> dict[str, Any]:
-        return {"error_id": value.error_id, "status": value.status, "question_text": value.question_text, "answer_text": value.answer_text, "first_error": value.first_error, "created_at": value.created_at.isoformat()}
+        return {"error_id": value.error_id, "status": value.status, "question_text": value.question_text, "answer_text": value.answer_text, "first_error": value.first_error, "diagnosis": NotebookAsgiApp._diagnosis(value.evidence), "created_at": value.created_at.isoformat()}
+
+    @staticmethod
+    def _diagnosis(value: str | None) -> dict[str, Any]:
+        if not value:
+            return {}
+        try:
+            payload = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return {"correct_solution": value}
+        return payload if isinstance(payload, dict) and payload.get("schema") == "math-error-diagnosis/v1" else {"correct_solution": value}
 
     @staticmethod
     def _recommendation(value: Recommendation) -> dict[str, Any]:

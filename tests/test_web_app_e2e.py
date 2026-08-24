@@ -163,8 +163,18 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual((revised[0], revised[2]["input_version"]), (200, 2))
         confirmed = self.call(f"/v1/intakes/{intake_id}/confirm", method="POST", payload={"input_version": 2}, cookie=cookie, idempotency_key="grade-0001")
         self.assertEqual(confirmed[0], 202)
-        graded = self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/manual-grade", method="POST", payload={"input_version": 2, "verdict": "incorrect", "first_error": "移项后符号错误", "evidence": "x+1=2 应得 x=1"}, cookie=cookie)
+        graded = self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/manual-grade", method="POST", payload={
+            "input_version": 2,
+            "verdict": "incorrect",
+            "first_error": "移项后符号错误",
+            "cause_code": "algebra_transform",
+            "evidence": "把常数项移到等号右侧时没有变号",
+            "correct_solution": "x+1=2，所以 x=1",
+            "final_answer": "x=1",
+            "prevention_cue": "移项后立即检查符号",
+        }, cookie=cookie)
         self.assertEqual(graded[0], 201)
+        self.assertEqual(graded[2]["diagnosis"]["cause_code"], "algebra_transform")
         candidate_id = graded[2]["result_id"]
 
         result = self.call(f"/v1/grade-results/{candidate_id}", cookie=cookie)
@@ -173,7 +183,9 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(committed[0], 201)
         error_id = committed[2]["error_id"]
         self.assertEqual(self.call("/v1/errors", cookie=cookie)[2]["items"][0]["error_id"], error_id)
-        self.assertEqual(self.call(f"/v1/errors/{error_id}", cookie=cookie)[0], 200)
+        error_detail = self.call(f"/v1/errors/{error_id}", cookie=cookie)
+        self.assertEqual(error_detail[0], 200)
+        self.assertEqual(error_detail[2]["diagnosis"]["final_answer"], "x=1")
 
         self.domain_store.add_question(Question("1" * 32, "解方程 x+2=4", "x=2", 10, 2.0, "公开验证题库"))
         recommended = self.call(f"/v1/errors/{error_id}/recommendations", method="POST", cookie=cookie, idempotency_key="recommend-0001")
@@ -196,6 +208,13 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(denied[2]["error"]["code"], "not_found")
         self.assertEqual(self.call(practice[2]["download_url"], cookie=other_cookie)[0], 404)
         self.assertEqual(self.call(f"/v1/intakes/{intake_id}/manual-candidate", method="POST", payload={"question_text": "越权题目"}, cookie=other_cookie)[0], 404)
+
+        bank = self.call("/v1/bank/status", cookie=cookie)
+        self.assertEqual((bank[0], bank[2]["question_count"]), (200, 1))
+        mastered = self.call(f"/v1/errors/{error_id}/master", method="POST", cookie=cookie)
+        self.assertEqual((mastered[0], mastered[2]["status"]), (200, "mastered"))
+        removed = self.call(f"/v1/errors/{error_id}", method="DELETE", cookie=cookie)
+        self.assertEqual((removed[0], removed[2]["status"]), (200, "removed"))
 
     def test_manual_grade_requires_first_error_and_large_body_is_413(self) -> None:
         cookie = self.login("13700137000")

@@ -465,6 +465,39 @@ def _existing_user_count() -> int:
     return int(_run_sql("SELECT COUNT(*) FROM web_users;", root=False, database=True, label="local user count"))
 
 
+def _clear_smoke_auth(service: Any, phones: list[str], user_ids: list[str]) -> None:
+    """Remove only identities created by smoke; never touch existing local users."""
+
+    phone_hashes = list(dict.fromkeys(service._hash("phone", phone) for phone in phones))
+    cooldown_hashes = [service._hash("cooldown", phone_hash) for phone_hash in phone_hashes]
+    users = list(dict.fromkeys(user_ids))
+    connection = _connection_factory()()
+    cursor = connection.cursor()
+    try:
+        connection.begin()
+        if users:
+            placeholders = ",".join(["%s"] * len(users))
+            for table in ("account_deletions", "auth_agreement_acceptances", "auth_password_credentials", "auth_sessions"):
+                cursor.execute(f"DELETE FROM `{table}` WHERE user_id IN ({placeholders})", tuple(users))
+            cursor.execute(f"DELETE FROM web_users WHERE id IN ({placeholders})", tuple(users))
+        if phone_hashes:
+            placeholders = ",".join(["%s"] * len(phone_hashes))
+            cursor.execute(f"DELETE FROM auth_sms_challenges WHERE phone_lookup_hash IN ({placeholders})", tuple(phone_hashes))
+            cursor.execute(f"DELETE FROM auth_sms_send_events WHERE phone_lookup_hash IN ({placeholders})", tuple(phone_hashes))
+            cursor.execute(f"DELETE FROM auth_audit_events WHERE phone_lookup_hash IN ({placeholders})", tuple(phone_hashes))
+            cursor.execute(f"DELETE FROM auth_rate_limit_buckets WHERE dimension='phone' AND subject_hash IN ({placeholders})", tuple(phone_hashes))
+        if cooldown_hashes:
+            placeholders = ",".join(["%s"] * len(cooldown_hashes))
+            cursor.execute(f"DELETE FROM auth_send_cooldowns WHERE phone_lookup_hash IN ({placeholders})", tuple(cooldown_hashes))
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def _live_schema_ready() -> bool:
     """Verify the live ledger and required v0.4 tables, not only the ready file."""
 
@@ -613,7 +646,16 @@ def _domain_smoke(service: Any, sender: Any, session_cookie: str, phone: str) ->
         confirmed = asyncio.run(_asgi_call(app, f"/v1/intakes/{intake_id}/confirm", {"input_version": 1}, cookie=session_cookie, idempotency_key="smoke-grade"))
         if confirmed[0] != 202:
             raise RuntimeError("domain manual intake confirmation API smoke test failed")
-        graded = asyncio.run(_asgi_call(app, f"/v1/attempts/{confirmed[2]['resource_id']}/manual-grade", {"input_version": 1, "verdict": "incorrect", "first_error": "移项符号错误", "evidence": "x 应为 1"}, cookie=session_cookie))
+        graded = asyncio.run(_asgi_call(app, f"/v1/attempts/{confirmed[2]['resource_id']}/manual-grade", {
+            "input_version": 1,
+            "verdict": "incorrect",
+            "first_error": "移项符号错误",
+            "cause_code": "algebra_transform",
+            "evidence": "把常数项移到等号右侧时没有变号",
+            "correct_solution": "x+1=2，所以 x=1",
+            "final_answer": "x=1",
+            "prevention_cue": "移项后立即检查符号",
+        }, cookie=session_cookie))
         if graded[0] != 201:
             raise RuntimeError("domain manual grade candidate API smoke test failed")
         committed = asyncio.run(_asgi_call(app, f"/v1/grade-results/{graded[2]['result_id']}/commit", {"input_version": 1}, cookie=session_cookie, idempotency_key="smoke-commit"))
@@ -697,9 +739,7 @@ def smoke() -> dict[str, Any]:
     from services.web_auth.registration import SendCodeStatus
 
     start()
-    if _existing_user_count():
-        raise RuntimeError("smoke requires an empty local user database")
-    _clear_test_data()
+    preserved_user_count = _existing_user_count()
     service, sender = _service(cooldown_seconds=0)
     app = AuthAsgiApp(service, allowed_hosts={"local.test"})
     phone = f"139{secrets.randbelow(100_000_000):08d}"
@@ -754,8 +794,8 @@ def smoke() -> dict[str, Any]:
         domain = _domain_smoke(service, sender, login[1]["set-cookie"], phone)
     finally:
         _clear_domain_smoke_data(smoke_user.user_id)
+        _clear_smoke_auth(service, [phone], [smoke_user.user_id])
 
-    _clear_test_data()
     concurrent_service, concurrent_sender = _service()
     concurrent_phone = f"138{secrets.randbelow(100_000_000):08d}"
 
@@ -771,24 +811,26 @@ def smoke() -> dict[str, Any]:
         concurrent_statuses = list(executor.map(request_once, range(50)))
     if concurrent_statuses.count(SendCodeStatus.ACCEPTED) != 1 or len(concurrent_sender.deliveries) != 1:
         raise RuntimeError("concurrent SMS reservation smoke test failed")
+    _clear_smoke_auth(concurrent_service, [concurrent_phone], [])
 
-    _clear_test_data()
     ip_service, ip_sender = _service()
     ip_service.config = AuthConfig(captcha_after_phone_day=99, captcha_after_ip_hour=99)
     first_number = secrets.randbelow(99_999_989)
+    ip_phones = [f"137{first_number + index:08d}" for index in range(11)]
     ip_statuses = [
         ip_service.request_code(
             purpose="register",
-            phone=f"137{first_number + index:08d}",
+            phone=phone,
             ip_address="198.51.100.30",
             device_id=f"local-ip-limit-device-{index}",
         ).status
-        for index in range(11)
+        for index, phone in enumerate(ip_phones)
     ]
     if ip_statuses[:10] != [SendCodeStatus.ACCEPTED] * 10 or ip_statuses[10] is not SendCodeStatus.RETRY_LATER:
         raise RuntimeError("IP minute limit smoke test failed")
     if len(ip_sender.deliveries) != 10:
         raise RuntimeError("IP minute limit called the SMS sender too many times")
+    _clear_smoke_auth(ip_service, ip_phones, [])
     return {
         "status": "ok",
         "mysql": f"127.0.0.1:{PORT}/{DATABASE}",
@@ -808,6 +850,7 @@ def smoke() -> dict[str, Any]:
         "domain_pdf_bytes": domain["pdf_bytes"],
         "domain_export": domain["export"],
         "account_deletion": domain["deletion"],
+        "preserved_user_count": preserved_user_count,
     }
 
 
