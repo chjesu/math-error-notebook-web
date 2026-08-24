@@ -89,6 +89,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="chat-stream" class="chat-stream"', html)
         self.assertIn('id="upload-form" class="chat-composer"', html)
         self.assertIn('id="chat-input" rows="1"', html)
+        self.assertIn("添加未判或已判的题目，我会陪您整理错题、分析错误原因、梳理相关知识点，并完成题目解析。", html)
         chat_input = html.split('id="chat-input"', 1)[1].split("</textarea>", 1)[0]
         self.assertNotIn("disabled", chat_input)
         self.assertNotIn('id="manual-flow"', html)
