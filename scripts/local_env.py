@@ -907,11 +907,11 @@ class LocalOtpDisclosureApp:
         await send({"type": "http.response.body", "body": encoded})
 
 
-def serve(host: str, port: int) -> None:
+def serve(host: str, port: int, *, enable_codex_model: bool = False) -> None:
     if host not in {"127.0.0.1", "localhost"}:
         raise RuntimeError("local simulation may only bind to localhost")
     start()
-    from services.web_app import NotebookAsgiApp
+    from services.web_app import CodexNotebookModel, NotebookAsgiApp
     from services.web_auth import (
         AuthConfig,
         InMemoryCaptchaVerifier,
@@ -930,11 +930,13 @@ def serve(host: str, port: int) -> None:
         config=AuthConfig(captcha_after_phone_day=99, captcha_after_ip_hour=99),
     )
     notebook = NotebookService(MySqlDomainStore(_connection_factory()), RUNTIME / "quarantine")
+    model_runner = CodexNotebookModel(RUNTIME / "model-candidates") if enable_codex_model else None
     app = NotebookAsgiApp(
         service,
         notebook,
         allowed_hosts={"127.0.0.1", "localhost"},
         require_https=False,
+        model_runner=model_runner,
     )
     app.resume_pending_deletions()
     uvicorn.run(LocalOtpDisclosureApp(app, sender), host=host, port=port, access_log=False)
@@ -969,6 +971,7 @@ def main() -> int:
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=8000)
+    serve_parser.add_argument("--enable-codex-model", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "init":
@@ -989,7 +992,7 @@ def main() -> int:
         elif args.command == "smoke":
             result = smoke()
         elif args.command == "serve":
-            serve(args.host, args.port)
+            serve(args.host, args.port, enable_codex_model=args.enable_codex_model)
             return 0
         else:
             result = doctor()

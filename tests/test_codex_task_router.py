@@ -26,7 +26,10 @@ class CodexTaskRouterTests(unittest.TestCase):
         self.assertEqual(promoted["promoted_from"], "web-implementation")
         math_route = router.select("math-grade-candidate", [])
         self.assertEqual(math_route["model"], "gpt-5.6-terra")
-        self.assertTrue(math_route["schema"].endswith("grade-candidate.schema.json"))
+        self.assertTrue(math_route["schema"].endswith("math-grade-result.schema.json"))
+        intake_route = router.select("math-intake-candidate", [])
+        self.assertEqual(intake_route["model"], "gpt-5.6-terra")
+        self.assertTrue(intake_route["schema"].endswith("intake-candidate.schema.json"))
         adjudicated = router.select("math-grade-candidate", ["math_uncertainty"])
         self.assertEqual(adjudicated["model"], "gpt-5.6-sol")
         self.assertEqual(adjudicated["promoted_from"], "math-grade-candidate")
@@ -63,6 +66,14 @@ class CodexTaskRouterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only"):
             router.validate_grade_input(valid | {"user_id": "u" * 32})
 
+    def test_math_intake_input_is_frozen_and_image_only(self) -> None:
+        valid = {"intake_id": "b" * 32, "input_version": 1, "media_type": "image/png"}
+        router.validate_intake_input(valid)
+        with self.assertRaisesRegex(ValueError, "only"):
+            router.validate_intake_input(valid | {"user_id": "u" * 32})
+        with self.assertRaisesRegex(ValueError, "PNG or JPEG"):
+            router.validate_intake_input(valid | {"media_type": "application/pdf"})
+
     def test_low_confidence_non_sol_result_escalates_once(self) -> None:
         value = {
             "route": router.select("web-implementation", []),
@@ -83,14 +94,18 @@ class CodexTaskRouterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temporary_path = Path(temporary)
             output_path = temporary_path / "result.json"
+            image_path = (temporary_path / "question.png").resolve()
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
             original_audits = router.AUDITS
             router.AUDITS = temporary_path / "audits"
 
             def fake_run(command, **kwargs):
                 self.assertIn("--ephemeral", command)
                 self.assertIn("--ignore-user-config", command)
+                self.assertEqual(command[command.index("--disable") + 1], "shell_tool")
                 self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
                 self.assertIn("--skip-git-repo-check", command)
+                self.assertEqual(command[command.index("-i") + 1], str(image_path))
                 self.assertNotIn("public fixture", " ".join(command))
                 self.assertIn("public fixture", kwargs["input"])
                 self.assertNotEqual(Path(kwargs["cwd"]).resolve(), ROOT.resolve())
@@ -107,7 +122,7 @@ class CodexTaskRouterTests(unittest.TestCase):
                     router.subprocess, "run", side_effect=fake_run
                 ):
                     value = router.invoke(
-                        router.select("web-requirements", []), '{"scope":"public fixture"}', output_path
+                        router.select("web-requirements", []), '{"scope":"public fixture"}', output_path, [image_path]
                     )
             finally:
                 router.AUDITS = original_audits

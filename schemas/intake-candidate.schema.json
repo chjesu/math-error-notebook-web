@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lizhaolin.local/schemas/intake-candidate.schema.json",
+  "title": "Math intake candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["intake_id", "input_version", "status", "question_text", "answer_text", "notes", "confidence"],
+  "properties": {
+    "intake_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "input_version": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["complete", "unclear"]},
+    "question_text": {"type": "string"},
+    "answer_text": {"type": "string"},
+    "notes": {"type": ["string", "null"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

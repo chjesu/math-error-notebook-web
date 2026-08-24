@@ -102,6 +102,14 @@ class DomainContractTests(unittest.TestCase):
         self.assertIn("WHERE user_id=%s", query)
         self.assertEqual(args, ("a" * 32,))
 
+    def test_mysql_commit_rejects_correct_candidate(self) -> None:
+        row = ("a" * 32, 1, "correct", None, "pending", "题目", "答案", None)
+        connection = FakeConnection([row])
+        store = MySqlDomainStore(lambda: connection)
+        with self.assertRaisesRegex(RuntimeError, "failed_final"):
+            store.commit_grade(user_id="u" * 32, candidate_id="c" * 32, expected_version=1)
+        self.assertEqual((connection.committed, connection.rolled_back), (0, 1))
+
     def test_duplicate_upload_discards_unreferenced_quarantine_file(self) -> None:
         with TemporaryDirectory() as temporary:
             service = NotebookService(InMemoryNotebookStore(), Path(temporary))

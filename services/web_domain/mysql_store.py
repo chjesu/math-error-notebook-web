@@ -190,6 +190,38 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def get_intake(self, *, user_id: str, intake_id: str) -> IntakeItem | None:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT file_id,input_version,status,COALESCE(question_text,''),COALESCE(answer_text,'') "
+                "FROM intake_items WHERE id=%s AND user_id=%s",
+                (intake_id, user_id),
+            )
+            row = cursor.fetchone()
+            return IntakeItem(intake_id, user_id, str(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4])) if row else None
+        finally:
+            cursor.close()
+            connection.close()
+
+    def get_attempt(self, *, user_id: str, attempt_id: str) -> Any | None:
+        from .notebook import Attempt
+
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT intake_id,input_version,question_text,answer_text,status "
+                "FROM attempts WHERE id=%s AND user_id=%s",
+                (attempt_id, user_id),
+            )
+            row = cursor.fetchone()
+            return Attempt(attempt_id, user_id, str(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4])) if row else None
+        finally:
+            cursor.close()
+            connection.close()
+
     def create_intake(
         self, *, user_id: str, file_id: str, idempotency_key: str
     ) -> tuple[IntakeItem, Job]:
@@ -418,7 +450,7 @@ class MySqlDomainStore:
                 raise LookupError("grade candidate not found")
             if int(row[1]) != expected_version:
                 raise RuntimeError("input_version_changed")
-            if str(row[2]) == "unclear":
+            if str(row[2]) not in {"partial", "incorrect"}:
                 raise RuntimeError("failed_final")
             attempt_id = str(row[0])
             cursor.execute("SELECT id,question_text,answer_text,first_error,status,created_at FROM error_notebook_entries WHERE user_id=%s AND attempt_id=%s FOR UPDATE", (user_id, attempt_id))

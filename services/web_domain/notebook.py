@@ -81,6 +81,14 @@ class InMemoryNotebookStore:
         value = self.files.get(file_id)
         return value if value and value.user_id == user_id and value.status != "deleted" else None
 
+    def get_intake(self, *, user_id: str, intake_id: str) -> IntakeItem | None:
+        value = self.intakes.get(intake_id)
+        return value if value and value.user_id == user_id else None
+
+    def get_attempt(self, *, user_id: str, attempt_id: str) -> Attempt | None:
+        value = self.attempts.get(attempt_id)
+        return value if value and value.user_id == user_id else None
+
     def create_intake(self, *, user_id: str, file_id: str, idempotency_key: str) -> tuple[IntakeItem, Job]:
         if not self.get_file(user_id=user_id, file_id=file_id):
             raise LookupError("file not found")
@@ -186,7 +194,7 @@ class InMemoryNotebookStore:
         attempt = self.attempts[candidate.attempt_id]
         if candidate.input_version != expected_version:
             raise RuntimeError("input_version_changed")
-        if candidate.verdict == "unclear":
+        if candidate.verdict not in {"partial", "incorrect"}:
             raise RuntimeError("failed_final")
         existing = next((item for item in self.errors.values() if item.user_id == user_id and item.attempt_id == attempt.attempt_id), None)
         if existing:

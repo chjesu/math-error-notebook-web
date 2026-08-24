@@ -46,6 +46,7 @@ function authError(error) {
     rate_limited: "操作过于频繁，请稍后重试。",
     export_expired: "导出已过期，请重新申请。",
     confirmation_required: "请输入正确的注销确认。",
+    model_unavailable: "本地智能处理暂时不可用，已切换为人工确认。",
     network_error: "网络异常，请检查网络后重试。"
   })[error.message] || "操作失败，请稍后重试。";
 }
@@ -284,6 +285,8 @@ function bindWorkbench() {
     $("#manual-intake-form").hidden = false;
     $("#manual-grade-form").hidden = true;
     $("#intake-context").textContent = `请确认“${activeIntake.fileName}”的题干与作答${pendingIntakes.length ? `，后面还有 ${pendingIntakes.length} 个文件` : ""}。`;
+    $("#question-text").value = activeIntake.questionText || "";
+    $("#answer-text").value = activeIntake.answerText || "";
     scrollChatToEnd();
     $("#question-text").focus();
   }
@@ -375,7 +378,16 @@ function bindWorkbench() {
         setAssistantProgress(progress, "附件已安全保存", `${index + 1}/${files.length} · ${item.file.name} · 格式、大小和重复内容校验已完成`);
         setAssistantProgress(progress, "正在创建录入任务", `${index + 1}/${files.length} · ${item.file.name}`);
         const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-        pendingIntakes.push({intakeId: task.resource_id, inputVersion: 1, fileName: item.file.name});
+        let modelCandidate = {input_version: 1, question_text: "", answer_text: "", model_status: "manual"};
+        try {
+          setAssistantProgress(progress, "正在识别题目与作答", `${index + 1}/${files.length} · ${item.file.name} · Codex CLI 正在读取图片`);
+          modelCandidate = await api(`/v1/intakes/${task.resource_id}/model-candidate`, {method: "POST", body: "{}"});
+          const recognized = modelCandidate.model_status === "complete" || modelCandidate.model_status === "existing";
+          setAssistantProgress(progress, recognized ? "识别候选已生成" : "图片内容不够清晰", recognized ? `${index + 1}/${files.length} · ${item.file.name} · 请核对后再判题` : `${index + 1}/${files.length} · ${item.file.name} · 已切换为人工录入`, recognized ? "running" : "warning");
+        } catch (modelError) {
+          setAssistantProgress(progress, "自动识别未完成", `${index + 1}/${files.length} · ${item.file.name} · ${authError(modelError)}`, "warning");
+        }
+        pendingIntakes.push({intakeId: task.resource_id, inputVersion: modelCandidate.input_version || 1, fileName: item.file.name, questionText: modelCandidate.question_text || "", answerText: modelCandidate.answer_text || "", modelStatus: modelCandidate.model_status || "manual"});
         item.state = "done";
         completed += 1;
         setAssistantProgress(progress, "已加入确认队列", `${index + 1}/${files.length} · ${item.file.name} · 接下来由你核对题干与作答`);
@@ -392,7 +404,7 @@ function bindWorkbench() {
     renderUploadFiles();
     const summary = `${completed ? `已保存 ${completed} 个文件` : "没有文件上传成功"}${failed ? `，${failed} 个失败，可重试` : ""}。`;
     if (completed) {
-      const nextStep = activeIntake ? "已成功文件已加入待确认队列。" : "本地版暂未接入自动识别，请从第一份开始核对题干与作答。";
+      const nextStep = activeIntake ? "已成功文件已加入待确认队列。" : "请从第一份开始核对题干与作答。";
       setAssistantProgress(progress, "文件已准备好", `${summary} ${nextStep}`, failed ? "warning" : "complete");
       if (!activeIntake && pendingIntakes.length) activateNextIntake();
     } else {
@@ -408,14 +420,32 @@ function bindWorkbench() {
     const button = event.submitter;
     button.disabled = true;
     try {
-      const intake = await api(`/v1/intakes/${activeIntake.intakeId}/manual-candidate`, {method: "POST", body: JSON.stringify({question_text: $("#question-text").value, answer_text: $("#answer-text").value})});
+      const questionText = $("#question-text").value;
+      const answerText = $("#answer-text").value;
+      let intake;
+      if (["complete", "existing"].includes(activeIntake.modelStatus)) {
+        const changed = questionText !== activeIntake.questionText || answerText !== activeIntake.answerText;
+        intake = changed ? await api(`/v1/intakes/${activeIntake.intakeId}`, {method: "PATCH", body: JSON.stringify({input_version: activeIntake.inputVersion, question_text: questionText, answer_text: answerText})}) : {input_version: activeIntake.inputVersion};
+      } else {
+        intake = await api(`/v1/intakes/${activeIntake.intakeId}/manual-candidate`, {method: "POST", body: JSON.stringify({question_text: questionText, answer_text: answerText})});
+      }
       const confirmed = await api(`/v1/intakes/${activeIntake.intakeId}/confirm`, {method: "POST", body: JSON.stringify({input_version: intake.input_version}), headers: {"Idempotency-Key": crypto.randomUUID()}});
       activeIntake.inputVersion = intake.input_version;
       activeAttempt = confirmed.resource_id;
       $("#manual-intake-form").hidden = true;
       $("#manual-grade-form").hidden = false;
-      status($("#manual-status"), "题干与作答已确认，请记录判题候选。");
-      $("#verdict").focus();
+      const gradeProgress = appendAssistantProgress();
+      setAssistantProgress(gradeProgress, "题干与作答已确认", "正在把确认后的内容交给 Codex CLI 判题。");
+      setAssistantProgress(gradeProgress, "正在定位第一处错误", "模型只生成候选，不会自动写入错题本。");
+      try {
+        activeCandidate = await api(`/v1/attempts/${activeAttempt}/model-grade`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion})});
+        showGradeCandidate(activeCandidate);
+        setAssistantProgress(gradeProgress, "判题候选已生成", "请核对首错、错因和完整解法后，再确认是否入本。", "complete");
+      } catch (modelError) {
+        setAssistantProgress(gradeProgress, "自动判题未完成", `${authError(modelError)} 你仍可在下方人工填写。`, "warning");
+        status($("#manual-status"), "请人工记录判题候选。");
+        $("#verdict").focus();
+      }
     } catch (error) {
       status($("#manual-status"), `确认失败：${authError(error)}`, true);
     } finally {
@@ -430,6 +460,25 @@ function bindWorkbench() {
   }
   $("#verdict").addEventListener("change", refreshDiagnosisFields);
   refreshDiagnosisFields();
+
+  function showGradeCandidate(candidate) {
+    const diagnosis = candidate.diagnosis || {};
+    $("#verdict").value = candidate.verdict;
+    $("#first-error").value = candidate.first_error || "";
+    $("#cause-code").value = diagnosis.cause_code || "unclear";
+    $("#grade-evidence").value = diagnosis.cause_evidence || "";
+    $("#correct-solution").value = diagnosis.correct_solution || "";
+    $("#final-answer").value = diagnosis.final_answer || "";
+    $("#prevention-cue").value = diagnosis.prevention_cue || "";
+    refreshDiagnosisFields();
+    const canCommit = ["incorrect", "partial"].includes(candidate.verdict);
+    $("#grade-summary").textContent = canCommit ? `候选结果：${candidate.verdict === "incorrect" ? "错误" : "部分正确"}；首错：${candidate.first_error}` : candidate.verdict === "correct" ? "候选结果：本题正确，不写入错题本。" : "证据不足，不能写入错题本。";
+    $("#grade-confirm").hidden = false;
+    $("#commit-grade").hidden = !canCommit;
+    $("#next-intake").hidden = canCommit;
+    status($("#manual-status"), canCommit ? "请核对候选后确认入本。" : "已安全停止，不会写入正式错题。");
+  }
+
   $("#manual-grade-form").addEventListener("submit", async event => {
     event.preventDefault();
     if (!activeAttempt || !activeIntake) return;
@@ -437,12 +486,7 @@ function bindWorkbench() {
     button.disabled = true;
     try {
       activeCandidate = await api(`/v1/attempts/${activeAttempt}/manual-grade`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion, verdict: $("#verdict").value, first_error: $("#first-error").value, cause_code: $("#cause-code").value, evidence: $("#grade-evidence").value, correct_solution: $("#correct-solution").value, final_answer: $("#final-answer").value, prevention_cue: $("#prevention-cue").value})});
-      const canCommit = ["incorrect", "partial"].includes(activeCandidate.verdict);
-      $("#grade-summary").textContent = canCommit ? `候选结果：${activeCandidate.verdict === "incorrect" ? "错误" : "部分正确"}；首错：${activeCandidate.first_error}` : activeCandidate.verdict === "correct" ? "候选结果：本题正确，不写入错题本。" : "证据不足，不能写入错题本。";
-      $("#grade-confirm").hidden = false;
-      $("#commit-grade").hidden = !canCommit;
-      $("#next-intake").hidden = canCommit;
-      status($("#manual-status"), canCommit ? "请核对候选后确认入本。" : "已安全停止，不会写入正式错题。");
+      showGradeCandidate(activeCandidate);
     } catch (error) {
       status($("#manual-status"), `判题记录失败：${authError(error)}`, true);
     } finally {

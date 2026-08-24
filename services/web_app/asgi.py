@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 
 from services.web_auth import AuthAsgiApp, RegistrationService
 from services.web_domain import ErrorEntry, GradeCandidate, IntakeItem, Job, NotebookService, Recommendation, ReviewTask
+from .codex_model import ModelUnavailableError
 
 
 Receive = Callable[[], Awaitable[dict[str, Any]]]
@@ -28,6 +29,7 @@ class NotebookAsgiApp:
         require_https: bool = True,
         session_cookie: str = "__Host-lzlm_session",
         max_upload_bytes: int = 26 * 1024 * 1024,
+        model_runner: Any | None = None,
     ) -> None:
         self.auth = AuthAsgiApp(auth_service, allowed_hosts=allowed_hosts, require_https=require_https, session_cookie=session_cookie)
         self.auth_service = auth_service
@@ -36,6 +38,7 @@ class NotebookAsgiApp:
         self.require_https = require_https
         self.session_cookie = session_cookie
         self.max_upload_bytes = max_upload_bytes
+        self.model_runner = model_runner
         root = Path(__file__).resolve().parents[2]
         self.static_files = {
             "/": (root / "web" / "index.html", "text/html; charset=utf-8", False),
@@ -183,6 +186,46 @@ class NotebookAsgiApp:
                     evidence={"source": "user_manual"},
                 )
                 await self._json(send, 201, self._intake(intake))
+            elif path.startswith("/v1/intakes/") and path.endswith("/model-candidate") and method == "POST":
+                if self.model_runner is None:
+                    raise ModelUnavailableError("local model processing is disabled")
+                intake_id = path.split("/")[-2]
+                intake = await self._sync(self.notebook.store.get_intake, user_id=user.user_id, intake_id=intake_id)
+                if not intake:
+                    raise LookupError
+                if intake.status == "waiting_confirmation":
+                    await self._json(send, 200, self._intake(intake) | {"model_status": "existing"})
+                    return
+                if intake.status != "extracting":
+                    raise RuntimeError("conflict")
+                file_record = await self._sync(self.notebook.store.get_file, user_id=user.user_id, file_id=intake.file_id)
+                if not file_record:
+                    raise LookupError
+                if file_record.media_type not in {"image/png", "image/jpeg"}:
+                    raise ModelUnavailableError("automatic extraction currently supports PNG and JPEG")
+                with self.notebook.files.model_preview(file_record.object_key, file_record.content_sha256) as image_path:
+                    result = await self._sync(
+                        self.model_runner.extract,
+                        intake=intake,
+                        file_record=file_record,
+                        image_path=image_path,
+                    )
+                if result.get("intake_id") != intake.intake_id or result.get("input_version") != intake.input_version:
+                    raise ModelUnavailableError("model response does not match the frozen intake")
+                question_text = str(result.get("question_text", "")).strip()
+                answer_text = str(result.get("answer_text", "")).strip()
+                if result.get("status") == "complete" and question_text:
+                    intake = await self._sync(
+                        self.notebook.store.save_extraction_candidate,
+                        user_id=user.user_id,
+                        intake_id=intake_id,
+                        question_text=question_text,
+                        answer_text=answer_text,
+                        evidence={"source": "codex_cli", "route": result.get("route"), "confidence": result.get("confidence")},
+                    )
+                    await self._json(send, 201, self._intake(intake) | {"model_status": "complete", "model": result.get("route")})
+                else:
+                    await self._json(send, 200, self._intake(intake) | {"model_status": "unclear", "question_text": question_text, "answer_text": answer_text, "model": result.get("route")})
             elif path.startswith("/v1/intakes/") and path.endswith("/confirm") and method == "POST":
                 intake_id = path.split("/")[-2]
                 payload = await self._json_body(receive)
@@ -196,27 +239,7 @@ class NotebookAsgiApp:
             elif path.startswith("/v1/attempts/") and path.endswith("/manual-grade") and method == "POST":
                 attempt_id = path.split("/")[-2]
                 payload = await self._json_body(receive)
-                verdict = str(payload["verdict"])
-                first_error = str(payload.get("first_error", "")).strip() or None
-                if verdict not in {"correct", "partial", "incorrect", "unclear"}:
-                    raise ValueError("unsupported verdict")
-                if verdict in {"partial", "incorrect"} and not first_error:
-                    raise ValueError("first_error is required")
-                if verdict in {"correct", "unclear"}:
-                    first_error = None
-                cause_code = str(payload.get("cause_code", "")).strip()
-                cause_evidence = str(payload.get("evidence", "")).strip()
-                correct_solution = str(payload.get("correct_solution", "")).strip()
-                final_answer = str(payload.get("final_answer", "")).strip()
-                prevention_cue = str(payload.get("prevention_cue", "")).strip()
-                allowed_causes = {"knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear"}
-                if any(len(value) > 12000 for value in (first_error or "", cause_evidence, correct_solution, final_answer, prevention_cue)):
-                    raise ValueError("grade field is too long")
-                if verdict in {"partial", "incorrect"} and (cause_code not in allowed_causes or not cause_evidence or not correct_solution or not final_answer):
-                    raise ValueError("complete diagnosis is required")
-                if cause_code == "careless" and not cause_evidence:
-                    raise ValueError("careless requires direct evidence")
-                evidence = json.dumps({"schema": "math-error-diagnosis/v1", "cause_code": cause_code or None, "cause_evidence": cause_evidence or None, "correct_solution": correct_solution or None, "final_answer": final_answer or None, "prevention_cue": prevention_cue or None}, ensure_ascii=False, separators=(",", ":"))
+                verdict, first_error, evidence = self._grade_values(payload, evidence_key="evidence")
                 candidate = await self._sync(
                     self.notebook.store.record_grade_candidate,
                     user_id=user.user_id,
@@ -227,6 +250,36 @@ class NotebookAsgiApp:
                     evidence=evidence,
                 )
                 await self._json(send, 201, self._candidate(candidate))
+            elif path.startswith("/v1/attempts/") and path.endswith("/model-grade") and method == "POST":
+                if self.model_runner is None:
+                    raise ModelUnavailableError("local model processing is disabled")
+                attempt_id = path.split("/")[-2]
+                payload = await self._json_body(receive)
+                if set(payload) != {"input_version"}:
+                    raise ValueError("invalid model grade request")
+                attempt = await self._sync(self.notebook.store.get_attempt, user_id=user.user_id, attempt_id=attempt_id)
+                if not attempt:
+                    raise LookupError
+                if int(payload["input_version"]) != attempt.input_version:
+                    raise RuntimeError("input_version_changed")
+                result = await self._sync(self.model_runner.grade, attempt=attempt)
+                if result.get("attempt_id") != attempt.attempt_id or result.get("input_version") != attempt.input_version:
+                    raise ModelUnavailableError("model response does not match the frozen attempt")
+                verdict, first_error, evidence = self._grade_values(result, evidence_key="cause_evidence")
+                confidence = result.get("confidence")
+                if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
+                    raise ModelUnavailableError("model returned invalid confidence")
+                candidate = await self._sync(
+                    self.notebook.store.record_grade_candidate,
+                    user_id=user.user_id,
+                    attempt_id=attempt_id,
+                    input_version=attempt.input_version,
+                    verdict=verdict,
+                    first_error=first_error,
+                    evidence=evidence,
+                    confidence=float(confidence),
+                )
+                await self._json(send, 201, self._candidate(candidate) | {"model": result.get("route")})
             elif path.startswith("/v1/grade-results/") and path.endswith("/commit") and method == "POST":
                 candidate_id = path.split("/")[-2]
                 payload = await self._json_body(receive)
@@ -304,6 +357,8 @@ class NotebookAsgiApp:
             await self._error(send, 403, "sensitive_verification_failed")
         except PermissionError:
             await self._error(send, 403, "forbidden")
+        except ModelUnavailableError:
+            await self._error(send, 503, "model_unavailable")
         except RuntimeError as exc:
             code = str(exc) if str(exc) in {"input_version_changed", "waiting_confirmation", "failed_final", "conflict"} else "conflict"
             await self._error(send, 422 if code == "failed_final" else 409, code)
@@ -415,6 +470,29 @@ class NotebookAsgiApp:
         return payload if isinstance(payload, dict) and payload.get("schema") == "math-error-diagnosis/v1" else {"correct_solution": value}
 
     @staticmethod
+    def _grade_values(payload: dict[str, Any], *, evidence_key: str) -> tuple[str, str | None, str]:
+        verdict = str(payload["verdict"])
+        first_error = str(payload.get("first_error") or "").strip() or None
+        if verdict not in {"correct", "partial", "incorrect", "unclear"}:
+            raise ValueError("unsupported verdict")
+        if verdict in {"correct", "unclear"}:
+            first_error = None
+        cause_code = str(payload.get("cause_code") or "").strip()
+        cause_evidence = str(payload.get(evidence_key) or "").strip()
+        correct_solution = str(payload.get("correct_solution") or "").strip()
+        final_answer = str(payload.get("final_answer") or "").strip()
+        prevention_cue = str(payload.get("prevention_cue") or "").strip()
+        allowed_causes = {"knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear"}
+        if any(len(value) > 12000 for value in (first_error or "", cause_evidence, correct_solution, final_answer, prevention_cue)):
+            raise ValueError("grade field is too long")
+        if verdict in {"partial", "incorrect"} and (not first_error or cause_code not in allowed_causes or not cause_evidence or not correct_solution or not final_answer):
+            raise ValueError("complete diagnosis is required")
+        if cause_code == "careless" and not cause_evidence:
+            raise ValueError("careless requires direct evidence")
+        evidence = json.dumps({"schema": "math-error-diagnosis/v1", "cause_code": cause_code or None, "cause_evidence": cause_evidence or None, "correct_solution": correct_solution or None, "final_answer": final_answer or None, "prevention_cue": prevention_cue or None}, ensure_ascii=False, separators=(",", ":"))
+        return verdict, first_error, evidence
+
+    @staticmethod
     def _recommendation(value: Recommendation) -> dict[str, Any]:
         return {"recommendation_id": value.recommendation_id, "question_id": value.question.question_id, "stem_text": value.question.stem_text, "grade": value.question.grade, "difficulty": value.question.difficulty, "source": value.question.source_title, "reason": value.reason, "status": value.status}
 
@@ -445,7 +523,7 @@ class NotebookAsgiApp:
         return {key: payload[key] for key in ("job_id", "download_url", "expires_at")}
 
     async def _error(self, send: Send, status: int, code: str) -> None:
-        await self._json(send, status, {"error": {"code": code, "message": code, "retryable": code in {"failed_retryable", "temporarily_unavailable", "rate_limited"}, "request_id": secrets.token_hex(8)}})
+        await self._json(send, status, {"error": {"code": code, "message": code, "retryable": code in {"failed_retryable", "temporarily_unavailable", "model_unavailable", "rate_limited"}, "request_id": secrets.token_hex(8)}})
 
     @staticmethod
     async def _json(send: Send, status: int, payload: dict[str, Any]) -> None:

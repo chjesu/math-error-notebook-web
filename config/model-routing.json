@@ -21,17 +21,29 @@
       "reasoning_effort": "high",
       "minimum_confidence": 0.92
     },
+    "math-intake-candidate": {
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "medium",
+      "minimum_confidence": 0.90,
+      "schema": "schemas/intake-candidate.schema.json"
+    },
+    "math-intake-adjudication": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high",
+      "minimum_confidence": 0.92,
+      "schema": "schemas/intake-candidate.schema.json"
+    },
     "math-grade-candidate": {
       "model": "gpt-5.6-terra",
       "reasoning_effort": "medium",
       "minimum_confidence": 0.90,
-      "schema": "schemas/grade-candidate.schema.json"
+      "schema": "schemas/math-grade-result.schema.json"
     },
     "math-grade-adjudication": {
       "model": "gpt-5.6-sol",
       "reasoning_effort": "high",
       "minimum_confidence": 0.92,
-      "schema": "schemas/grade-candidate.schema.json"
+      "schema": "schemas/math-grade-result.schema.json"
     }
   },
   "promote_to_security": [

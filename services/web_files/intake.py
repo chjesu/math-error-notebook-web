@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 from io import BytesIO
 from pathlib import Path
 import re
 import secrets
+from typing import Iterator
 import zipfile
+
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 
 @dataclass(frozen=True)
@@ -87,7 +91,37 @@ class FileIntake:
         return FileCandidate(user_id, name, media_type, len(content), digest, object_key, target)
 
     def read(self, object_key: str) -> bytes:
+        return self.resolve(object_key).read_bytes()
+
+    def resolve(self, object_key: str) -> Path:
         target = (self.root / object_key).resolve()
         if self.root not in target.parents or not target.is_file():
             raise LookupError("file not found")
-        return target.read_bytes()
+        return target
+
+    @contextmanager
+    def model_preview(self, object_key: str, expected_sha256: str) -> Iterator[Path]:
+        """Yield a bounded, metadata-free image made from the verified uploaded bytes."""
+        raw = self.read(object_key)
+        if not secrets.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
+            raise RuntimeError("file_integrity_failed")
+
+        preview_root = (self.root / "model-previews").resolve()
+        if self.root not in preview_root.parents:
+            raise ValueError("unsafe preview path")
+        preview_root.mkdir(parents=True, exist_ok=True)
+        preview = (preview_root / f"{secrets.token_hex(16)}.png").resolve()
+        try:
+            with Image.open(BytesIO(raw)) as source:
+                width, height = source.size
+                if width < 1 or height < 1 or width > 10_000 or height > 10_000 or width * height > 40_000_000:
+                    raise ValueError("image dimensions exceed the model preview limit")
+                source.load()
+                rendered = ImageOps.exif_transpose(source).convert("RGB")
+                rendered.thumbnail((4096, 4096))
+                rendered.save(preview, format="PNG", optimize=True)
+            yield preview
+        except (Image.DecompressionBombError, UnidentifiedImageError, OSError) as exc:
+            raise ValueError("invalid image for model processing") from exc
+        finally:
+            preview.unlink(missing_ok=True)

@@ -127,6 +127,15 @@
         "responses": {"201": {"$ref": "#/components/responses/Intake"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
       }
     },
+    "/v1/intakes/{intake_id}/model-candidate": {
+      "post": {
+        "operationId": "createModelIntakeCandidate",
+        "description": "仅在本地显式启用 Codex CLI 时读取当前用户的 PNG/JPEG，返回并保存待用户确认的识别候选；模型不能直接确认题干。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IntakeId"}],
+        "responses": {"200": {"$ref": "#/components/responses/Intake"}, "201": {"$ref": "#/components/responses/Intake"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
+      }
+    },
     "/v1/attempts/{attempt_id}/manual-grade": {
       "post": {
         "operationId": "saveManualGradeCandidate",
@@ -135,6 +144,16 @@
         "parameters": [{"$ref": "#/components/parameters/AttemptId"}],
         "requestBody": {"$ref": "#/components/requestBodies/ManualGradeCandidate"},
         "responses": {"201": {"$ref": "#/components/responses/GradeCandidate"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/attempts/{attempt_id}/model-grade": {
+      "post": {
+        "operationId": "createModelGradeCandidate",
+        "description": "仅在本地显式启用 Codex CLI 时对用户已确认的冻结版本生成完整判题候选；候选仍须用户确认后才能入本。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/AttemptId"}],
+        "requestBody": {"$ref": "#/components/requestBodies/Version"},
+        "responses": {"201": {"$ref": "#/components/responses/GradeCandidate"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/grade-results/{result_id}": {
@@ -378,7 +397,7 @@
       "PracticeJob": {"allOf": [{"$ref": "#/components/schemas/Task"}, {"type": "object", "properties": {"download_url": {"type": "string"}}}]},
       "ExportJob": {"type": "object", "additionalProperties": false, "required": ["job_id", "status", "expires_at"], "properties": {"job_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["queued", "running", "completed", "failed_final", "cancelled"]}, "expires_at": {"type": "string", "format": "date-time"}, "download_url": {"type": "string"}}},
       "ExportCreated": {"type": "object", "additionalProperties": false, "required": ["job_id", "download_url", "expires_at"], "properties": {"job_id": {"$ref": "#/components/schemas/Id"}, "download_url": {"type": "string"}, "expires_at": {"type": "string", "format": "date-time"}}},
-      "ErrorEnvelope": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["code", "message", "retryable", "request_id"], "properties": {"code": {"enum": ["invalid_request", "invalid_code", "code_expired", "too_many_attempts", "weak_password", "agreement_required", "phone_not_registered", "phone_already_registered", "request_too_large", "invalid_host", "https_required", "method_not_allowed", "authentication_required", "sensitive_verification_failed", "forbidden", "not_found", "conflict", "input_version_changed", "waiting_confirmation", "rate_limited", "captcha_required", "temporarily_unavailable", "failed_retryable", "failed_final"]}, "message": {"type": "string"}, "retryable": {"type": "boolean"}, "request_id": {"type": "string"}, "retry_after_seconds": {"type": "integer", "minimum": 1}}}}}
+      "ErrorEnvelope": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["code", "message", "retryable", "request_id"], "properties": {"code": {"enum": ["invalid_request", "invalid_code", "code_expired", "too_many_attempts", "weak_password", "agreement_required", "phone_not_registered", "phone_already_registered", "request_too_large", "invalid_host", "https_required", "method_not_allowed", "authentication_required", "sensitive_verification_failed", "forbidden", "not_found", "conflict", "input_version_changed", "waiting_confirmation", "rate_limited", "captcha_required", "temporarily_unavailable", "model_unavailable", "failed_retryable", "failed_final"]}, "message": {"type": "string"}, "retryable": {"type": "boolean"}, "request_id": {"type": "string"}, "retry_after_seconds": {"type": "integer", "minimum": 1}}}}}
     }
   }
 }

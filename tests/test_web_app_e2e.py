@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
 import unittest
+
+from PIL import Image
 
 from services.web_app import NotebookAsgiApp
 from services.web_auth import AuthConfig, InMemoryCaptchaVerifier, InMemoryRegistrationStore, RecordingSmsSender, RegistrationService
@@ -29,6 +32,12 @@ class NotebookE2ETests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    @staticmethod
+    def png_bytes() -> bytes:
+        stream = BytesIO()
+        Image.new("RGB", (10, 10), "white").save(stream, format="PNG")
+        return stream.getvalue()
 
     def call(self, path: str, *, method: str = "GET", payload: dict | None = None, body: bytes | None = None, content_type: str = "application/json", cookie: str | None = None, origin: str | None = "https://example.test", idempotency_key: str | None = None):
         raw = body if body is not None else json.dumps(payload or {}).encode("utf-8")
@@ -216,6 +225,40 @@ class NotebookE2ETests(unittest.TestCase):
         removed = self.call(f"/v1/errors/{error_id}", method="DELETE", cookie=cookie)
         self.assertEqual((removed[0], removed[2]["status"]), (200, "removed"))
 
+    def test_codex_candidates_use_the_same_confirmation_and_commit_gates(self) -> None:
+        class FakeModel:
+            def extract(_, *, intake, file_record, image_path):
+                self.assertTrue(image_path.is_file())
+                self.assertEqual(image_path.parent.name, "model-previews")
+                self.assertEqual(file_record.media_type, "image/png")
+                return {"intake_id": intake.intake_id, "input_version": intake.input_version, "status": "complete", "question_text": "若 x+1=2，求 x。", "answer_text": "x=0", "confidence": 0.98, "route": {"task": "math-intake-candidate", "model": "test"}}
+
+            def grade(_, *, attempt):
+                return {"attempt_id": attempt.attempt_id, "input_version": attempt.input_version, "verdict": "incorrect", "first_error": "移项后结果错误", "cause_code": "algebra_transform", "cause_evidence": "由 x+1=2 得到 x=0", "correct_solution": "x=2-1=1", "final_answer": "x=1", "prevention_cue": "移项后验算", "confidence": 0.97, "route": {"task": "math-grade-candidate", "model": "test"}}
+
+        self.app.model_runner = FakeModel()
+        cookie = self.login("13200132000")
+        other_cookie = self.login("13200132001")
+        content_type, body = self.multipart("model-question.png", self.png_bytes())
+        uploaded = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="model-upload")
+        created = self.call("/v1/intakes", method="POST", payload={"file_id": uploaded[2]["file_id"]}, cookie=cookie, idempotency_key="model-extract")
+        intake_id = created[2]["resource_id"]
+        self.assertEqual(self.call(f"/v1/intakes/{intake_id}/model-candidate", method="POST", cookie=other_cookie)[0], 404)
+        extracted = self.call(f"/v1/intakes/{intake_id}/model-candidate", method="POST", cookie=cookie)
+        self.assertEqual((extracted[0], extracted[2]["status"], extracted[2]["question_text"]), (201, "waiting_confirmation", "若 x+1=2，求 x。"))
+        confirmed = self.call(f"/v1/intakes/{intake_id}/confirm", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="model-grade")
+        self.assertEqual(self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/model-grade", method="POST", payload={"input_version": 1}, cookie=other_cookie)[0], 404)
+        graded = self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/model-grade", method="POST", payload={"input_version": 1}, cookie=cookie)
+        self.assertEqual((graded[0], graded[2]["verdict"], graded[2]["diagnosis"]["final_answer"]), (201, "incorrect", "x=1"))
+        self.assertEqual(self.call("/v1/errors", cookie=cookie)[2]["items"], [])
+        committed = self.call(f"/v1/grade-results/{graded[2]['result_id']}/commit", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="model-commit")
+        self.assertEqual((committed[0], committed[2]["question_text"]), (201, "若 x+1=2，求 x。"))
+
+    def test_model_endpoints_are_disabled_by_default(self) -> None:
+        cookie = self.login("13100131000")
+        response = self.call("/v1/intakes/" + "a" * 32 + "/model-candidate", method="POST", cookie=cookie)
+        self.assertEqual((response[0], response[2]["error"]["code"]), (503, "model_unavailable"))
+
     def test_manual_grade_requires_first_error_and_large_body_is_413(self) -> None:
         cookie = self.login("13700137000")
         content_type, body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nimage")
@@ -248,6 +291,26 @@ class NotebookE2ETests(unittest.TestCase):
         unclear = self.domain_store.record_grade_candidate(user_id=user, attempt_id=attempt_id, input_version=revised.input_version, verdict="unclear", first_error=None, evidence=None)
         with self.assertRaisesRegex(RuntimeError, "failed_final"):
             self.domain_store.commit_grade(user_id=user, candidate_id=unclear.candidate_id, expected_version=revised.input_version)
+        correct = self.domain_store.record_grade_candidate(user_id=user, attempt_id=attempt_id, input_version=revised.input_version, verdict="correct", first_error=None, evidence=None)
+        with self.assertRaisesRegex(RuntimeError, "failed_final"):
+            self.domain_store.commit_grade(user_id=user, candidate_id=correct.candidate_id, expected_version=revised.input_version)
+
+    def test_model_extraction_rejects_a_replaced_quarantine_object(self) -> None:
+        class NeverCalledModel:
+            def extract(self, **_kwargs):
+                raise AssertionError("tampered bytes must not reach the model")
+
+        self.app.model_runner = NeverCalledModel()
+        cookie = self.login("13200132002")
+        content_type, body = self.multipart("model-question.png", self.png_bytes())
+        uploaded = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="tamper-upload")
+        created = self.call("/v1/intakes", method="POST", payload={"file_id": uploaded[2]["file_id"]}, cookie=cookie, idempotency_key="tamper-intake")
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        record = self.domain_store.get_file(user_id=user.user_id, file_id=uploaded[2]["file_id"])
+        assert record is not None
+        self.notebook.files.resolve(record.object_key).write_bytes(b"replaced")
+        response = self.call(f"/v1/intakes/{created[2]['resource_id']}/model-candidate", method="POST", cookie=cookie)
+        self.assertEqual((response[0], response[2]["error"]["code"]), (409, "conflict"))
 
 
 if __name__ == "__main__":

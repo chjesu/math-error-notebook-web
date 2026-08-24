@@ -105,7 +105,9 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("item.submitted = false", script)
         self.assertIn('"正在上传附件"', script)
         self.assertIn('"正在创建录入任务"', script)
-        self.assertIn("本地版暂未接入自动识别", script)
+        self.assertIn("正在识别题目与作答", script)
+        self.assertIn("/model-candidate", script)
+        self.assertIn("/model-grade", script)
 
     def test_logout_only_appears_in_settings(self) -> None:
         settings = (WEB / "settings.html").read_text(encoding="utf-8")
