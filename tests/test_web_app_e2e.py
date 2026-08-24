@@ -63,6 +63,9 @@ class NotebookE2ETests(unittest.TestCase):
             self.assertEqual(self.call(route)[0], 200)
         logo = self.call("/assets/branding/logo-symbol-color-64-v1.png")
         self.assertEqual(logo[1]["content-type"], "image/png")
+        icons = self.call("/web/nav-icons.svg")
+        self.assertEqual((icons[0], icons[1]["content-type"]), (200, "image/svg+xml"))
+        self.assertIn(b'<symbol id="workbench"', icons[2])
         self.assertEqual(self.call("/assets/branding/../README.md")[0], 401)
 
     def test_public_upload_cannot_claim_internal_pdf_purpose(self) -> None:
