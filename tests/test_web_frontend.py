@@ -53,6 +53,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("@media(max-width:720px)", css)
         self.assertIn(":focus-visible", css)
         self.assertNotIn("min-width:720px", css)
+        self.assertIn(".sidebar nav a:last-child { margin-top: auto; }", css)
 
     def test_workbench_upload_supports_multiple_files_drag_and_paste(self) -> None:
         html = (WEB / "index.html").read_text(encoding="utf-8")
