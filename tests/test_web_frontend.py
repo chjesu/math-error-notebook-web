@@ -58,6 +58,8 @@ class FrontendContractTests(unittest.TestCase):
         css = (WEB / "app.css").read_text(encoding="utf-8")
         self.assertIn('type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" multiple', html)
         self.assertIn('id="upload-file-list"', html)
+        self.assertLess(html.index('id="upload-file-list"'), html.index('</div><input id="file"'))
+        self.assertIn('dropZone.addEventListener("click"', script)
         self.assertIn('dropZone.addEventListener("drop"', script)
         self.assertIn('document.addEventListener("paste"', script)
         self.assertIn("for (const file of files)", script)

@@ -18,7 +18,7 @@
       <div class="grid">
         <section class="panel upload-panel">
           <h2>录入错题</h2><p>支持 PDF、PNG、JPG 和 DOCX；可一次选择、拖放或粘贴多个文件。</p>
-          <form id="upload-form"><label id="drop-zone" class="drop-zone" for="file" tabindex="0"><span>点击选择，或将多个文件拖放、粘贴到这里</span><small>支持 PDF、PNG、JPG、DOCX，单个文件不超过 25 MB</small></label><input id="file" name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" multiple><ul id="upload-file-list" class="upload-file-list" aria-label="待上传文件"></ul><button id="upload-button" type="submit" disabled>上传并录入</button></form>
+          <form id="upload-form"><div id="drop-zone" class="drop-zone"><button id="file-picker" class="drop-prompt" type="button"><span>点击选择，或将多个文件拖放、粘贴到这里</span><small>支持 PDF、PNG、JPG、DOCX，单个文件不超过 25 MB</small></button><ul id="upload-file-list" class="upload-file-list" aria-label="待上传文件"></ul></div><input id="file" name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" multiple><button id="upload-button" type="submit" disabled>上传并录入</button></form>
           <p id="upload-status" class="status" role="status" aria-live="polite"></p>
           <div id="manual-flow" class="manual-flow" hidden>
             <form id="manual-intake-form"><h3>确认题干与作答</h3><p>本地版可直接手工补录；自动识别接入后仍会先经过这里确认。</p><label for="question-text">完整题干</label><textarea id="question-text" rows="5" required></textarea><label for="answer-text">你的作答</label><textarea id="answer-text" rows="4"></textarea><button type="submit">确认题干与作答</button></form>

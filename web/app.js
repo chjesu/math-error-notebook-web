@@ -225,9 +225,10 @@ function bindWorkbench() {
     addUploadFiles(uploadInput.files);
     uploadInput.value = "";
   });
-  dropZone.addEventListener("keydown", event => {
-    if (["Enter", " "].includes(event.key)) { event.preventDefault(); uploadInput.click(); }
+  dropZone.addEventListener("click", event => {
+    if (!event.target.closest("button")) uploadInput.click();
   });
+  $("#file-picker").addEventListener("click", () => uploadInput.click());
   for (const eventName of ["dragenter", "dragover"]) dropZone.addEventListener(eventName, event => {
     event.preventDefault();
     dropZone.classList.add("drag-active");

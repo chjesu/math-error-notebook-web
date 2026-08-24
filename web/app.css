@@ -157,11 +157,12 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .panel { padding: 24px; background: var(--paper); border: 1px solid var(--line); border-radius: 16px; }
 .panel h2 { margin: 0; }
 .upload-panel { grid-row: span 2; }
-.drop-zone { display: grid; min-height: 180px; padding: 20px; place-items: center; border: 1px dashed #8ca2e8; border-radius: 14px; background: var(--brand-soft); color: var(--brand); cursor: pointer; text-align: center; }
+.drop-zone { display: grid; min-height: 180px; gap: 16px; padding: 20px; place-content: center; border: 1px dashed #8ca2e8; border-radius: 14px; background: var(--brand-soft); color: var(--brand); cursor: pointer; text-align: center; }
 .drop-zone.drag-active { border-color: var(--brand); background: #e3e9f5; box-shadow: 0 0 0 3px rgba(0, 32, 96, .14); }
-.drop-zone small { margin-top: 8px; color: var(--muted); font-weight: 400; }
+.drop-prompt { display: grid; min-height: auto; gap: 8px; padding: 0; background: transparent; color: var(--brand); }
+.drop-zone small { color: var(--muted); font-weight: 400; }
 input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-.upload-file-list { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; margin: 0; list-style: none; }
+.upload-file-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; padding: 0; margin: 0; list-style: none; }
 .upload-thumbnail { display: grid; width: 88px; gap: 5px; color: var(--muted); font-size: 12px; }
 .upload-preview { position: relative; display: grid; width: 88px; height: 88px; overflow: hidden; place-items: center; border: 1px solid var(--line); border-radius: 16px; background: #e8e8e4; }
 .upload-preview img { width: 100%; height: 100%; object-fit: cover; }
