@@ -66,6 +66,36 @@ function escapeHtml(value) {
   return span.innerHTML;
 }
 
+function wrapPlainMath(value) {
+  if (/\\[([]|\$/.test(value)) return value;
+  const runs = /[A-Za-z0-9π√|([][\sA-Za-z0-9π√+\-−*/=^_(),.|\[\]{}⊥∥≠≤≥·×²³₀-₉]*[A-Za-z0-9π√|)\]²³₀-₉]/g;
+  return value.replace(runs, raw => {
+    const expression = raw.trim();
+    if (/^\d+[.)．、]?$/.test(expression) || !/[=+\-−*/^_|√π⊥∥≠≤≥·×²³₀-₉]|[A-Za-z]\([^)]*\)/.test(expression)) return raw;
+    const leading = raw.slice(0, raw.indexOf(expression));
+    const trailing = raw.slice(raw.indexOf(expression) + expression.length);
+    const latex = expression
+      .replace(/([A-Za-z])([₀-₉]+)/g, (_, letter, digits) => `${letter}_{${digits.replace(/[₀-₉]/g, digit => "0123456789"["₀₁₂₃₄₅₆₇₈₉".indexOf(digit)])}}`)
+      .replace(/²/g, "^{2}")
+      .replace(/³/g, "^{3}")
+      .replace(/\^(-?\d+)/g, "^{$1}")
+      .replace(/√\s*(\([^()]*\)|[A-Za-z0-9]+)/g, "\\sqrt{$1}")
+      .replace(/π\s*\/\s*(\d+)/g, "\\frac{\\pi}{$1}")
+      .replace(/(\d+)\s*\/\s*(\d+)/g, "\\frac{$1}{$2}")
+      .replace(/π/g, "\\pi ")
+      .replace(/_{3,}/g, "\\underline{\\qquad}")
+      .replace(/≠/g, "\\ne ")
+      .replace(/≤/g, "\\le ")
+      .replace(/≥/g, "\\ge ")
+      .replace(/⊥/g, "\\perp ")
+      .replace(/∥/g, "\\parallel ")
+      .replace(/·/g, "\\cdot ")
+      .replace(/×/g, "\\times ")
+      .replace(/−/g, "-");
+    return `${leading}\\(${latex}\\)${trailing}`;
+  });
+}
+
 function renderMath(target) {
   if (!target) return;
   const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
@@ -76,6 +106,7 @@ function renderMath(target) {
       .replace(/\\\\([()[\]])/g, "\\$1")
       .replace(/\\\\(?=[A-Za-z])/g, "\\")
       .replace(/^(\s*[A-D][.、．]\s*)\\+\s*$/gm, "$1");
+    node.nodeValue = wrapPlainMath(node.nodeValue);
   }
   target.classList.add("math-content");
   if (typeof window.renderMathInElement !== "function") return;
