@@ -147,6 +147,21 @@
         "responses": {"200": {"$ref": "#/components/responses/ChatTurn"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
       }
     },
+    "/v1/intakes/{intake_id}/chat-turn-stream": {
+      "post": {
+        "operationId": "streamMathNotebookConversation",
+        "description": "通过官方 Codex app-server 持久线程继续当前错题，并以 NDJSON 流发送真实回合、条目、压缩和完成事件；最终候选仍受确定性确认闸门约束。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IntakeId"}],
+        "requestBody": {"$ref": "#/components/requestBodies/ChatTurn"},
+        "responses": {
+          "200": {"description": "Codex app-server 事件流；最后一行为 result 或 error。", "content": {"application/x-ndjson": {"schema": {"type": "string"}}}},
+          "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
     "/v1/attempts/{attempt_id}/manual-grade": {
       "post": {
         "operationId": "saveManualGradeCandidate",

@@ -123,6 +123,44 @@ class MySqlDomainStore:
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self._connect = connection_factory
 
+    def get_codex_thread(self, *, user_id: str, conversation_id: str) -> str | None:
+        user = _required(user_id, "user_id", 32)
+        conversation = _required(conversation_id, "conversation_id", 32)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT thread_id FROM codex_conversations WHERE user_id=%s AND conversation_id=%s",
+                (user, conversation),
+            )
+            row = cursor.fetchone()
+            return str(row[0]) if row else None
+        finally:
+            cursor.close()
+            connection.close()
+
+    def save_codex_thread(self, *, user_id: str, conversation_id: str, thread_id: str) -> str:
+        user = _required(user_id, "user_id", 32)
+        conversation = _required(conversation_id, "conversation_id", 32)
+        thread = _required(thread_id, "thread_id", 128)
+        now = _utcnow()
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO codex_conversations (user_id,conversation_id,thread_id,created_at,updated_at) "
+                "VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE thread_id=VALUES(thread_id),updated_at=VALUES(updated_at)",
+                (user, conversation, thread, now, now),
+            )
+            connection.commit()
+            return thread
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
     def create_file(
         self,
         *,

@@ -193,42 +193,56 @@ class CodexTaskRouterTests(unittest.TestCase):
             output = root / "turn.json"
             original_audits = router.AUDITS
             router.AUDITS = root / "audits"
-            commands = []
+            thread_ids = []
 
-            def fake_run(command, **kwargs):
-                commands.append(command)
-                self.assertNotIn("--ephemeral", command)
-                self.assertIn("--json", command)
-                if "resume" in command:
-                    self.assertIn('sandbox_mode="read-only"', command)
-                else:
-                    self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
-                self.assertEqual(command[command.index("--disable") + 1], "shell_tool")
-                self.assertNotIn("--last", command)
-                self.assertNotEqual(Path(kwargs["cwd"]).resolve(), ROOT.resolve())
-                packet = json.loads(kwargs["input"].split("Review input:\n", 1)[1])
-                output.write_text(json.dumps({
+            def fake_turn(*, route, prompt, output_path, thread_id, event_callback):
+                thread_ids.append(thread_id)
+                packet = json.loads(prompt.split("Review input:\n", 1)[1])
+                result = {
                     "conversation_id": packet["conversation_id"], "stage": packet["stage"],
                     "resource_id": packet["resource_id"], "input_version": packet["input_version"],
                     "action": "respond", "assistant_message": "继续", "question_text": None,
                     "answer_text": None, "verdict": None, "first_error": None, "cause_code": None,
                     "cause_evidence": None, "correct_solution": None, "final_answer": None,
                     "prevention_cue": None, "confidence": 0.99,
-                }, ensure_ascii=False), encoding="utf-8")
-                stdout = '{"type":"thread.started","thread_id":"thread-123"}\n' if "resume" not in command else ""
-                return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+                }
+                output_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+                return {"thread_id": thread_id or "thread-123", "result": result}
 
             packet = json.dumps({"conversation_id": "a" * 32, "stage": "intake", "resource_id": "a" * 32, "input_version": 1, "user_message": "继续", "context": {}}, ensure_ascii=False)
             try:
-                with mock.patch.object(router.shutil, "which", return_value="codex"), mock.patch.object(router.subprocess, "run", side_effect=fake_run):
+                with mock.patch.object(router, "run_app_server_turn", side_effect=fake_turn):
                     first = router.run_conversation_turn(router.select("math-notebook-loop", []), packet, output)
                     second = router.run_conversation_turn(router.select("math-notebook-loop", []), packet, output, first["session_id"])
             finally:
                 router.AUDITS = original_audits
             self.assertEqual((first["session_id"], second["session_id"]), ("thread-123", "thread-123"))
-            self.assertNotIn("resume", commands[0])
-            self.assertIn("resume", commands[1])
-            self.assertIn("thread-123", commands[1])
+            self.assertEqual(thread_ids, [None, "thread-123"])
+
+    def test_app_server_retries_only_before_a_turn_starts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "turn.json"
+            original_audits = router.AUDITS
+            router.AUDITS = root / "audits"
+            packet = json.dumps({"conversation_id": "a" * 32, "stage": "intake", "resource_id": "a" * 32, "input_version": 1, "user_message": "继续", "context": {}})
+            result = {"conversation_id": "a" * 32, "stage": "intake", "resource_id": "a" * 32, "input_version": 1, "action": "ready", "assistant_message": "可以确认", "confidence": 0.9}
+            try:
+                with mock.patch.object(router.time, "sleep"), mock.patch.object(
+                    router, "run_app_server_turn",
+                    side_effect=[router.AppServerError("network", category="network"), {"thread_id": "thread-1", "result": result}],
+                ) as run:
+                    value = router.run_conversation_turn(router.select("math-notebook-loop", []), packet, output)
+                self.assertEqual((run.call_count, value["audit"] is not None), (2, True))
+                with mock.patch.object(
+                    router, "run_app_server_turn",
+                    side_effect=router.AppServerError("network", category="network", turn_started=True),
+                ) as run:
+                    with self.assertRaises(router.CodexCliInvocationError):
+                        router.run_conversation_turn(router.select("math-notebook-loop", []), packet, output)
+                self.assertEqual(run.call_count, 1)
+            finally:
+                router.AUDITS = original_audits
 
     def test_run_wave_dispatches_one_independent_result_per_role(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

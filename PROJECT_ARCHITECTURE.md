@@ -6,13 +6,13 @@
 
 当前目标产品基线为 v0.4.0：验证码登录与新用户注册拆成两个页面和两个服务端场景；登录使用手机号验证码，注册使用手机号、验证码、密码和协议确认，注册成功自动登录并进入个人错题本。MVP 仍不建设姓名/昵称/年级资料、身份角色、家庭、学生档案、监护同意或实名认证。个人业务数据以服务端会话解析的 `user_id` 隔离。
 
-v0.4.0 本地测试版的认证契约已落地为四个接口：`POST /v1/auth/login/otp/request`、`POST /v1/auth/login/otp/verify`、`POST /v1/auth/register/otp/request`、`POST /v1/auth/register/complete`。注册原子保存密码凭据、协议版本并创建会话；登录不得建号，注册不得覆盖已有账号。当前 35 paths OpenAPI、真实 MySQL smoke、158 项测试、独立安全复核和浏览器注册/移动视口检查已对齐；旧 v0.3.3 单入口仅作迁移起点。生产门禁仍未完成。详细标准见 `docs/13-LOGIN-REGISTER-PRD.md`。
+v0.4.0 本地测试版的认证契约已落地为四个接口：`POST /v1/auth/login/otp/request`、`POST /v1/auth/login/otp/verify`、`POST /v1/auth/register/otp/request`、`POST /v1/auth/register/complete`。注册原子保存密码凭据、协议版本并创建会话；登录不得建号，注册不得覆盖已有账号。当前 36 paths OpenAPI、真实 MySQL smoke、165 项测试、独立安全复核和浏览器注册/移动视口检查已对齐；旧 v0.3.3 单入口仅作迁移起点。生产门禁仍未完成。详细标准见 `docs/13-LOGIN-REGISTER-PRD.md`。
 
 现有代码和在建 Schema 中的 `tenant_id`、家庭、成员、学生档案及监护同意属于早期设计，不能继续作为产品入口或注册后阻断条件。架构步骤必须形成迁移与回滚方案后再调整，不得直接覆盖用户尚未提交的在建代码。
 
 桌面版的 `data/math_notebook.db` 仍是现有数学题库的权威库，Web 项目不直接读取、复制或共享该 SQLite 文件。后续只能通过只读抽取、哈希对账和受控迁移把已验证内容导入独立 MySQL。
 
-在线身份认证、限流、验证码和权限判断完全由确定性代码与 MySQL 完成。Codex CLI 承担只读工程审查，也可在本地显式启用后生成数学图片识别候选、连续会话修正和判题候选。题干修正、作答 OCR、判题及入本内容均由大模型进行语义确认；确定性代码负责校验资源归属、冻结版本、结构化结果和最终写库。模型不能自行跨过确认口令、直接写入正式错题、发送短信、改变权限或批准部署。
+在线身份认证、限流、验证码和权限判断完全由确定性代码与 MySQL 完成。Codex CLI 承担只读工程审查和首次数学图片/判题候选；连续错题会话直接复用官方 Codex app-server Harness 的线程、回合、压缩和事件协议。题干修正、作答 OCR、判题及入本内容均由大模型进行语义确认；确定性代码负责校验资源归属、冻结版本、结构化结果和最终写库。模型不能自行跨过确认口令、直接写入正式错题、发送短信、改变权限或批准部署。
 
 ## 2. 整体架构
 
@@ -54,13 +54,13 @@ flowchart TB
 |---|---|---|
 | 手机验证码注册、会话、限流 | `services/web_auth/` | v0.4.0 四接口、密码、协议、场景隔离已在本地验收；短信/CAPTCHA 仍为模拟，生产门禁未完成 |
 | 本地 MySQL 模拟环境 | `scripts/local_env.py` | 已实现；仅绑定 localhost，不是生产启动器 |
-| Codex 模型路由与团队 | `scripts/codex_task_router.py`、`services/web_app/codex_model.py`、`config/model-routing.json`、`config/team-roles.json` | 已实现；本地启动须使用 `--enable-codex-model` 显式授权，首次 OCR/判题候选走 Terra→Sol 质量门，连续错题会话走持久 Sol 会话，候选只读 |
+| Codex 模型路由与团队 | `scripts/codex_task_router.py`、`scripts/codex_app_server.py`、`services/web_app/codex_model.py`、`config/model-routing.json`、`config/team-roles.json` | 已实现；本地启动须使用 `--enable-codex-model` 显式授权，首次 OCR/判题候选走 Terra→Sol 质量门，连续错题会话走官方 app-server 持久 Sol 线程、真实事件流和结构化候选 |
 | 任务领取、租约、证据、恢复 | `scripts/project_workflow.py` | 已实现注册模板和全项目模板 |
 | 个人账号与 user_id 数据隔离 | `services/web_domain/` | 已实现；API、Store、任务和下载均从服务端会话注入 `user_id` |
 | Web 题库、错题、作答和复习数据 | MySQL 个人 `user_id` 模型 | 权威桌面题库已同步到本地 MySQL：10,569 题，其中 10,278 题保持已验证、291 题按授权/质量门降级为候选；生产回滚未完成 |
-| 文件上传、解析、审核、判题 | API + Codex CLI 会话适配器 | PNG/JPEG 可从一张图片按阅读顺序拆出至多 20 道题及其对应作答，每题建立独立待确认候选→自然语言追问/修正→确认判题→继续追问/修正→确认入本；模型不可用时安全停止且不显示大表单，PDF/DOCX 自动解析与生产异步 Worker 仍延期 |
+| 文件上传、解析、审核、判题 | API + Codex CLI 候选 + Codex app-server 会话适配器 | PNG/JPEG 可从一张图片按阅读顺序拆出至多 20 道题及其对应作答，每题建立独立待确认候选→app-server 自然语言追问/修正→确认判题→继续追问/修正→确认入本；模型不可用时安全停止且不显示大表单，PDF/DOCX 自动解析与生产异步 Worker 仍延期 |
 | 推荐、复习计划和 PDF | `services/web_domain/` | 仅已验证且授权题可推荐；推荐、复习和 PDF 本地链路已验收，题库为空时展示缺口 |
-| 前端/PWA、运营后台和运维恢复 | `web/`、后续运维模块 | 六个侧边栏入口保持独立 URL/HTML；工作台采用 Harness 风格的最新消息窗口、向前分页、完成过程折叠和底部唯一文字/附件输入区；Codex CLI 会话在服务进程内按 intake 恢复，跨页面刷新消息恢复、服务重启后的会话映射恢复、PWA、运营后台和生产恢复延期 |
+| 前端/PWA、运营后台和运维恢复 | `web/`、后续运维模块 | 六个侧边栏入口保持独立 URL/HTML；工作台消费 app-server 的真实 NDJSON 事件；线程映射已进 MySQL 并可跨服务重启恢复，消息历史跨刷新/服务端分页、运行中追加/停止/分叉、PWA、运营后台和生产恢复仍延期 |
 | 阿里云部署 | WAF/SLB、RDS、OSS、运行环境 | 已后置；本地全链路通过后人工批准 |
 
 ## 4. 目录
@@ -127,7 +127,7 @@ flowchart LR
 
 本地 Web 启动的 CLI 复用桌面用户的 Codex 登录目录，并只继承标准代理、上游代理和 CA 证书环境，不复制短信、数据库等业务秘密；调用仍带 `--ignore-user-config`，避免加载用户配置中的任意 MCP、工具或提示。瞬时连接、超时和限流错误总计最多尝试两次；证书、认证和非网络 CLI 错误不做盲目重试。每次尝试写入 `data/audits/codex-routing/codex-cli-events.jsonl`，仅记录调用标识、任务、模型、阶段、耗时、尝试次数、结果和错误分类，不记录题目、图片路径、提示词、stdout、stderr、账号或密钥。
 
-错题会话使用 `math-notebook-loop` 路由和 `codex exec` 的持久会话：首轮从冻结的 intake 建立会话，后续轮次只按服务端保存的会话 ID 显式 `resume`，禁止使用 `--last`，也不接受客户端提交会话 ID。会话拥有多轮上下文及 Codex 自身的上下文压缩能力；每轮仍在隔离临时目录、只读 sandbox、禁用 shell 工具并通过 `math-loop-turn.schema.json`。当前会话 ID 映射只存在 Web 服务进程内，服务重启会开启新 Codex 会话；这不是跨重启持久会话，文档和 UI 不得宣称已完成。
+错题会话使用 `math-notebook-loop` 路由和官方 `codex app-server`：首轮通过 `thread/start` 建立持久线程，后续轮次只按 MySQL 中当前用户与 intake 绑定的不透明 thread id 调用 `thread/resume`；浏览器不能读取或提交 thread id。运行时固定只读 sandbox、拒绝审批、关闭 shell 与 MCP，最终消息必须通过 `math-loop-turn.schema.json`。真实 turn/item/delta/压缩/完成事件经 NDJSON 推送；详细能力边界见 `docs/16-CODEX-APP-SERVER-HARNESS.md`。
 
 ## 7. 完成门
 

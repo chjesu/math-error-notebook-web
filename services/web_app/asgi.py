@@ -251,95 +251,16 @@ class NotebookAsgiApp:
                     })
                 else:
                     await self._json(send, 200, self._intake(intake) | {"items": [], "model_status": "unclear", "model": result.get("route")})
-            elif path.startswith("/v1/intakes/") and path.endswith("/chat-turn") and method == "POST":
+            elif path.startswith("/v1/intakes/") and path.endswith(("/chat-turn", "/chat-turn-stream")) and method == "POST":
                 if self.model_runner is None:
                     raise ModelUnavailableError("local model processing is disabled")
                 intake_id = path.split("/")[-2]
                 payload = await self._json_body(receive)
-                if set(payload) != {"message", "stage", "input_version", "attempt_id", "candidate_id"}:
-                    raise ValueError("invalid chat turn request")
-                message = payload["message"]
-                stage = payload["stage"]
-                if not isinstance(message, str) or not message.strip() or len(message) > 12_000 or stage not in {"intake", "grade"}:
-                    raise ValueError("invalid chat turn request")
-                intake = await self._sync(self.notebook.store.get_intake, user_id=user.user_id, intake_id=intake_id)
-                if not intake:
-                    raise LookupError
-                if int(payload["input_version"]) != intake.input_version:
-                    raise RuntimeError("input_version_changed")
-                if stage == "intake":
-                    if payload["attempt_id"] is not None or payload["candidate_id"] is not None:
-                        raise ValueError("invalid intake chat context")
-                    result = await self._sync(
-                        self.model_runner.chat_turn,
-                        conversation_id=intake_id,
-                        stage="intake",
-                        resource_id=intake_id,
-                        input_version=intake.input_version,
-                        user_message=message,
-                        context={"question_text": intake.question_text, "answer_text": intake.answer_text, "status": intake.status},
-                    )
-                    if result.get("action") == "revise_intake":
-                        if intake.status == "extracting":
-                            intake = await self._sync(
-                                self.notebook.store.save_extraction_candidate,
-                                user_id=user.user_id,
-                                intake_id=intake_id,
-                                question_text=str(result.get("question_text") or ""),
-                                answer_text=str(result.get("answer_text") or ""),
-                                evidence={"source": "codex_cli_conversation", "route": result.get("route"), "confidence": result.get("confidence")},
-                            )
-                        else:
-                            intake = await self._sync(
-                                self.notebook.store.revise_intake,
-                                user_id=user.user_id,
-                                intake_id=intake_id,
-                                expected_version=intake.input_version,
-                                question_text=str(result.get("question_text") or ""),
-                                answer_text=str(result.get("answer_text") or ""),
-                            )
-                    await self._json(send, 200, {
-                        "assistant_message": result["assistant_message"], "action": result["action"],
-                        "stage": "intake", "intake": self._intake(intake), "model": result.get("route"),
-                    })
+                if path.endswith("/chat-turn-stream"):
+                    await self._stream_chat_turn(send, user.user_id, intake_id, payload)
                 else:
-                    attempt_id = payload["attempt_id"]
-                    candidate_id = payload["candidate_id"]
-                    if not isinstance(attempt_id, str) or candidate_id is not None and not isinstance(candidate_id, str):
-                        raise ValueError("invalid grade chat context")
-                    attempt = await self._sync(self.notebook.store.get_attempt, user_id=user.user_id, attempt_id=attempt_id)
-                    if not attempt or attempt.intake_id != intake_id or attempt.input_version != intake.input_version:
-                        raise LookupError
-                    candidate = None
-                    if candidate_id:
-                        candidate = await self._sync(self.notebook.store.get_grade_candidate, user_id=user.user_id, candidate_id=candidate_id)
-                        if not candidate or candidate.attempt_id != attempt_id:
-                            raise LookupError
-                    result = await self._sync(
-                        self.model_runner.chat_turn,
-                        conversation_id=intake_id,
-                        stage="grade",
-                        resource_id=attempt_id,
-                        input_version=attempt.input_version,
-                        user_message=message,
-                        context={
-                            "question_text": attempt.question_text, "answer_text": attempt.answer_text,
-                            "candidate": self._candidate(candidate) if candidate else None,
-                        },
-                    )
-                    if result.get("action") == "revise_grade":
-                        verdict, first_error, evidence = self._grade_values(result, evidence_key="cause_evidence")
-                        candidate = await self._sync(
-                            self.notebook.store.record_grade_candidate,
-                            user_id=user.user_id, attempt_id=attempt_id, input_version=attempt.input_version,
-                            verdict=verdict, first_error=first_error, evidence=evidence,
-                            confidence=float(result["confidence"]),
-                        )
-                    await self._json(send, 200, {
-                        "assistant_message": result["assistant_message"], "action": result["action"],
-                        "stage": "grade", "candidate": self._candidate(candidate) if candidate else None,
-                        "model": result.get("route"),
-                    })
+                    result = await self._sync(self._chat_turn_core, user.user_id, intake_id, payload)
+                    await self._json(send, 200, result)
             elif path.startswith("/v1/intakes/") and path.endswith("/confirm") and method == "POST":
                 intake_id = path.split("/")[-2]
                 payload = await self._json_body(receive)
@@ -478,6 +399,112 @@ class NotebookAsgiApp:
             await self._error(send, 422 if code == "failed_final" else 409, code)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
+
+    def _chat_turn_core(
+        self,
+        user_id: str,
+        intake_id: str,
+        payload: dict[str, Any],
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        if set(payload) != {"message", "stage", "input_version", "attempt_id", "candidate_id"}:
+            raise ValueError("invalid chat turn request")
+        message, stage = payload["message"], payload["stage"]
+        if not isinstance(message, str) or not message.strip() or len(message) > 12_000 or stage not in {"intake", "grade"}:
+            raise ValueError("invalid chat turn request")
+        intake = self.notebook.store.get_intake(user_id=user_id, intake_id=intake_id)
+        if not intake:
+            raise LookupError
+        if int(payload["input_version"]) != intake.input_version:
+            raise RuntimeError("input_version_changed")
+        thread_id = self.notebook.store.get_codex_thread(user_id=user_id, conversation_id=intake_id)
+        if stage == "intake":
+            if payload["attempt_id"] is not None or payload["candidate_id"] is not None:
+                raise ValueError("invalid intake chat context")
+            result = self.model_runner.chat_turn(
+                conversation_id=intake_id, stage="intake", resource_id=intake_id,
+                input_version=intake.input_version, user_message=message,
+                context={"question_text": intake.question_text, "answer_text": intake.answer_text, "status": intake.status},
+                thread_id=thread_id, event_callback=event_callback,
+            )
+            self.notebook.store.save_codex_thread(user_id=user_id, conversation_id=intake_id, thread_id=result["thread_id"])
+            if result.get("action") == "revise_intake":
+                if intake.status == "extracting":
+                    intake = self.notebook.store.save_extraction_candidate(
+                        user_id=user_id, intake_id=intake_id,
+                        question_text=str(result.get("question_text") or ""),
+                        answer_text=str(result.get("answer_text") or ""),
+                        evidence={"source": "codex_app_server", "route": result.get("route"), "confidence": result.get("confidence")},
+                    )
+                else:
+                    intake = self.notebook.store.revise_intake(
+                        user_id=user_id, intake_id=intake_id, expected_version=intake.input_version,
+                        question_text=str(result.get("question_text") or ""), answer_text=str(result.get("answer_text") or ""),
+                    )
+            return {
+                "assistant_message": result["assistant_message"], "action": result["action"],
+                "stage": "intake", "intake": self._intake(intake), "model": result.get("route"),
+            }
+        attempt_id, candidate_id = payload["attempt_id"], payload["candidate_id"]
+        if not isinstance(attempt_id, str) or candidate_id is not None and not isinstance(candidate_id, str):
+            raise ValueError("invalid grade chat context")
+        attempt = self.notebook.store.get_attempt(user_id=user_id, attempt_id=attempt_id)
+        if not attempt or attempt.intake_id != intake_id or attempt.input_version != intake.input_version:
+            raise LookupError
+        candidate = None
+        if candidate_id:
+            candidate = self.notebook.store.get_grade_candidate(user_id=user_id, candidate_id=candidate_id)
+            if not candidate or candidate.attempt_id != attempt_id:
+                raise LookupError
+        result = self.model_runner.chat_turn(
+            conversation_id=intake_id, stage="grade", resource_id=attempt_id,
+            input_version=attempt.input_version, user_message=message,
+            context={"question_text": attempt.question_text, "answer_text": attempt.answer_text, "candidate": self._candidate(candidate) if candidate else None},
+            thread_id=thread_id, event_callback=event_callback,
+        )
+        self.notebook.store.save_codex_thread(user_id=user_id, conversation_id=intake_id, thread_id=result["thread_id"])
+        if result.get("action") == "revise_grade":
+            verdict, first_error, evidence = self._grade_values(result, evidence_key="cause_evidence")
+            candidate = self.notebook.store.record_grade_candidate(
+                user_id=user_id, attempt_id=attempt_id, input_version=attempt.input_version,
+                verdict=verdict, first_error=first_error, evidence=evidence, confidence=float(result["confidence"]),
+            )
+        return {
+            "assistant_message": result["assistant_message"], "action": result["action"],
+            "stage": "grade", "candidate": self._candidate(candidate) if candidate else None, "model": result.get("route"),
+        }
+
+    async def _stream_chat_turn(self, send: Send, user_id: str, intake_id: str, payload: dict[str, Any]) -> None:
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def notify(event: dict[str, Any]) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "runtime", "event": event})
+
+        task = asyncio.create_task(asyncio.to_thread(self._chat_turn_core, user_id, intake_id, payload, notify))
+        await send({"type": "http.response.start", "status": 200, "headers": [
+            (b"content-type", b"application/x-ndjson; charset=utf-8"),
+            (b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff"),
+        ]})
+        await self._ndjson(send, {"type": "runtime", "event": {"type": "request_started"}}, more=True)
+        while not task.done() or not queue.empty():
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=0.25)
+            except TimeoutError:
+                continue
+            await self._ndjson(send, event, more=True)
+        try:
+            result = task.result()
+        except Exception as exc:
+            code = getattr(exc, "code", None) or (str(exc) if str(exc) in {"input_version_changed"} else "model_unavailable")
+            await self._ndjson(send, {"type": "error", "error": {"code": code}}, more=False)
+            return
+        await self._ndjson(send, {"type": "result", "data": result}, more=False)
+
+    @staticmethod
+    async def _ndjson(send: Send, payload: dict[str, Any], *, more: bool) -> None:
+        body = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+        await send({"type": "http.response.body", "body": body, "more_body": more})
 
     async def _read(self, receive: Receive) -> bytes:
         body = bytearray()

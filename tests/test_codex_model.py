@@ -118,7 +118,7 @@ class CodexNotebookModelTests(unittest.TestCase):
                 model.extract(intake=intake, file_record=file_record, image_path=Path(directory) / "q.png")
             self.assertEqual(raised.exception.code, "model_network_error")
 
-    def test_chat_turn_reuses_server_held_session_and_validates_frozen_context(self) -> None:
+    def test_chat_turn_accepts_durable_server_thread_and_validates_frozen_context(self) -> None:
         sessions = []
 
         def conversation(route, review_input, output, session_id):
@@ -141,7 +141,7 @@ class CodexNotebookModelTests(unittest.TestCase):
                 route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"},
             )
             first = model.chat_turn(conversation_id="a" * 32, stage="intake", resource_id="a" * 32, input_version=1, user_message="第二行是题干", context={})
-            second = model.chat_turn(conversation_id="a" * 32, stage="intake", resource_id="a" * 32, input_version=2, user_message="还有吗", context={})
+            second = model.chat_turn(conversation_id="a" * 32, stage="intake", resource_id="a" * 32, input_version=2, user_message="还有吗", context={}, thread_id=first["thread_id"])
             self.assertEqual(first["question_text"], "修正后的题目")
             self.assertEqual(second["action"], "ready")
             self.assertEqual(sessions, [None, "thread-abc"])

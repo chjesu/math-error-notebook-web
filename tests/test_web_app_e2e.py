@@ -59,9 +59,10 @@ class NotebookE2ETests(unittest.TestCase):
             headers.append((b"idempotency-key", idempotency_key.encode("ascii")))
         scope = {"type": "http", "method": method, "path": path, "scheme": "https", "client": ("203.0.113.7", 12345), "headers": headers}
         asyncio.run(self.app(scope, receive, send))
-        started, finished = responses
+        started = responses[0]
         response_headers = {key.decode("ascii"): value.decode("ascii") for key, value in started["headers"]}
-        parsed = json.loads(finished["body"]) if response_headers.get("content-type", "").startswith("application/json") and finished["body"] else finished["body"] or None
+        response_body = b"".join(message.get("body", b"") for message in responses[1:])
+        parsed = json.loads(response_body) if response_headers.get("content-type", "").startswith("application/json") and response_body else response_body or None
         return started["status"], response_headers, parsed
 
     def test_public_shell_serves_only_fixed_brand_assets(self) -> None:
@@ -277,10 +278,15 @@ class NotebookE2ETests(unittest.TestCase):
     def test_chat_loop_revises_model_candidates_without_bypassing_write_gates(self) -> None:
         class FakeLoopModel:
             def chat_turn(_, **values):
+                if values.get("event_callback"):
+                    values["event_callback"]({"type": "turn_started", "status": "inProgress"})
+                    values["event_callback"]({"type": "agent_message_delta", "delta": "{"})
                 if values["stage"] == "intake":
                     return {
-                        "action": "revise_intake", "assistant_message": "已按你的说明修正题干。",
+                        "action": "ready" if values.get("event_callback") else "revise_intake",
+                        "assistant_message": "候选已准备好。" if values.get("event_callback") else "已按你的说明修正题干。",
                         "question_text": "若 x+1=2，求 x。", "answer_text": "x=0", "confidence": 0.99,
+                        "thread_id": values.get("thread_id") or "thread-loop-test",
                         "route": {"task": "math-notebook-loop", "model": "test"},
                     }
                 return {
@@ -288,6 +294,7 @@ class NotebookE2ETests(unittest.TestCase):
                     "first_error": "移项结果错误", "cause_code": "algebra_transform",
                     "cause_evidence": "由 x+1=2 得到 x=0", "correct_solution": "x=2-1=1",
                     "final_answer": "x=1", "prevention_cue": "代回验算", "confidence": 0.99,
+                    "thread_id": values.get("thread_id") or "thread-loop-test",
                     "route": {"task": "math-notebook-loop", "model": "test"},
                 }
 
@@ -303,6 +310,11 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(denied[0], 404)
         revised = self.call(f"/v1/intakes/{intake_id}/chat-turn", method="POST", payload=request, cookie=cookie)
         self.assertEqual((revised[0], revised[2]["intake"]["status"], revised[2]["intake"]["question_text"]), (200, "waiting_confirmation", "若 x+1=2，求 x。"))
+        streamed = self.call(f"/v1/intakes/{intake_id}/chat-turn-stream", method="POST", payload=request, cookie=cookie)
+        stream_events = [json.loads(line) for line in streamed[2].splitlines()]
+        self.assertEqual(streamed[1]["content-type"], "application/x-ndjson; charset=utf-8")
+        self.assertIn("turn_started", [item.get("event", {}).get("type") for item in stream_events])
+        self.assertEqual(stream_events[-1]["type"], "result")
         confirmed = self.call(f"/v1/intakes/{intake_id}/confirm", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="loop-confirm")
         grade_request = {"message": "请再检查第一处错误", "stage": "grade", "input_version": 1, "attempt_id": confirmed[2]["resource_id"], "candidate_id": None}
         graded = self.call(f"/v1/intakes/{intake_id}/chat-turn", method="POST", payload=grade_request, cookie=cookie)

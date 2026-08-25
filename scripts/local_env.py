@@ -46,6 +46,7 @@ MIGRATIONS = (
     ROOT / "services" / "web_auth" / "migrations" / "0007_auth_security.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0008_privacy_recovery.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0009_file_upload_idempotency.sql",
+    ROOT / "services" / "web_domain" / "migrations" / "0010_codex_harness.sql",
 )
 
 

@@ -48,6 +48,7 @@ class InMemoryNotebookStore:
         self.review_tasks: dict[str, ReviewTask] = {}
         self.review_attempts: dict[tuple[str, str], dict[str, Any]] = {}
         self.account_deletions: dict[str, dict[str, Any]] = {}
+        self.codex_threads: dict[tuple[str, str], str] = {}
         self.audit_events: list[dict[str, Any]] = []
         self._file_keys: dict[tuple[str, str, str], str] = {}
         self._upload_keys: dict[tuple[str, str], tuple[str, tuple[Any, ...]]] = {}
@@ -55,6 +56,15 @@ class InMemoryNotebookStore:
         self._attempt_keys: dict[tuple[str, str], str] = {}
         self._review_keys: dict[tuple[str, str, int], str] = {}
         self._practice_inputs: dict[tuple[str, str, str], str] = {}
+
+    def get_codex_thread(self, *, user_id: str, conversation_id: str) -> str | None:
+        return self.codex_threads.get((user_id, conversation_id))
+
+    def save_codex_thread(self, *, user_id: str, conversation_id: str, thread_id: str) -> str:
+        if not user_id or not conversation_id or not thread_id:
+            raise ValueError("Codex thread mapping requires all identifiers")
+        self.codex_threads[(user_id, conversation_id)] = thread_id
+        return thread_id
 
     def create_file(self, *, user_id: str, purpose: str, original_name: str, object_key: str, content_sha256: str, media_type: str, byte_size: int, status: str = "ready", idempotency_key: str | None = None) -> FileRecord:
         signature = (purpose, original_name, content_sha256, media_type, byte_size)

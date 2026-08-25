@@ -513,11 +513,43 @@ function bindWorkbench() {
     activateNextIntake(message);
   }
 
-  async function chatTurn(message) {
-    const result = await api(`/v1/intakes/${activeIntake.intakeId}/chat-turn`, {
-      method: "POST",
-      body: JSON.stringify({message, stage, input_version: activeIntake.inputVersion, attempt_id: activeAttempt, candidate_id: activeCandidate?.result_id || null}),
-    });
+  async function chatTurn(message, progress) {
+    let response;
+    try {
+      response = await fetch(`/v1/intakes/${activeIntake.intakeId}/chat-turn-stream`, {
+        method: "POST", credentials: "same-origin",
+        headers: {"Content-Type": "application/json", "X-Device-ID": deviceId},
+        body: JSON.stringify({message, stage, input_version: activeIntake.inputVersion, attempt_id: activeAttempt, candidate_id: activeCandidate?.result_id || null}),
+      });
+    } catch {
+      throw new Error("network_error");
+    }
+    if (!response.ok || !response.body) throw new Error("model_unavailable");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result = null;
+    while (true) {
+      const {value, done} = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line) continue;
+        const event = JSON.parse(line);
+        if (event.type === "error") throw new Error(event.error?.code || "model_unavailable");
+        if (event.type === "result") result = event.data;
+        if (event.type !== "runtime") continue;
+        const type = event.event?.type;
+        if (type === "request_started") setProgress(progress, "正在连接会话", "正在恢复这道题的完整上下文。");
+        else if (type === "turn_started") setProgress(progress, "正在理解你的消息", "已进入同一个错题会话回合。");
+        else if (type === "item_started") setProgress(progress, "正在分析题目", "正在结合题干、作答和已有判题信息推理。");
+        else if (type === "agent_message_delta") setProgress(progress, "正在组织回复", "模型正在生成本轮候选结果。");
+        else if (type === "thread_compacted") setProgress(progress, "正在整理上下文", "会话已压缩，关键题目信息会继续保留。");
+      }
+      if (done) break;
+    }
+    if (!result) throw new Error("model_unavailable");
     assistantTurn(result.assistant_message);
     if (result.intake) {
       activeIntake.inputVersion = result.intake.input_version;
@@ -553,7 +585,7 @@ function bindWorkbench() {
       else {
         const progress = progressTurn();
         setProgress(progress, "正在思考", stage === "intake" ? "结合图片和当前题干理解你的修正。" : "结合当前判题候选理解你的问题。" );
-        await chatTurn(message);
+        await chatTurn(message, progress);
         setProgress(progress, "本轮已完成", "会话上下文已保留，可以继续输入。", "complete");
       }
     } catch (error) {

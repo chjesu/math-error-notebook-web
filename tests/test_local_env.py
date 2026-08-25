@@ -34,6 +34,7 @@ class LocalEnvironmentTests(unittest.TestCase):
                 "0007_auth_security.sql",
                 "0008_privacy_recovery.sql",
                 "0009_file_upload_idempotency.sql",
+                "0010_codex_harness.sql",
             ],
         )
         self.assertTrue(all(path.is_file() for path in local_env.MIGRATIONS))

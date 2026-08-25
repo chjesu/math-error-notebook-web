@@ -43,7 +43,7 @@
 
 - `python -X utf8 -B -m unittest discover -s tests -p "test_*.py"`：134/134 通过（2026-08-23）。
 - OpenAPI、`schemas/intake-candidate.schema.json` 和 `schemas/math-grade-result.schema.json` 均由 Python 标准库成功解析；旧 `grade-candidate` Schema 仍供题库迁移兼容测试使用。
-- `openapi/web-v1.json` 为 v0.4.0 本地候选契约，共 34 条路径，包含登录/注册四接口、会话、Codex CLI 数学候选、领域闭环、导出和注销。
+- `openapi/web-v1.json` 为 v0.4.0 本地候选契约，共 36 条路径，包含登录/注册四接口、会话、官方 Codex app-server 连续会话与数学候选、领域闭环、导出和注销。
 - HTTP E2E 覆盖两个账号：用户 B 访问用户 A 的错题和 PDF 均返回 404；推荐响应不包含答案。
 - 手工候选重复提交同一内容返回同一结果；错误/部分正确必须提供首错步骤；超限请求返回 413。
 - 文件负向测试覆盖路径穿越、伪扩展名、空/超限、损坏 DOCX 和跨用户相同内容。
@@ -55,7 +55,7 @@
 - Oracle MySQL 8 本地实例运行于 `127.0.0.1:3307`，所需 Python 依赖已安装。
 - 迁移前备份位于 `.runtime/local-mysql/backups/pre-v032-20260823.sql`；0001→0004 已写入本地迁移账本，0004 重复执行通过。
 - 0002 已创建个人错题本领域表；0003 已移除空的 `guardian_consents` 及 `display_name`、`birth_date`、`guardian_*` 字段。`web_users=0`、`auth_sessions=0`。
-- 0005—0009 已在真实 MySQL 迁移账本中完成：认证密码/协议、隐私与注销恢复、认证安全收敛，以及“同上传幂等键绑定同一精确输入”的文件映射；同键异输入返回 `409 conflict`。
+- 0005—0010 已在真实 MySQL 迁移账本中完成：认证密码/协议、隐私与注销恢复、认证安全收敛、“同上传幂等键绑定同一精确输入”的文件映射，以及用户/错题会话到 Codex thread 的持久映射；同键异输入返回 `409 conflict`。
 - `scripts/local_env.py smoke` 真实运行：验证码请求 202、验证 200、重放 400、50 路并发只发送 1 次；手工候选/判题 API 经真实 MySQL 入本后得到已验证推荐、到期复习和 PDF，并完成敏感导出、注销与数据失效检查，测试记录精确清理。
 - 隐私范围：本地导出为业务 JSON 和文件元数据，不含上传原始二进制；下载最多 3 次并逐次审计。注销执行账号停用、业务逻辑失效和对象文件删除，认证/协议/审计记录按策略留存；未来完整可携带包需另行定义 ZIP/manifest。
 - 真实 HTTP 与浏览器验收：注册成功、登录、错误恢复、敏感操作二次验证均已覆盖；认证页在 1440×900 下为 440 px 且水平/垂直中心偏差为 0；390×844 移动视口无横向溢出；未登录侧栏、工作台和底栏计算样式均为 `display:none`。

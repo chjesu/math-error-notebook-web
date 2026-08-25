@@ -43,7 +43,6 @@ class CodexNotebookModel:
         self.max_active = max_active
         self._active: set[tuple[str, str, int]] = set()
         self._active_lock = Lock()
-        self._sessions: dict[str, str] = {}
 
     def extract(self, *, intake: Any, file_record: Any, image_path: Path) -> dict[str, Any]:
         frozen = {
@@ -131,6 +130,8 @@ class CodexNotebookModel:
         input_version: int,
         user_message: str,
         context: dict[str, Any],
+        thread_id: str | None = None,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         if stage not in {"intake", "grade"}:
             raise ModelUnavailableError("unsupported conversation stage")
@@ -148,16 +149,16 @@ class CodexNotebookModel:
             if key in self._active or len(self._active) >= self.max_active:
                 raise ModelUnavailableError("Codex CLI candidate generation is already in progress")
             self._active.add(key)
-            session_id = self._sessions.get(conversation_id)
         output = self.output_root / f"math-notebook-loop-{uuid.uuid4().hex}.json"
         try:
             self.output_root.mkdir(parents=True, exist_ok=True)
-            value = self.conversation_review(
+            arguments = (
                 self.route_selector("math-notebook-loop", []),
                 json.dumps(frozen, ensure_ascii=False, separators=(",", ":")),
                 output,
-                session_id,
+                thread_id,
             )
+            value = self.conversation_review(*arguments, event_callback) if event_callback else self.conversation_review(*arguments)
             result = value["result"]
             if any((
                 result.get("conversation_id") != conversation_id,
@@ -167,9 +168,10 @@ class CodexNotebookModel:
             )):
                 raise ModelUnavailableError("model response does not match the frozen conversation")
             parsed = self._validate_turn(result, stage)
-            with self._active_lock:
-                self._sessions[conversation_id] = str(value["session_id"])
-            return {**parsed, "route": self._route_metadata(value)}
+            resolved_thread = value.get("thread_id") or value.get("session_id")
+            if not isinstance(resolved_thread, str) or not resolved_thread:
+                raise ModelUnavailableError("Codex app-server omitted the thread id")
+            return {**parsed, "thread_id": resolved_thread, "route": self._route_metadata(value)}
         except ModelUnavailableError:
             raise
         except Exception as exc:

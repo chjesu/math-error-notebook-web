@@ -16,6 +16,8 @@ from threading import Lock
 import time
 import uuid
 
+from scripts.codex_app_server import AppServerError, run_turn as run_app_server_turn
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config" / "model-routing.json"
@@ -385,11 +387,9 @@ def run_conversation_turn(
     review_input: str,
     output_path: Path,
     session_id: str | None = None,
+    event_callback=None,
 ) -> dict:
-    """Run one persistent, read-only Codex turn and return its opaque session id."""
-    executable = shutil.which("codex")
-    if not executable:
-        raise RuntimeError("codex CLI is not installed or not on PATH")
+    """Run one persistent Codex app-server turn and return its thread id."""
     output_path = output_path.resolve()
     prompt = (
         "You are the math-error-notebook conversation loop. Continue the same user's current math problem. "
@@ -400,40 +400,44 @@ def run_conversation_turn(
         "when returning a complete grading candidate. Use ready when the current candidate is ready for the user-controlled gate. "
         "Review input:\n" + review_input
     )
-    common = [
-        "--ignore-user-config", "--disable", "shell_tool",
-        "--skip-git-repo-check", "-m", route["model"], "-c",
-        f'model_reasoning_effort="{route["reasoning_effort"]}"', "--json",
-        "--output-schema", str(route["schema"]), "-o", str(output_path), "-",
-    ]
-    command = [executable, "exec"]
     if session_id:
         if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 128:
             raise ValueError("invalid Codex session id")
-        command.extend(["resume", *common[:-1], "-c", 'sandbox_mode="read-only"', session_id, "-"])
-    else:
-        command.extend(["--sandbox", "read-only", *common])
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="web-codex-conversation-") as isolated:
-        completed, cli_attempts = _run_codex(
-            command,
-            cwd=isolated,
-            prompt=prompt,
-            route=route,
-            phase="conversation",
-            output_path=output_path,
-        )
-    resolved_session = session_id
-    for line in completed.stdout.splitlines():
+    invocation_id = uuid.uuid4().hex[:16]
+    value = None
+    cli_attempts = 0
+    for attempt in range(1, CLI_MAX_ATTEMPTS + 1):
+        cli_attempts = attempt
+        attempt_started = time.monotonic()
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if event.get("type") == "thread.started":
-            resolved_session = event.get("thread_id") or event.get("session_id") or resolved_session
-    if not resolved_session:
-        raise RuntimeError("codex CLI did not return a conversation session id")
-    result = json.loads(output_path.read_text(encoding="utf-8"))
+            value = run_app_server_turn(
+                route=route, prompt=prompt, output_path=output_path,
+                thread_id=session_id, event_callback=event_callback,
+            )
+            _write_cli_event({
+                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "invocation_id": invocation_id, "task": route["task"], "model": route["model"],
+                "phase": "app_server_conversation", "attempt": attempt, "max_attempts": CLI_MAX_ATTEMPTS,
+                "elapsed_seconds": round(time.monotonic() - attempt_started, 3), "outcome": "success", "exit_code": 0,
+            })
+            break
+        except AppServerError as exc:
+            will_retry = exc.retryable and attempt < CLI_MAX_ATTEMPTS
+            _write_cli_event({
+                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "invocation_id": invocation_id, "task": route["task"], "model": route["model"],
+                "phase": "app_server_conversation", "attempt": attempt, "max_attempts": CLI_MAX_ATTEMPTS,
+                "elapsed_seconds": round(time.monotonic() - attempt_started, 3),
+                "outcome": "retrying" if will_retry else "failed", "category": exc.category, "exit_code": None,
+            })
+            if not will_retry:
+                raise CodexCliInvocationError("app_server_conversation", exc.category, attempt) from exc
+            time.sleep(CLI_RETRY_DELAY_SECONDS * attempt)
+    if value is None:
+        raise AssertionError("unreachable")
+    resolved_session = value["thread_id"]
+    result = value["result"]
     audit = {
         "task": route["task"], "model": route["model"],
         "reasoning_effort": route["reasoning_effort"],
@@ -449,6 +453,7 @@ def run_conversation_turn(
     audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
         "route": route, "result": result, "session_id": str(resolved_session),
+        "thread_id": str(resolved_session),
         "audit": str(audit_path.resolve()),
     }
 
