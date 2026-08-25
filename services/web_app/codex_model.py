@@ -21,6 +21,10 @@ CAUSE_CODES = {
 class ModelUnavailableError(Exception):
     """The optional local model path failed without changing domain state."""
 
+    def __init__(self, message: str, *, code: str = "model_unavailable") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class CodexNotebookModel:
     def __init__(
@@ -164,7 +168,10 @@ class CodexNotebookModel:
         except ModelUnavailableError:
             raise
         except Exception as exc:
-            raise ModelUnavailableError("Codex CLI conversation turn failed") from exc
+            raise ModelUnavailableError(
+                "Codex CLI conversation turn failed",
+                code=getattr(exc, "public_code", "model_unavailable"),
+            ) from exc
         finally:
             output.unlink(missing_ok=True)
             with self._active_lock:
@@ -220,7 +227,10 @@ class CodexNotebookModel:
         except ModelUnavailableError:
             raise
         except Exception as exc:
-            raise ModelUnavailableError("Codex CLI candidate generation failed") from exc
+            raise ModelUnavailableError(
+                "Codex CLI candidate generation failed",
+                code=getattr(exc, "public_code", "model_unavailable"),
+            ) from exc
         finally:
             output.unlink(missing_ok=True)
             initial_output.unlink(missing_ok=True)

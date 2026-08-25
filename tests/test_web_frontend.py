@@ -124,6 +124,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("正在识别题目与作答", script)
         self.assertIn("candidate.items", script)
         self.assertIn("JSON.stringify({refresh: true})", script)
+        self.assertIn("item.intakeId = task.resource_id", script)
+        self.assertIn("model_network_error", script)
         self.assertIn("已从 ${completed} 个文件识别 ${recognized} 道题", script)
         self.assertNotIn("Codex", html + script)
         self.assertIn("/model-candidate", script)

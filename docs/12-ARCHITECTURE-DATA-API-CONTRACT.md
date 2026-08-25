@@ -92,6 +92,9 @@ v0.4.0认证目标端点为：
 | `rate_limited` | 429 | 按 `Retry-After` 等待 |
 | `captcha_required` | 428 | 原地显示 CAPTCHA |
 | `temporarily_unavailable` | 503 | 显示可恢复状态，不自动重发短信 |
+| `model_network_error` | 503 | CLI 已执行有限重试；保留 intake 检查点并允许用户重试识别 |
+| `model_rate_limited` | 503 | 保留 intake 检查点，稍后重试 |
+| `model_authentication_error` | 503 | 不自动重试；重新建立桌面用户的 Codex 登录状态并重启本地服务 |
 | `failed_retryable` | 503 | 从检查点重试 |
 | `failed_final` | 422 | 保留数据并给出修正入口 |
 

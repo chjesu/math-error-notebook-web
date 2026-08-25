@@ -115,6 +115,9 @@ class CodexTaskRouterTests(unittest.TestCase):
                 self.assertNotIn("public fixture", " ".join(command))
                 self.assertIn("public fixture", kwargs["input"])
                 self.assertNotEqual(Path(kwargs["cwd"]).resolve(), ROOT.resolve())
+                self.assertEqual(kwargs["env"]["USERPROFILE"], str(temporary_path))
+                self.assertEqual(kwargs["env"]["CODEX_HOME"], str(temporary_path / ".codex"))
+                self.assertEqual(kwargs["env"]["HTTPS_PROXY"], "http://127.0.0.1:8080")
                 output_path.write_text(
                     json.dumps(
                         {"status": "complete", "confidence": 0.99, "summary": "ok", "findings": []}
@@ -124,9 +127,9 @@ class CodexTaskRouterTests(unittest.TestCase):
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
 
             try:
-                with mock.patch.object(router.shutil, "which", return_value="codex"), mock.patch.object(
-                    router.subprocess, "run", side_effect=fake_run
-                ):
+                with mock.patch.dict(router.os.environ, {"USERPROFILE": str(temporary_path), "HTTPS_PROXY": "http://127.0.0.1:8080"}), mock.patch.object(
+                    router.shutil, "which", return_value="codex"
+                ), mock.patch.object(router.subprocess, "run", side_effect=fake_run):
                     value = router.invoke(
                         router.select("web-requirements", []), '{"scope":"public fixture"}', output_path, [image_path]
                     )
@@ -135,6 +138,54 @@ class CodexTaskRouterTests(unittest.TestCase):
             audit = json.loads(Path(value["audit"]).read_text(encoding="utf-8"))
             self.assertNotIn("input", audit)
             self.assertFalse(audit["database_modified"])
+            self.assertEqual(audit["cli_attempts"], 1)
+
+    def test_transient_cli_failure_retries_and_logs_only_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "result.json"
+            original_audits = router.AUDITS
+            router.AUDITS = root / "audits"
+            calls = 0
+
+            def fake_run(command, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return SimpleNamespace(returncode=1, stdout="", stderr="error sending request for url")
+                output.write_text(json.dumps({"status": "complete", "confidence": 0.99, "summary": "ok", "findings": []}), encoding="utf-8")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            try:
+                with mock.patch.object(router.shutil, "which", return_value="codex"), mock.patch.object(
+                    router.subprocess, "run", side_effect=fake_run
+                ), mock.patch.object(router.time, "sleep") as sleep:
+                    value = router.invoke(router.select("web-requirements", []), '{"secret":"must-not-be-logged"}', output)
+            finally:
+                router.AUDITS = original_audits
+            self.assertEqual(calls, 2)
+            sleep.assert_called_once_with(router.CLI_RETRY_DELAY_SECONDS)
+            self.assertEqual(value["result"]["status"], "complete")
+            events = [json.loads(line) for line in (root / "audits" / "codex-cli-events.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([event["outcome"] for event in events], ["retrying", "success"])
+            self.assertNotIn("must-not-be-logged", json.dumps(events))
+
+    def test_certificate_failure_is_not_retried_and_has_public_network_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original_audits = router.AUDITS
+            router.AUDITS = root / "audits"
+            try:
+                with mock.patch.object(router.shutil, "which", return_value="codex"), mock.patch.object(
+                    router.subprocess, "run",
+                    return_value=SimpleNamespace(returncode=1, stdout="", stderr="invalid peer certificate: UnknownIssuer"),
+                ) as run:
+                    with self.assertRaises(router.CodexCliInvocationError) as raised:
+                        router.invoke(router.select("web-requirements", []), '{"scope":"public"}', root / "result.json")
+            finally:
+                router.AUDITS = original_audits
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual((raised.exception.category, raised.exception.public_code), ("certificate", "model_network_error"))
 
     def test_conversation_turn_starts_and_resumes_one_read_only_codex_session(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

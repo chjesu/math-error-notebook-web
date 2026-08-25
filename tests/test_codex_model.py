@@ -80,6 +80,22 @@ class CodexNotebookModelTests(unittest.TestCase):
             self.assertFalse(worker.is_alive())
             self.assertEqual(failures, [])
 
+    def test_cli_public_error_code_survives_adapter_boundary(self) -> None:
+        class NetworkFailure(RuntimeError):
+            public_code = "model_network_error"
+
+        with tempfile.TemporaryDirectory() as directory:
+            model = CodexNotebookModel(
+                Path(directory),
+                review=lambda *args: (_ for _ in ()).throw(NetworkFailure("private diagnostic")),
+                route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"},
+            )
+            intake = SimpleNamespace(intake_id="a" * 32, input_version=1)
+            file_record = SimpleNamespace(media_type="image/png", original_name="q.png")
+            with self.assertRaises(ModelUnavailableError) as raised:
+                model.extract(intake=intake, file_record=file_record, image_path=Path(directory) / "q.png")
+            self.assertEqual(raised.exception.code, "model_network_error")
+
     def test_chat_turn_reuses_server_held_session_and_validates_frozen_context(self) -> None:
         sessions = []
 

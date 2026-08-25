@@ -47,6 +47,9 @@ function authError(error) {
     export_expired: "导出已过期，请重新申请。",
     confirmation_required: "请输入正确的注销确认。",
     model_unavailable: "本地智能处理暂时不可用，请稍后重试。",
+    model_network_error: "智能处理网络连接失败，系统已自动重试；请稍后再次发送。",
+    model_rate_limited: "智能处理请求较多，请稍后重试。",
+    model_authentication_error: "智能处理登录状态失效，请重新启动本地服务。",
     network_error: "网络异常，请检查网络后重试。"
   })[error.message] || "操作失败，请稍后重试。";
 }
@@ -435,19 +438,19 @@ function bindWorkbench() {
       item.state = "uploading";
       setProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · 0%`);
       try {
-        const uploaded = await uploadFile(item, percent => setProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · ${percent}%`));
-        item.state = "processing";
-        setProgress(progress, "正在建立错题会话", `${index + 1}/${files.length} · ${item.file.name}`);
-        const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-        let candidate = {input_version: 1, question_text: "", answer_text: "", model_status: "unclear"};
-        try {
-          setProgress(progress, "正在识别题目与作答", `${index + 1}/${files.length} · ${item.file.name}`);
-          candidate = await api(`/v1/intakes/${task.resource_id}/model-candidate`, {method: "POST", body: JSON.stringify({refresh: true})});
-        } catch (_) {}
+        if (!item.intakeId) {
+          const uploaded = await uploadFile(item, percent => setProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · ${percent}%`));
+          item.state = "processing";
+          setProgress(progress, "正在建立错题会话", `${index + 1}/${files.length} · ${item.file.name}`);
+          const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+          item.intakeId = task.resource_id;
+        }
+        setProgress(progress, "正在识别题目与作答", `${index + 1}/${files.length} · ${item.file.name}`);
+        const candidate = await api(`/v1/intakes/${item.intakeId}/model-candidate`, {method: "POST", body: JSON.stringify({refresh: true})});
         const extractedItems = Array.isArray(candidate.items) && candidate.items.length ? candidate.items : [candidate];
         for (const extracted of extractedItems) {
           pendingIntakes.push({
-            intakeId: extracted.intake_id || task.resource_id,
+            intakeId: extracted.intake_id || item.intakeId,
             itemNo: extracted.item_no || 1,
             inputVersion: extracted.input_version || 1,
             status: extracted.status || "extracting",

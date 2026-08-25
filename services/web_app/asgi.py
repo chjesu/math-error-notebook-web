@@ -471,8 +471,8 @@ class NotebookAsgiApp:
             await self._error(send, 403, "sensitive_verification_failed")
         except PermissionError:
             await self._error(send, 403, "forbidden")
-        except ModelUnavailableError:
-            await self._error(send, 503, "model_unavailable")
+        except ModelUnavailableError as exc:
+            await self._error(send, 503, exc.code)
         except RuntimeError as exc:
             code = str(exc) if str(exc) in {"input_version_changed", "waiting_confirmation", "failed_final", "conflict"} else "conflict"
             await self._error(send, 422 if code == "failed_final" else 409, code)
@@ -637,7 +637,7 @@ class NotebookAsgiApp:
         return {key: payload[key] for key in ("job_id", "download_url", "expires_at")}
 
     async def _error(self, send: Send, status: int, code: str) -> None:
-        await self._json(send, status, {"error": {"code": code, "message": code, "retryable": code in {"failed_retryable", "temporarily_unavailable", "model_unavailable", "rate_limited"}, "request_id": secrets.token_hex(8)}})
+        await self._json(send, status, {"error": {"code": code, "message": code, "retryable": code in {"failed_retryable", "temporarily_unavailable", "model_unavailable", "model_network_error", "model_rate_limited", "rate_limited"}, "request_id": secrets.token_hex(8)}})
 
     @staticmethod
     async def _json(send: Send, status: int, payload: dict[str, Any]) -> None:

@@ -79,6 +79,10 @@ class WebOpenApiContractTests(unittest.TestCase):
         self.assertEqual(batch["allOf"][1]["properties"]["items"]["maxItems"], 20)
         self.assertIn("item_no", self.document["components"]["schemas"]["Intake"]["required"])
 
+    def test_model_transport_failures_have_stable_error_codes(self) -> None:
+        codes = set(self.document["components"]["schemas"]["ErrorEnvelope"]["properties"]["error"]["properties"]["code"]["enum"])
+        self.assertTrue({"model_network_error", "model_rate_limited", "model_authentication_error"} <= codes)
+
 
 if __name__ == "__main__":
     unittest.main()

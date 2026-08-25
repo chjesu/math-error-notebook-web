@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from threading import Lock
 import time
 import uuid
 
@@ -24,6 +25,124 @@ AUDITS = ROOT / "data" / "audits" / "codex-routing"
 TEAM_INPUTS = ROOT / "data" / "review-inputs"
 TEAM_RESULTS = ROOT / "data" / "review-results"
 MAX_INPUT_BYTES = 262_144
+CLI_MAX_ATTEMPTS = 2
+CLI_RETRY_DELAY_SECONDS = 1.0
+_CLI_LOG_LOCK = Lock()
+
+
+class CodexCliInvocationError(RuntimeError):
+    """A sanitized CLI failure safe to propagate without prompts or raw stderr."""
+
+    def __init__(self, phase: str, category: str, attempts: int) -> None:
+        self.category = category
+        self.attempts = attempts
+        self.public_code = {
+            "certificate": "model_network_error",
+            "network": "model_network_error",
+            "timeout": "model_network_error",
+            "rate_limit": "model_rate_limited",
+            "authentication": "model_authentication_error",
+        }.get(category, "model_unavailable")
+        super().__init__(
+            f"codex CLI {phase} failed ({category}) after {attempts} attempt(s); "
+            "see data/audits/codex-routing/codex-cli-events.jsonl"
+        )
+
+
+def codex_environment() -> dict[str, str]:
+    """Reuse the desktop user's Codex profile and network trust settings only."""
+    names = (
+        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP",
+        "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME", "APPDATA", "LOCALAPPDATA",
+        "CODEX_HOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE",
+        "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    )
+    env = {name: os.environ[name] for name in names if name in os.environ}
+    if "CODEX_HOME" not in env and env.get("USERPROFILE"):
+        env["CODEX_HOME"] = str(Path(env["USERPROFILE"]) / ".codex")
+    return env
+
+
+def _classify_cli_failure(stdout: str, stderr: str, *, timed_out: bool = False) -> tuple[str, bool]:
+    if timed_out:
+        return "timeout", True
+    diagnostic = f"{stdout}\n{stderr}".lower()
+    if any(marker in diagnostic for marker in ("unknownissuer", "invalid peer certificate", "certificate verify")):
+        return "certificate", False
+    if any(marker in diagnostic for marker in ("unauthorized", "invalid api key", "not logged in", "authentication failed")):
+        return "authentication", False
+    if any(marker in diagnostic for marker in ("rate limit", "too many requests", "status 429")):
+        return "rate_limit", True
+    if any(marker in diagnostic for marker in ("timed out", "timeout", "stream disconnected")):
+        return "timeout", True
+    if any(marker in diagnostic for marker in (
+        "failed to connect", "error sending request", "connection reset", "connection refused",
+        "temporary failure", "dns error", "network is unreachable",
+    )):
+        return "network", True
+    return "cli_error", False
+
+
+def _write_cli_event(event: dict) -> None:
+    log_path = AUDITS / "codex-cli-events.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+    with _CLI_LOG_LOCK, log_path.open("a", encoding="utf-8") as handle:
+        handle.write(line)
+
+
+def _run_codex(
+    command: list[str],
+    *,
+    cwd: str,
+    prompt: str,
+    route: dict,
+    phase: str,
+    output_path: Path,
+) -> tuple[subprocess.CompletedProcess[str], int]:
+    invocation_id = uuid.uuid4().hex[:16]
+    for attempt in range(1, CLI_MAX_ATTEMPTS + 1):
+        output_path.unlink(missing_ok=True)
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=cwd,
+                input=prompt,
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                env=codex_environment(),
+                timeout=900,
+                check=False,
+            )
+            elapsed = round(time.monotonic() - started, 3)
+            if completed.returncode == 0:
+                _write_cli_event({
+                    "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "invocation_id": invocation_id, "task": route["task"], "model": route["model"],
+                    "phase": phase, "attempt": attempt, "max_attempts": CLI_MAX_ATTEMPTS,
+                    "elapsed_seconds": elapsed, "outcome": "success", "exit_code": 0,
+                })
+                return completed, attempt
+            category, retryable = _classify_cli_failure(completed.stdout or "", completed.stderr or "")
+            exit_code = completed.returncode
+        except subprocess.TimeoutExpired:
+            elapsed = round(time.monotonic() - started, 3)
+            category, retryable, exit_code = "timeout", True, None
+        will_retry = retryable and attempt < CLI_MAX_ATTEMPTS
+        _write_cli_event({
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "invocation_id": invocation_id, "task": route["task"], "model": route["model"],
+            "phase": phase, "attempt": attempt, "max_attempts": CLI_MAX_ATTEMPTS,
+            "elapsed_seconds": elapsed, "outcome": "retrying" if will_retry else "failed",
+            "category": category, "exit_code": exit_code,
+        })
+        if not will_retry:
+            raise CodexCliInvocationError(phase, category, attempt)
+        time.sleep(CLI_RETRY_DELAY_SECONDS * attempt)
+    raise AssertionError("unreachable")
 
 
 def config() -> dict:
@@ -228,23 +347,14 @@ def invoke(route: dict, review_input: str, output_path: Path, images: list[Path]
     # Run outside the source tree so the model receives only the frozen stdin
     # packet, not ambient project files or AGENTS instructions.
     with tempfile.TemporaryDirectory(prefix="web-codex-review-") as isolated:
-        completed = subprocess.run(
+        completed, cli_attempts = _run_codex(
             command,
             cwd=isolated,
-            input=prompt,
-            text=True,
-            encoding="utf-8",
-            capture_output=True,
-            env={
-                name: os.environ[name]
-                for name in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "CODEX_HOME")
-                if name in os.environ
-            },
-            timeout=900,
-            check=False,
+            prompt=prompt,
+            route=route,
+            phase="review",
+            output_path=output_path,
         )
-    if completed.returncode != 0:
-        raise RuntimeError(f"codex CLI review failed with exit code {completed.returncode}")
     result = json.loads(output_path.read_text(encoding="utf-8"))
     audit = {
         "task": route["task"],
@@ -252,6 +362,7 @@ def invoke(route: dict, review_input: str, output_path: Path, images: list[Path]
         "model": route["model"],
         "reasoning_effort": route["reasoning_effort"],
         "elapsed_seconds": round(time.monotonic() - started, 3),
+        "cli_attempts": cli_attempts,
         "status": result.get("status"),
         "verdict": result.get("verdict"),
         "confidence": result.get("confidence"),
@@ -302,23 +413,14 @@ def run_conversation_turn(
         command.extend(["--sandbox", "read-only", *common])
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="web-codex-conversation-") as isolated:
-        completed = subprocess.run(
+        completed, cli_attempts = _run_codex(
             command,
             cwd=isolated,
-            input=prompt,
-            text=True,
-            encoding="utf-8",
-            capture_output=True,
-            env={
-                name: os.environ[name]
-                for name in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "CODEX_HOME")
-                if name in os.environ
-            },
-            timeout=900,
-            check=False,
+            prompt=prompt,
+            route=route,
+            phase="conversation",
+            output_path=output_path,
         )
-    if completed.returncode != 0:
-        raise RuntimeError(f"codex CLI conversation failed with exit code {completed.returncode}")
     resolved_session = session_id
     for line in completed.stdout.splitlines():
         try:
@@ -334,6 +436,7 @@ def run_conversation_turn(
         "task": route["task"], "model": route["model"],
         "reasoning_effort": route["reasoning_effort"],
         "elapsed_seconds": round(time.monotonic() - started, 3),
+        "cli_attempts": cli_attempts,
         "action": result.get("action"), "confidence": result.get("confidence"),
         "external_send_authorized": True, "database_modified": False,
         "continued_session": session_id is not None,
