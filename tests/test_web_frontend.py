@@ -126,6 +126,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("JSON.stringify({refresh: true})", script)
         self.assertIn("item.intakeId = task.resource_id", script)
         self.assertIn("model_network_error", script)
+        self.assertIn("题干与作答候选 · 进度 ${intake.queueIndex || 1}/${intake.queueTotal || 1}", script)
+        self.assertIn("后面还有 ${pendingIntakes.length} 道题", script)
         self.assertIn("已从 ${completed} 个文件识别 ${recognized} 道题", script)
         self.assertNotIn("Codex", html + script)
         self.assertIn("/model-candidate", script)

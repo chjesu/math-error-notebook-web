@@ -62,18 +62,23 @@ class CodexNotebookModel:
         if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= 20:
             raise ModelUnavailableError("model returned an invalid intake item list")
         items = []
-        for expected_item_no, raw_item in enumerate(raw_items, 1):
-            if not isinstance(raw_item, dict) or raw_item.get("item_no") != expected_item_no:
+        for source_item_no, raw_item in enumerate(raw_items, 1):
+            if not isinstance(raw_item, dict) or raw_item.get("item_no") != source_item_no:
                 raise ModelUnavailableError("model returned unordered intake items")
             item_status = raw_item.get("status")
             if item_status not in {"complete", "unclear"}:
                 raise ModelUnavailableError("model returned an unsupported intake item status")
+            question_text = self._text(raw_item.get("question_text"), "question_text", required=True)
+            if self._is_supplementary_item(question_text):
+                continue
             items.append({
                 **raw_item,
-                "item_no": expected_item_no,
-                "question_text": self._text(raw_item.get("question_text"), "question_text", required=True),
+                "item_no": len(items) + 1,
+                "question_text": question_text,
                 "answer_text": self._text(raw_item.get("answer_text"), "answer_text"),
             })
+        if not items:
+            raise ModelUnavailableError("model returned no target questions")
         return {
             **result,
             "items": items,
@@ -250,6 +255,11 @@ class CodexNotebookModel:
         if len(text) > 12_000:
             raise ModelUnavailableError(f"model returned oversized {name}")
         return text
+
+    @staticmethod
+    def _is_supplementary_item(question_text: str) -> bool:
+        compact = "".join(question_text.split()).casefold()
+        return compact.startswith(("同类类型推荐题", "同类题推荐", "同类型推荐题", "相似题推荐", "推荐题", "题库编号q-"))
 
     @staticmethod
     def _route_metadata(value: dict[str, Any]) -> dict[str, Any]:

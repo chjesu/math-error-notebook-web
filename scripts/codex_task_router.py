@@ -309,8 +309,10 @@ def invoke(route: dict, review_input: str, output_path: Path, images: list[Path]
             "from the student's answer or work. Look carefully for handwriting, ticks, circles, underlines, selected "
             "options, and worked steps near or below that question; associate them with the correct item. Printed "
             "answer choices are part of question_text, not answer_text. Use an empty answer_text only when no student "
-            "answer or work is visible. Preserve mathematical notation. Never invent unreadable content; mark only the "
-            "affected item unclear when evidence is insufficient."
+            "answer or work is visible. Extract only the actual target questions. Never create a separate item for "
+            "blocks labeled 同类类型推荐题, 同类题推荐, 推荐题, 题库编号, 解析, 点评, or similar supplementary "
+            "examples, even when they contain a complete stem and solution. Preserve mathematical notation. Never "
+            "invent unreadable content; mark only the affected target item unclear when evidence is insufficient."
         )
     elif route["task"].startswith("math-grade"):
         purpose = "Produce a read-only math grading candidate from the frozen attempt. Find the first substantive error, classify its cause, give direct evidence, a complete correct solution, final answer, and a short prevention cue. Never invent unreadable content; use unclear when evidence is insufficient."

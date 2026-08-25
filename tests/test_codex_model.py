@@ -49,6 +49,28 @@ class CodexNotebookModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ModelUnavailableError, "frozen attempt"):
                 model.grade(attempt=attempt)
 
+    def test_extract_filters_recommendation_blocks_and_renumbers_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            def review(route, review_input, output, images):
+                frozen = json.loads(review_input)
+                texts = (
+                    "错题编号 ERR-1：第一道题",
+                    "同类类型推荐题 1，题库编号 Q-1：推荐练习",
+                    "错题编号 ERR-2：第二道题",
+                    "题库编号 Q-2：另一道推荐练习",
+                )
+                return {"route": route, "result": {
+                    "intake_id": frozen["intake_id"], "input_version": 1, "status": "complete",
+                    "items": [{"item_no": index, "status": "complete", "question_text": text, "answer_text": "", "confidence": 0.99} for index, text in enumerate(texts, 1)],
+                    "confidence": 0.99,
+                }}
+
+            model = CodexNotebookModel(Path(directory), review=review, route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"})
+            intake = SimpleNamespace(intake_id="a" * 32, input_version=1)
+            file_record = SimpleNamespace(media_type="image/jpeg", original_name="paper.jpg")
+            result = model.extract(intake=intake, file_record=file_record, image_path=Path(directory) / "paper.jpg")
+            self.assertEqual([(item["item_no"], item["question_text"]) for item in result["items"]], [(1, "错题编号 ERR-1：第一道题"), (2, "错题编号 ERR-2：第二道题")])
+
     def test_same_resource_and_version_has_only_one_active_model_call(self) -> None:
         started = Event()
         release = Event()

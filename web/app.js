@@ -297,7 +297,7 @@ function bindWorkbench() {
     avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
     avatar.alt = "";
     response.className = "chat-response chat-intake-candidate";
-    heading.textContent = "题干与作答候选";
+    heading.textContent = `题干与作答候选 · 进度 ${intake.queueIndex || 1}/${intake.queueTotal || 1}`;
     question.textContent = `题干：${intake.questionText || "尚未识别，请直接告诉我题干或需要修正的内容。"}`;
     answer.textContent = `作答：${intake.answerText || "未识别或未作答"}`;
     renderMath(question);
@@ -417,7 +417,7 @@ function bindWorkbench() {
     stage = activeIntake ? "intake" : "upload";
     if (activeIntake) {
       appendIntake(activeIntake);
-      assistantTurn(`你可以直接输入修正或追问。内容无误时发送“确认并判题”${pendingIntakes.length ? `；后面还有 ${pendingIntakes.length} 个文件` : ""}。`);
+      assistantTurn(`你可以直接输入修正或追问。内容无误时发送“确认并判题”${pendingIntakes.length ? `；后面还有 ${pendingIntakes.length} 道题` : ""}。`);
     }
     setComposerState();
     if (!chatInput.disabled) chatInput.focus();
@@ -470,6 +470,10 @@ function bindWorkbench() {
       }
     }
     busy = false;
+    pendingIntakes.forEach((intake, index) => {
+      intake.queueIndex = index + 1;
+      intake.queueTotal = pendingIntakes.length;
+    });
     renderUploadFiles();
     if (completed) {
       setProgress(progress, "文件已准备好", `已从 ${completed} 个文件识别 ${recognized} 道题${failed ? `，${failed} 个文件可重试` : ""}。`, failed ? "warning" : "complete");
