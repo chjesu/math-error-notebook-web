@@ -135,6 +135,7 @@ function bindWorkbench() {
   const dropZone = $("#drop-zone");
   const uploadSurface = $(".chat-main");
   const allowedExtensions = new Set(["pdf", "png", "jpg", "jpeg", "docx"]);
+  const retryableUploadStates = new Set(["queued", "failed", "processing_failed", "recognition_failed"]);
   const maxFileBytes = 25 * 1024 * 1024;
   const confirmIntakeCommands = new Set(["确认并判题", "确认题干与作答", "开始判题"]);
   const commitCommands = new Set(["确认入本", "确认写入错题本", "加入错题本"]);
@@ -325,7 +326,7 @@ function bindWorkbench() {
   }
 
   function setComposerState() {
-    const retryable = uploadFiles.some(item => !item.submitted && ["queued", "failed", "processing_failed", "recognition_failed"].includes(item.state));
+    const retryable = uploadFiles.some(item => !item.submitted && retryableUploadStates.has(item.state));
     const actions = stage === "intake"
       ? [["ask", "询问或修正"], ["confirm-intake", "确认并判题"], ["next", "下一题"]]
       : stage === "grade"
@@ -393,7 +394,7 @@ function bindWorkbench() {
       state.className = "upload-state";
       state.textContent = item.state === "uploading" ? `${item.progress}%` : labels[item.state];
       preview.append(state);
-      if (["queued", "failed"].includes(item.state)) {
+      if (retryableUploadStates.has(item.state)) {
         const remove = document.createElement("button"); remove.type = "button"; remove.dataset.removeFile = item.id; remove.textContent = "×"; preview.append(remove);
       }
       name.textContent = item.file.name;
@@ -481,7 +482,7 @@ function bindWorkbench() {
   }
 
   async function uploadQueued() {
-    const files = uploadFiles.filter(item => !item.submitted && ["queued", "failed", "processing_failed", "recognition_failed"].includes(item.state));
+    const files = uploadFiles.filter(item => !item.submitted && retryableUploadStates.has(item.state));
     if (!files.length || busy) return;
     busy = true;
     files.forEach(item => { item.submitted = true; });
@@ -788,7 +789,6 @@ function bindWorkbench() {
   $("#load-older").addEventListener("click", loadOlderHistory);
   compactButton.addEventListener("click", compactConversation);
   uploadInput.addEventListener("change", () => { addUploadFiles(uploadInput.files); uploadInput.value = ""; });
-  $("#file-picker").addEventListener("click", () => uploadInput.click());
   dropZone.addEventListener("click", event => { if (!event.target.closest("button, textarea, input, label")) chatInput.focus(); });
   actionGroup.addEventListener("change", setComposerState);
   chatInput.addEventListener("input", () => {
@@ -831,7 +831,7 @@ function bindWorkbench() {
   $("#upload-form").addEventListener("submit", event => {
     event.preventDefault();
     if (stoppable) stopActiveTurn();
-    else uploadFiles.some(item => !item.submitted && ["queued", "failed"].includes(item.state)) ? uploadQueued() : sendMessage();
+    else uploadFiles.some(item => !item.submitted && retryableUploadStates.has(item.state)) ? uploadQueued() : sendMessage();
   });
   window.addEventListener("beforeunload", () => uploadFiles.forEach(item => item.previewUrl && URL.revokeObjectURL(item.previewUrl)));
   setComposerState();

@@ -225,12 +225,12 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .chat-composer { margin: 0; }
 .composer-surface { padding: 10px 12px; border: 1px solid #c9d0dc; border-radius: 22px; background: var(--paper); box-shadow: 0 10px 28px rgba(24, 34, 48, .10); cursor: text; }
 .composer-row { display: flex; min-height: 40px; align-items: center; justify-content: space-between; gap: 10px; }
-.composer-tools { display: flex; min-width: 0; align-items: center; gap: 4px; }
+.composer-tools { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 4px; }
 #chat-input { display: block; width: 100%; min-width: 0; max-height: 150px; min-height: 34px; padding: 5px 2px 7px; resize: none; overflow-y: auto; border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; line-height: 1.5; }
 #chat-input::placeholder { color: var(--muted); }
-.attach-button,
 .send-button { width: 40px; min-height: 40px; padding: 0; flex: 0 0 40px; border-radius: 50%; font-size: 24px; line-height: 1; }
-.attach-button { border: 1px solid var(--line); background: var(--paper); color: var(--ink); font-weight: 400; }
+.attach-button { display: inline-flex; min-height: 40px; align-items: center; gap: 5px; padding: 0 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); color: var(--ink); cursor: pointer; font-size: 13px; font-weight: 650; white-space: nowrap; }
+.attach-icon { font-size: 23px; font-weight: 400; line-height: 1; }
 .send-button { font-size: 21px; }
 .send-button.is-stop { background: var(--ink); font-size: 15px; }
 .compact-button { min-height: 34px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 650; }
