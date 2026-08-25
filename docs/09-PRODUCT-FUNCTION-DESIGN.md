@@ -396,7 +396,7 @@
 
 ## 18. 实现差异
 
-v0.4.0 本地候选已完成独立 login/register 页面、挑战用途和 API、密码凭据与协议记录、user_id 授权边界、候选/正式质量门、推荐/复习/PDF、敏感导出和注销。真实 MySQL smoke、165 项测试、官方 Codex app-server 连续会话与数学候选实测及浏览器全流程已通过。
+v0.4.0 本地候选已完成独立 login/register 页面、挑战用途和 API、密码凭据与协议记录、user_id 授权边界、候选/正式质量门、推荐/复习/PDF、敏感导出和注销。真实 MySQL smoke、166 项测试、官方 Codex app-server 连续会话与数学候选实测及浏览器全流程已通过。
 
 仍未达到生产目标的部分：真实短信/CAPTCHA/KMS/OSS、生产异步 OCR/AI Worker、PDF/DOCX 自动解析、PWA、运营后台、压测/灾备/观测和生产恢复。
 

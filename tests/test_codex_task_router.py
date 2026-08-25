@@ -244,6 +244,32 @@ class CodexTaskRouterTests(unittest.TestCase):
             finally:
                 router.AUDITS = original_audits
 
+    def test_structured_harness_turn_sends_local_images_and_resumes_thread(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = (root / "question.png").resolve()
+            image.write_bytes(b"synthetic")
+            output = root / "result.json"
+            original_audits = router.AUDITS
+            router.AUDITS = root / "audits"
+            frozen = {"intake_id": "a" * 32, "input_version": 1, "media_type": "image/png"}
+            result = {**frozen, "status": "complete", "items": [{"item_no": 1}], "notes": None, "confidence": 0.99}
+
+            def fake_turn(*, route, prompt, output_path, images, thread_id, event_callback):
+                self.assertEqual((images, thread_id), ([image], "thread-existing"))
+                self.assertIn("every distinct question", prompt)
+                return {"thread_id": thread_id, "result": result}
+
+            try:
+                with mock.patch.object(router, "run_app_server_turn", side_effect=fake_turn):
+                    value = router.run_structured_harness_turn(
+                        router.select("math-intake-adjudication", []),
+                        json.dumps(frozen), output, [image], "thread-existing",
+                    )
+            finally:
+                router.AUDITS = original_audits
+            self.assertEqual((value["thread_id"], value["result"]["status"]), ("thread-existing", "complete"))
+
     def test_run_wave_dispatches_one_independent_result_per_role(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             original_results = router.TEAM_RESULTS

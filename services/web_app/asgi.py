@@ -212,13 +212,25 @@ class NotebookAsgiApp:
                     raise LookupError
                 if file_record.media_type not in {"image/png", "image/jpeg"}:
                     raise ModelUnavailableError("automatic extraction currently supports PNG and JPEG")
+                thread_id = await self._sync(
+                    self.notebook.store.get_codex_thread,
+                    user_id=user.user_id,
+                    conversation_id=intake_id,
+                )
                 with self.notebook.files.model_preview(file_record.object_key, file_record.content_sha256) as image_path:
                     result = await self._sync(
                         self.model_runner.extract,
                         intake=intake,
                         file_record=file_record,
                         image_path=image_path,
+                        thread_id=thread_id,
                     )
+                await self._sync(
+                    self.notebook.store.save_codex_thread,
+                    user_id=user.user_id,
+                    conversation_id=intake_id,
+                    thread_id=result["thread_id"],
+                )
                 if result.get("intake_id") != intake.intake_id or result.get("input_version") != intake.input_version:
                     raise ModelUnavailableError("model response does not match the frozen intake")
                 model_items = result.get("items")
@@ -242,7 +254,7 @@ class NotebookAsgiApp:
                         user_id=user.user_id,
                         intake_id=intake_id,
                         items=candidates,
-                        evidence={"source": "codex_cli", "route": result.get("route"), "confidence": result.get("confidence")},
+                        evidence={"source": "codex_app_server", "route": result.get("route"), "confidence": result.get("confidence")},
                         replace_existing=refresh,
                     )
                     payloads = [self._intake(value) for value in intakes]
@@ -297,7 +309,18 @@ class NotebookAsgiApp:
                     raise LookupError
                 if int(payload["input_version"]) != attempt.input_version:
                     raise RuntimeError("input_version_changed")
-                result = await self._sync(self.model_runner.grade, attempt=attempt)
+                thread_id = await self._sync(
+                    self.notebook.store.get_codex_thread,
+                    user_id=user.user_id,
+                    conversation_id=attempt.intake_id,
+                )
+                result = await self._sync(self.model_runner.grade, attempt=attempt, thread_id=thread_id)
+                await self._sync(
+                    self.notebook.store.save_codex_thread,
+                    user_id=user.user_id,
+                    conversation_id=attempt.intake_id,
+                    thread_id=result["thread_id"],
+                )
                 if result.get("attempt_id") != attempt.attempt_id or result.get("input_version") != attempt.input_version:
                     raise ModelUnavailableError("model response does not match the frozen attempt")
                 verdict, first_error, evidence = self._grade_values(result, evidence_key="cause_evidence")

@@ -231,18 +231,22 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual((removed[0], removed[2]["status"]), (200, "removed"))
 
     def test_codex_candidates_use_the_same_confirmation_and_commit_gates(self) -> None:
+        resumed_threads = []
+
         class FakeModel:
-            def extract(_, *, intake, file_record, image_path):
+            def extract(_, *, intake, file_record, image_path, thread_id=None):
+                resumed_threads.append(thread_id)
                 self.assertTrue(image_path.is_file())
                 self.assertEqual(image_path.parent.name, "model-previews")
                 self.assertEqual(file_record.media_type, "image/png")
                 return {"intake_id": intake.intake_id, "input_version": intake.input_version, "status": "complete", "items": [
                     {"item_no": 1, "status": "complete", "question_text": "若 x+1=2，求 x。", "answer_text": "x=0", "confidence": 0.98},
                     {"item_no": 2, "status": "complete", "question_text": "若 y-1=2，求 y。", "answer_text": "y=2", "confidence": 0.97},
-                ], "confidence": 0.98, "route": {"task": "math-intake-candidate", "model": "test"}}
+                ], "confidence": 0.98, "thread_id": "thread-e2e", "route": {"task": "math-intake-adjudication", "model": "test"}}
 
-            def grade(_, *, attempt):
-                return {"attempt_id": attempt.attempt_id, "input_version": attempt.input_version, "verdict": "incorrect", "first_error": "移项后结果错误", "cause_code": "algebra_transform", "cause_evidence": "由 x+1=2 得到 x=0", "correct_solution": "x=2-1=1", "final_answer": "x=1", "prevention_cue": "移项后验算", "confidence": 0.97, "route": {"task": "math-grade-candidate", "model": "test"}}
+            def grade(_, *, attempt, thread_id=None):
+                resumed_threads.append(thread_id)
+                return {"attempt_id": attempt.attempt_id, "input_version": attempt.input_version, "verdict": "incorrect", "first_error": "移项后结果错误", "cause_code": "algebra_transform", "cause_evidence": "由 x+1=2 得到 x=0", "correct_solution": "x=2-1=1", "final_answer": "x=1", "prevention_cue": "移项后验算", "confidence": 0.97, "thread_id": "thread-e2e", "route": {"task": "math-grade-adjudication", "model": "test"}}
 
         self.app.model_runner = FakeModel()
         cookie = self.login("13200132000")
@@ -266,6 +270,7 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/model-grade", method="POST", payload={"input_version": 1}, cookie=other_cookie)[0], 404)
         graded = self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/model-grade", method="POST", payload={"input_version": 1}, cookie=cookie)
         self.assertEqual((graded[0], graded[2]["verdict"], graded[2]["diagnosis"]["final_answer"]), (201, "incorrect", "x=1"))
+        self.assertEqual(resumed_threads, [None, "thread-e2e", "thread-e2e"])
         self.assertEqual(self.call("/v1/errors", cookie=cookie)[2]["items"], [])
         committed = self.call(f"/v1/grade-results/{graded[2]['result_id']}/commit", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="model-commit")
         self.assertEqual((committed[0], committed[2]["question_text"]), (201, "若 x+1=2，求 x。"))

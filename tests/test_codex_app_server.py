@@ -51,16 +51,22 @@ class CodexAppServerTests(unittest.TestCase):
         events = []
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             output = Path(temporary) / "result.json"
+            image = Path(temporary) / "question.png"
+            image.write_bytes(b"synthetic")
             route = {"model": "test", "reasoning_effort": "low", "schema": str(Path(__file__).resolve().parents[1] / "schemas" / "math-loop-turn.schema.json")}
             with mock.patch.object(codex_app_server.shutil, "which", return_value="codex"), mock.patch.object(
                 codex_app_server.subprocess, "Popen", return_value=process,
             ), mock.patch.object(codex_app_server, "_codex_environment", return_value={}):
-                value = codex_app_server.run_turn(route=route, prompt="synthetic", output_path=output, event_callback=events.append)
+                value = codex_app_server.run_turn(route=route, prompt="synthetic", output_path=output, images=[image], event_callback=events.append)
         sent = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
         self.assertEqual(value, {"thread_id": "thread-123", "result": result})
         self.assertEqual([item["method"] for item in sent[:4]], ["initialize", "initialized", "thread/start", "turn/start"])
         self.assertEqual(sent[2]["params"]["sandbox"], "read-only")
         self.assertEqual(sent[2]["params"]["approvalPolicy"], "never")
+        self.assertEqual(sent[3]["params"]["input"], [
+            {"type": "text", "text": "synthetic"},
+            {"type": "localImage", "path": str(image)},
+        ])
         self.assertEqual([event["type"] for event in events], ["turn_started", "agent_message_delta", "item_completed", "turn_completed"])
 
 

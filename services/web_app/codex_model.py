@@ -1,4 +1,4 @@
-"""Optional localhost Codex CLI adapter; it can only return uncommitted candidates."""
+"""Optional localhost Codex app-server adapter; it only returns uncommitted candidates."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from threading import Lock
 from typing import Any, Callable
 import uuid
 
-from scripts.codex_task_router import run_conversation_turn, run_review, select
+from scripts.codex_task_router import run_conversation_turn, run_review, run_structured_harness_turn, select
 
 
 CAUSE_CODES = {
@@ -32,25 +32,35 @@ class CodexNotebookModel:
         output_root: Path,
         *,
         review: Callable[..., dict[str, Any]] = run_review,
+        harness_review: Callable[..., dict[str, Any]] = run_structured_harness_turn,
         conversation_review: Callable[..., dict[str, Any]] = run_conversation_turn,
         route_selector: Callable[[str, list[str]], dict[str, Any]] = select,
         max_active: int = 2,
     ) -> None:
         self.output_root = output_root.resolve()
         self.review = review
+        self.harness_review = harness_review
         self.conversation_review = conversation_review
         self.route_selector = route_selector
         self.max_active = max_active
         self._active: set[tuple[str, str, int]] = set()
         self._active_lock = Lock()
 
-    def extract(self, *, intake: Any, file_record: Any, image_path: Path) -> dict[str, Any]:
+    def extract(
+        self,
+        *,
+        intake: Any,
+        file_record: Any,
+        image_path: Path,
+        thread_id: str | None = None,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         frozen = {
             "intake_id": intake.intake_id,
             "input_version": intake.input_version,
             "media_type": file_record.media_type,
         }
-        value = self._run("math-intake-candidate", frozen, [image_path])
+        value = self._run("math-intake-adjudication", frozen, [image_path], thread_id, event_callback)
         result = value["result"]
         if result.get("intake_id") != intake.intake_id or result.get("input_version") != intake.input_version:
             raise ModelUnavailableError("model response does not match the frozen intake")
@@ -81,10 +91,17 @@ class CodexNotebookModel:
         return {
             **result,
             "items": items,
+            "thread_id": value["thread_id"],
             "route": self._route_metadata(value),
         }
 
-    def grade(self, *, attempt: Any) -> dict[str, Any]:
+    def grade(
+        self,
+        *,
+        attempt: Any,
+        thread_id: str | None = None,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         frozen = {
             "attempt_id": attempt.attempt_id,
             "input_version": attempt.input_version,
@@ -92,7 +109,7 @@ class CodexNotebookModel:
             "answer_text": attempt.answer_text,
             "evidence": {"source": "user_confirmed"},
         }
-        value = self._run("math-grade-candidate", frozen, [])
+        value = self._run("math-grade-adjudication", frozen, [], thread_id, event_callback)
         result = value["result"]
         if result.get("attempt_id") != attempt.attempt_id or result.get("input_version") != attempt.input_version:
             raise ModelUnavailableError("model response does not match the frozen attempt")
@@ -118,6 +135,7 @@ class CodexNotebookModel:
             "correct_solution": correct_solution,
             "final_answer": final_answer,
             "prevention_cue": prevention_cue,
+            "thread_id": value["thread_id"],
             "route": self._route_metadata(value),
         }
 
@@ -147,7 +165,7 @@ class CodexNotebookModel:
         key = ("math-notebook-loop", conversation_id, input_version)
         with self._active_lock:
             if key in self._active or len(self._active) >= self.max_active:
-                raise ModelUnavailableError("Codex CLI candidate generation is already in progress")
+                raise ModelUnavailableError("model candidate generation is already in progress")
             self._active.add(key)
         output = self.output_root / f"math-notebook-loop-{uuid.uuid4().hex}.json"
         try:
@@ -176,7 +194,7 @@ class CodexNotebookModel:
             raise
         except Exception as exc:
             raise ModelUnavailableError(
-                "Codex CLI conversation turn failed",
+                "Codex app-server conversation turn failed",
                 code=getattr(exc, "public_code", "model_unavailable"),
             ) from exc
         finally:
@@ -214,28 +232,41 @@ class CodexNotebookModel:
                 raise ModelUnavailableError("model omitted a complete grading diagnosis")
         return parsed
 
-    def _run(self, task: str, frozen: dict[str, Any], images: list[Path]) -> dict[str, Any]:
+    def _run(
+        self,
+        task: str,
+        frozen: dict[str, Any],
+        images: list[Path],
+        thread_id: str | None,
+        event_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
         resource_id = str(frozen.get("intake_id") or frozen.get("attempt_id") or "")
         key = (task, resource_id, int(frozen["input_version"]))
         with self._active_lock:
             if key in self._active or len(self._active) >= self.max_active:
-                raise ModelUnavailableError("Codex CLI candidate generation is already in progress")
+                raise ModelUnavailableError("model candidate generation is already in progress")
             self._active.add(key)
         output = self.output_root / f"{task}-{uuid.uuid4().hex}.json"
         initial_output = output.with_suffix(output.suffix + ".initial.json")
         try:
             self.output_root.mkdir(parents=True, exist_ok=True)
-            return self.review(
+            value = self.harness_review(
                 self.route_selector(task, []),
                 json.dumps(frozen, ensure_ascii=False, separators=(",", ":")),
                 output,
                 images,
+                thread_id,
+                event_callback,
             )
+            resolved_thread = value.get("thread_id") or value.get("session_id")
+            if not isinstance(resolved_thread, str) or not resolved_thread:
+                raise ModelUnavailableError("Codex app-server omitted the thread id")
+            return {**value, "thread_id": resolved_thread}
         except ModelUnavailableError:
             raise
         except Exception as exc:
             raise ModelUnavailableError(
-                "Codex CLI candidate generation failed",
+                "Codex app-server candidate generation failed",
                 code=getattr(exc, "public_code", "model_unavailable"),
             ) from exc
         finally:

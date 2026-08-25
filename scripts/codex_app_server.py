@@ -91,6 +91,7 @@ def run_turn(
     route: dict[str, Any],
     prompt: str,
     output_path: Path,
+    images: list[Path] | None = None,
     thread_id: str | None = None,
     event_callback: EventCallback | None = None,
     timeout_seconds: float = 900.0,
@@ -183,11 +184,13 @@ def run_turn(
                     resolved_thread = thread.get("id") or resolved_thread
                     if not isinstance(resolved_thread, str) or not resolved_thread:
                         raise AppServerError("codex app-server omitted the thread id")
+                    turn_input: list[dict[str, str]] = [{"type": "text", "text": prompt}]
+                    turn_input.extend({"type": "localImage", "path": str(image)} for image in images or [])
                     send({
                         "method": "turn/start", "id": 2,
                         "params": {
                             "threadId": resolved_thread,
-                            "input": [{"type": "text", "text": prompt}],
+                            "input": turn_input,
                             "model": route["model"], "effort": route["reasoning_effort"],
                             "approvalPolicy": "never", "outputSchema": schema,
                         },

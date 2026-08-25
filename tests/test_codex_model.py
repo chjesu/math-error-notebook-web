@@ -17,19 +17,19 @@ class CodexNotebookModelTests(unittest.TestCase):
             image = (root / "q.png").resolve()
             image.write_bytes(b"image")
 
-            def review(route, review_input, output, images):
+            def review(route, review_input, output, images, thread_id=None, event_callback=None):
                 frozen = json.loads(review_input)
                 self.assertEqual(images, [image] if route["task"].startswith("math-intake") else [])
                 if route["task"].startswith("math-intake"):
                     result = {"intake_id": frozen["intake_id"], "input_version": 1, "status": "complete", "items": [{"item_no": 1, "status": "complete", "question_text": "题目", "answer_text": "作答", "notes": None, "confidence": 0.99}], "notes": None, "confidence": 0.99}
                 else:
                     result = {"attempt_id": frozen["attempt_id"], "input_version": 1, "verdict": "incorrect", "first_error": "首错", "cause_code": "calculation", "cause_evidence": "证据", "correct_solution": "过程", "final_answer": "答案", "prevention_cue": "验算", "confidence": 0.98}
-                return {"route": route, "result": result}
+                return {"route": route, "thread_id": thread_id or "thread-test", "result": result}
 
             def route(task, risks):
                 return {"task": task, "model": "test", "reasoning_effort": "low", "risks": risks}
 
-            model = CodexNotebookModel(root / "results", review=review, route_selector=route)
+            model = CodexNotebookModel(root / "results", harness_review=review, route_selector=route)
             intake = SimpleNamespace(intake_id="a" * 32, input_version=1)
             file_record = SimpleNamespace(media_type="image/png", original_name="q.png")
             extracted = model.extract(intake=intake, file_record=file_record, image_path=image)
@@ -41,17 +41,17 @@ class CodexNotebookModelTests(unittest.TestCase):
 
     def test_rejects_a_response_for_another_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            def review(route, review_input, output, images):
-                return {"route": route, "result": {"attempt_id": "c" * 32, "input_version": 1, "verdict": "unclear", "first_error": None, "cause_code": "unclear", "cause_evidence": None, "correct_solution": None, "final_answer": None, "prevention_cue": None, "confidence": 0.9}}
+            def review(route, review_input, output, images, thread_id=None, event_callback=None):
+                return {"route": route, "thread_id": thread_id or "thread-test", "result": {"attempt_id": "c" * 32, "input_version": 1, "verdict": "unclear", "first_error": None, "cause_code": "unclear", "cause_evidence": None, "correct_solution": None, "final_answer": None, "prevention_cue": None, "confidence": 0.9}}
 
-            model = CodexNotebookModel(Path(directory), review=review, route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"})
+            model = CodexNotebookModel(Path(directory), harness_review=review, route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"})
             attempt = SimpleNamespace(attempt_id="b" * 32, input_version=1, question_text="题目", answer_text="作答")
             with self.assertRaisesRegex(ModelUnavailableError, "frozen attempt"):
                 model.grade(attempt=attempt)
 
     def test_extract_filters_recommendation_blocks_and_renumbers_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            def review(route, review_input, output, images):
+            def review(route, review_input, output, images, thread_id=None, event_callback=None):
                 frozen = json.loads(review_input)
                 texts = (
                     "错题编号 ERR-1：第一道题",
@@ -59,13 +59,13 @@ class CodexNotebookModelTests(unittest.TestCase):
                     "错题编号 ERR-2：第二道题",
                     "题库编号 Q-2：另一道推荐练习",
                 )
-                return {"route": route, "result": {
+                return {"route": route, "thread_id": thread_id or "thread-test", "result": {
                     "intake_id": frozen["intake_id"], "input_version": 1, "status": "complete",
                     "items": [{"item_no": index, "status": "complete", "question_text": text, "answer_text": "", "confidence": 0.99} for index, text in enumerate(texts, 1)],
                     "confidence": 0.99,
                 }}
 
-            model = CodexNotebookModel(Path(directory), review=review, route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"})
+            model = CodexNotebookModel(Path(directory), harness_review=review, route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"})
             intake = SimpleNamespace(intake_id="a" * 32, input_version=1)
             file_record = SimpleNamespace(media_type="image/jpeg", original_name="paper.jpg")
             result = model.extract(intake=intake, file_record=file_record, image_path=Path(directory) / "paper.jpg")
@@ -76,14 +76,14 @@ class CodexNotebookModelTests(unittest.TestCase):
         release = Event()
         failures: list[Exception] = []
 
-        def review(route, review_input, output, images):
+        def review(route, review_input, output, images, thread_id=None, event_callback=None):
             frozen = json.loads(review_input)
             started.set()
             release.wait(2)
-            return {"route": route, "result": {"attempt_id": frozen["attempt_id"], "input_version": 1, "verdict": "unclear", "first_error": None, "cause_code": "unclear", "cause_evidence": None, "correct_solution": None, "final_answer": None, "prevention_cue": None, "confidence": 0.9}}
+            return {"route": route, "thread_id": thread_id or "thread-test", "result": {"attempt_id": frozen["attempt_id"], "input_version": 1, "verdict": "unclear", "first_error": None, "cause_code": "unclear", "cause_evidence": None, "correct_solution": None, "final_answer": None, "prevention_cue": None, "confidence": 0.9}}
 
         with tempfile.TemporaryDirectory() as directory:
-            model = CodexNotebookModel(Path(directory), review=review, route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"})
+            model = CodexNotebookModel(Path(directory), harness_review=review, route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"})
             attempt = SimpleNamespace(attempt_id="b" * 32, input_version=1, question_text="题目", answer_text="作答")
 
             def first_call() -> None:
@@ -109,7 +109,7 @@ class CodexNotebookModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             model = CodexNotebookModel(
                 Path(directory),
-                review=lambda *args: (_ for _ in ()).throw(NetworkFailure("private diagnostic")),
+                harness_review=lambda *args: (_ for _ in ()).throw(NetworkFailure("private diagnostic")),
                 route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"},
             )
             intake = SimpleNamespace(intake_id="a" * 32, input_version=1)

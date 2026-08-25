@@ -59,18 +59,38 @@ def main() -> int:
     )
     intake.raise_for_status()
     intake_id = intake.json()["resource_id"]
-    manual = session.post(
-        f"{BASE}/v1/intakes/{intake_id}/manual-candidate",
-        json={"question_text": "已知 x+1=2，求 x。", "answer_text": "x=0"},
+    extracted = session.post(
+        f"{BASE}/v1/intakes/{intake_id}/model-candidate",
+        json={"refresh": True},
         headers=ORIGIN_HEADERS,
+        timeout=180,
+    )
+    extracted.raise_for_status()
+    extraction = extracted.json()
+    if not extraction.get("items"):
+        raise RuntimeError("app-server did not extract a target question")
+    confirmed = session.post(
+        f"{BASE}/v1/intakes/{intake_id}/confirm",
+        json={"input_version": extraction["input_version"]},
+        headers=ORIGIN_HEADERS | {"Idempotency-Key": secrets.token_hex(8)},
         timeout=10,
     )
-    manual.raise_for_status()
+    confirmed.raise_for_status()
+    attempt_id = confirmed.json()["resource_id"]
+    graded = session.post(
+        f"{BASE}/v1/attempts/{attempt_id}/model-grade",
+        json={"input_version": extraction["input_version"]},
+        headers=ORIGIN_HEADERS,
+        timeout=180,
+    )
+    graded.raise_for_status()
+    grade = graded.json()
     with session.stream(
         "POST", f"{BASE}/v1/intakes/{intake_id}/chat-turn-stream",
         json={
-            "message": "请检查题干与作答候选是否完整。", "stage": "intake",
-            "input_version": manual.json()["input_version"], "attempt_id": None, "candidate_id": None,
+            "message": "请结合刚才的图片识别和判题，说明当前候选是否可以确认。", "stage": "grade",
+            "input_version": extraction["input_version"], "attempt_id": attempt_id,
+            "candidate_id": grade["result_id"],
         },
         headers=ORIGIN_HEADERS,
         timeout=httpx.Timeout(180, connect=10),
@@ -82,6 +102,7 @@ def main() -> int:
         raise RuntimeError("incomplete app-server event stream")
     print(json.dumps({
         "status": "ok", "elapsed_seconds": round(time.monotonic() - started, 2),
+        "extracted_items": len(extraction["items"]), "grade_verdict": grade["verdict"],
         "runtime_event_count": len(runtime), "final_action": events[-1]["data"]["action"],
     }, ensure_ascii=False))
     return 0
