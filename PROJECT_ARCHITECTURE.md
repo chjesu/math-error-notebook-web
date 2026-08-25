@@ -14,6 +14,8 @@ v0.4.0 本地测试版的认证契约已落地为四个接口：`POST /v1/auth/l
 
 在线身份认证、限流、验证码和权限判断完全由确定性代码与 MySQL 完成。Codex CLI 承担只读工程审查和首次数学图片/判题候选；连续错题会话直接复用官方 Codex app-server Harness 的线程、回合、压缩和事件协议。题干修正、作答 OCR、判题及入本内容均由大模型进行语义确认；确定性代码负责校验资源归属、冻结版本、结构化结果和最终写库。模型不能自行跨过确认口令、直接写入正式错题、发送短信、改变权限或批准部署。
 
+Codex app-server 是当前已经实现的本地模型运行时，不是阿里云生产必须永久绑定的供应商。若目标环境无法稳定使用 Codex/OpenAI 服务，模型推理将通过供应商无关的 `ModelProvider` 适配；产品会话历史、分页、压缩、流式事件、停止、恢复、重试和任务循环收归应用自有 `NotebookAgent`。阿里云首个候选优先评测百炼通义千问多模态模型，现有 Codex 适配器保留作本地对照和迁移回退。该方案当前仅已记录，待离线评测和实施批准，详见 `docs/18-MODEL-PROVIDER-MIGRATION.md`。
+
 ## 2. 整体架构
 
 ```mermaid
@@ -55,6 +57,7 @@ flowchart TB
 | 手机验证码注册、会话、限流 | `services/web_auth/` | v0.4.0 四接口、密码、协议、场景隔离已在本地验收；短信/CAPTCHA 仍为模拟，生产门禁未完成 |
 | 本地 MySQL 模拟环境 | `scripts/local_env.py` | 已实现；仅绑定 localhost，不是生产启动器 |
 | Codex 模型路由与团队 | `scripts/codex_task_router.py`、`scripts/codex_app_server.py`、`services/web_app/codex_model.py`、`config/model-routing.json`、`config/team-roles.json` | 已实现；本地启动须使用 `--enable-codex-model` 显式授权，首次 OCR/判题候选走 Terra→Sol 质量门，连续错题会话走官方 app-server 持久 Sol 线程、真实事件流和结构化候选 |
+| 模型供应商迁移与应用自有 Harness | `docs/18-MODEL-PROVIDER-MIGRATION.md`、后续 `NotebookAgent` / `ModelProvider` | 方案已记录，待标注集评测和实施批准；当前未接通百炼，不得标记为生产完成 |
 | 任务领取、租约、证据、恢复 | `scripts/project_workflow.py` | 已实现注册模板和全项目模板 |
 | 个人账号与 user_id 数据隔离 | `services/web_domain/` | 已实现；API、Store、任务和下载均从服务端会话注入 `user_id` |
 | Web 题库、错题、作答和复习数据 | MySQL 个人 `user_id` 模型 | 权威桌面题库已同步到本地 MySQL：10,569 题，其中 10,278 题保持已验证、291 题按授权/质量门降级为候选；生产回滚未完成 |
@@ -79,6 +82,7 @@ flowchart TB
 | `scripts/codex_task_router.py` | Luna/Terra/Sol 分层只读审查 |
 | `scripts/local_env.py` | localhost MySQL、模拟短信/CAPTCHA 与端到端验收 |
 | `config/model-routing.json` | 模型路由策略 |
+| `docs/18-MODEL-PROVIDER-MIGRATION.md` | 阿里云模型供应商迁移、Provider 边界、自有 Harness、评测和灰度基线 |
 | `schemas/engineering-review-result.schema.json` | 结构化审查输出 |
 | `docs/` | 产品、架构、实施、验收和运维基线 |
 
