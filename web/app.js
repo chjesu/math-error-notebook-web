@@ -120,13 +120,17 @@ function bindWorkbench() {
   let busy = false;
   let uploadFiles = [];
   let pendingIntakes = [];
+  let historyCursor = null;
+  let historyLoading = false;
+  let stoppable = false;
+  let stopRequested = false;
+  let activeProgress = null;
   const conversationTurns = [];
   const renderedCandidates = new Set();
-  const CHAT_PAGE_SIZE = 10;
-  let visibleTurnCount = CHAT_PAGE_SIZE;
   const uploadInput = $("#file");
   const sendButton = $("#upload-button");
   const chatInput = $("#chat-input");
+  const compactButton = $("#compact-conversation");
   const actionGroup = $("#composer-actions");
   const dropZone = $("#drop-zone");
   const uploadSurface = $(".chat-main");
@@ -173,9 +177,10 @@ function bindWorkbench() {
   }
 
   function renderConversationWindow() {
-    const start = Math.max(0, conversationTurns.length - visibleTurnCount);
-    $("#chat-stream").replaceChildren(...conversationTurns.slice(start));
-    $("#history-pagination").hidden = start === 0;
+    $("#chat-stream").replaceChildren(...conversationTurns);
+    $("#history-pagination").hidden = !historyCursor;
+    $("#load-older").disabled = historyLoading;
+    $("#load-older").textContent = historyLoading ? "正在加载" : "加载更早";
   }
 
   function appendTurn(turn) {
@@ -199,6 +204,7 @@ function bindWorkbench() {
     renderMath(response);
     turn.append(avatar, response);
     appendTurn(turn);
+    return turn;
   }
 
   function userTurn(message) {
@@ -210,6 +216,7 @@ function bindWorkbench() {
     renderMath(bubble);
     turn.append(bubble);
     appendTurn(turn);
+    return turn;
   }
 
   function progressTurn() {
@@ -345,6 +352,8 @@ function bindWorkbench() {
     }
     chatInput.disabled = false;
     actionGroup.querySelectorAll("input").forEach(input => { input.disabled = busy; });
+    compactButton.hidden = !activeIntake;
+    compactButton.disabled = busy;
     const selectedAction = selectedComposerAction();
     const actionPlaceholders = {
       "confirm-intake": "无需输入，点击发送即可确认题干与作答并开始判题",
@@ -356,8 +365,15 @@ function bindWorkbench() {
       : stage === "intake"
         ? "询问题目，或输入对题干与作答的修正"
         : "继续追问判题依据，或输入需要修正的内容");
-    sendButton.disabled = busy || (!retryable && selectedAction === "ask" && !chatInput.value.trim());
-    sendButton.textContent = retryable && uploadFiles.some(item => ["failed", "processing_failed", "recognition_failed"].includes(item.state)) ? "↻" : "↑";
+    sendButton.classList.toggle("is-stop", stoppable);
+    sendButton.setAttribute("aria-label", stoppable ? "停止处理" : "发送");
+    if (stoppable) {
+      sendButton.disabled = stopRequested;
+      sendButton.textContent = stopRequested ? "…" : "■";
+    } else {
+      sendButton.disabled = busy || (!retryable && selectedAction === "ask" && !chatInput.value.trim());
+      sendButton.textContent = retryable && uploadFiles.some(item => ["failed", "processing_failed", "recognition_failed"].includes(item.state)) ? "↻" : "↑";
+    }
   }
 
   function renderUploadFiles() {
@@ -555,13 +571,43 @@ function bindWorkbench() {
   async function restoreConversationHistory() {
     try {
       const result = await api("/v1/conversations/latest/messages");
-      if (!Array.isArray(result.items)) return;
-      for (const item of result.items) {
-        if (!item || typeof item.text !== "string" || !item.text.trim()) continue;
-        if (item.role === "user") userTurn(item.text);
-        else if (item.role === "assistant") assistantTurn(item.text);
-      }
+      historyCursor = typeof result.next_cursor === "string" ? result.next_cursor : null;
+      appendHistoryItems(result.items);
     } catch (_) {}
+  }
+
+  function appendHistoryItems(items, prepend = false) {
+    if (!Array.isArray(items)) return;
+    const before = conversationTurns.length;
+    for (const item of items) {
+      if (!item || typeof item.text !== "string" || !item.text.trim()) continue;
+      if (item.role === "user") userTurn(item.text);
+      else if (item.role === "assistant") assistantTurn(item.text);
+    }
+    if (prepend) {
+      const added = conversationTurns.splice(before);
+      conversationTurns.unshift(...added);
+      renderConversationWindow();
+    }
+  }
+
+  async function loadOlderHistory() {
+    if (!historyCursor || historyLoading) return;
+    const thread = $("#chat-thread");
+    const height = thread.scrollHeight;
+    historyLoading = true;
+    renderConversationWindow();
+    try {
+      const result = await api(`/v1/conversations/latest/messages?cursor=${encodeURIComponent(historyCursor)}`);
+      historyCursor = typeof result.next_cursor === "string" ? result.next_cursor : null;
+      appendHistoryItems(result.items, true);
+      requestAnimationFrame(() => { thread.scrollTop += thread.scrollHeight - height; });
+    } catch (error) {
+      status($("#upload-status"), `更早的会话暂时无法加载：${authError(error)}`, true);
+    } finally {
+      historyLoading = false;
+      renderConversationWindow();
+    }
   }
 
   async function restoreWorkbench() {
@@ -657,6 +703,37 @@ function bindWorkbench() {
     }
   }
 
+  async function stopActiveTurn() {
+    if (!stoppable || stopRequested || !activeIntake) return;
+    stopRequested = true;
+    setComposerState();
+    if (activeProgress) setProgress(activeProgress, "正在停止", "已向当前会话发送停止请求。" );
+    try {
+      await api(`/v1/intakes/${activeIntake.intakeId}/conversation/stop`, {method: "POST", body: "{}"});
+    } catch (error) {
+      stopRequested = false;
+      if (activeProgress) setProgress(activeProgress, "停止请求未送达", authError(error), "error");
+      setComposerState();
+    }
+  }
+
+  async function compactConversation() {
+    if (!activeIntake || busy) return;
+    busy = true;
+    setComposerState();
+    const progress = progressTurn();
+    setProgress(progress, "正在整理上下文", "保留题目、作答和关键结论，压缩较早的会话内容。" );
+    try {
+      await api(`/v1/intakes/${activeIntake.intakeId}/conversation/compact`, {method: "POST", body: "{}"});
+      setProgress(progress, "上下文已整理", "后续追问会继续沿用当前错题会话。", "complete");
+    } catch (error) {
+      setProgress(progress, "上下文整理失败", authError(error), "error");
+    } finally {
+      busy = false;
+      setComposerState();
+    }
+  }
+
   async function sendMessage() {
     const selectedAction = selectedComposerAction();
     const fixedMessages = {"confirm-intake": "确认并判题", commit: "确认入本", next: "下一题"};
@@ -675,33 +752,41 @@ function bindWorkbench() {
     }
     busy = true;
     setComposerState();
+    let progress = null;
     try {
       if (stage === "intake" && confirmIntakeCommands.has(message)) await confirmAndGrade();
       else if (stage === "grade" && commitCommands.has(message)) await commitCurrent();
       else if (stage === "grade" && nextCommands.has(message)) activateNextIntake("本题未写入错题本，继续处理下一份。" );
       else {
-        const progress = progressTurn();
+        progress = progressTurn();
+        activeProgress = progress;
         setProgress(progress, "正在思考", stage === "intake" ? "结合图片和当前题干理解你的修正。" : "结合当前判题候选理解你的问题。" );
+        stoppable = true;
+        stopRequested = false;
+        setComposerState();
         await chatTurn(message, progress);
         setProgress(progress, "本轮已完成", "会话上下文已保留，可以继续输入。", "complete");
       }
       selectComposerAction("ask");
     } catch (error) {
-      assistantTurn(`本轮未完成：${authError(error)}。你的消息没有触发写库，可以重试。`, true);
+      if (error.message === "model_interrupted") {
+        if (progress) setProgress(progress, "本轮已停止", "没有生成候选，也没有触发写库。", "warning");
+      } else {
+        if (progress) setProgress(progress, "本轮未完成", authError(error), "error");
+        assistantTurn(`本轮未完成：${authError(error)}。你的消息没有触发写库，可以重试。`, true);
+      }
     } finally {
+      stoppable = false;
+      stopRequested = false;
+      activeProgress = null;
       busy = false;
       setComposerState();
       if (!chatInput.disabled) chatInput.focus();
     }
   }
 
-  $("#load-older").addEventListener("click", () => {
-    const thread = $("#chat-thread");
-    const height = thread.scrollHeight;
-    visibleTurnCount += CHAT_PAGE_SIZE;
-    renderConversationWindow();
-    requestAnimationFrame(() => { thread.scrollTop += thread.scrollHeight - height; });
-  });
+  $("#load-older").addEventListener("click", loadOlderHistory);
+  compactButton.addEventListener("click", compactConversation);
   uploadInput.addEventListener("change", () => { addUploadFiles(uploadInput.files); uploadInput.value = ""; });
   $("#file-picker").addEventListener("click", () => uploadInput.click());
   dropZone.addEventListener("click", event => { if (!event.target.closest("button, textarea, input, label")) chatInput.focus(); });
@@ -714,6 +799,7 @@ function bindWorkbench() {
   });
   chatInput.addEventListener("keydown", event => {
     if (event.isComposing || event.keyCode === 229) return;
+    if (stoppable) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (!event.repeat) $("#upload-form").requestSubmit();
@@ -742,7 +828,11 @@ function bindWorkbench() {
   uploadSurface.addEventListener("dragleave", event => { if (!event.relatedTarget || !uploadSurface.contains(event.relatedTarget)) uploadSurface.classList.remove("drag-active"); });
   uploadSurface.addEventListener("drop", event => { if (event.dataTransfer?.files?.length) { event.preventDefault(); uploadSurface.classList.remove("drag-active"); addUploadFiles(event.dataTransfer.files); } });
   document.addEventListener("paste", event => { const files = event.clipboardData?.files; if (files?.length) { event.preventDefault(); addUploadFiles(files); } });
-  $("#upload-form").addEventListener("submit", event => { event.preventDefault(); uploadFiles.some(item => !item.submitted && ["queued", "failed"].includes(item.state)) ? uploadQueued() : sendMessage(); });
+  $("#upload-form").addEventListener("submit", event => {
+    event.preventDefault();
+    if (stoppable) stopActiveTurn();
+    else uploadFiles.some(item => !item.submitted && ["queued", "failed"].includes(item.state)) ? uploadQueued() : sendMessage();
+  });
   window.addEventListener("beforeunload", () => uploadFiles.forEach(item => item.previewUrl && URL.revokeObjectURL(item.previewUrl)));
   setComposerState();
   restoreWorkbench();

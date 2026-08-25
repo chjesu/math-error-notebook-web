@@ -172,12 +172,23 @@ class CodexNotebookModelTests(unittest.TestCase):
             {"turnId": "1", "item": {"type": "userMessage", "content": [{"type": "text", "text": "Private extraction prompt\nReview input:\n{}"}]}},
         ]
         with tempfile.TemporaryDirectory() as directory:
-            model = CodexNotebookModel(Path(directory), history_reader=lambda _: {"items": entries})
-            messages = model.history(thread_id="thread-abc")
-        self.assertEqual(messages, [
-            {"role": "user", "text": "第二行才是题干"},
-            {"role": "assistant", "text": "已按你的说明修正。"},
-        ])
+            model = CodexNotebookModel(Path(directory), history_reader=lambda thread, cursor, limit: {"items": entries, "next_cursor": "older"})
+            page = model.history(thread_id="thread-abc", limit=20)
+        self.assertEqual(page, {
+            "items": [
+                {"role": "user", "text": "第二行才是题干"},
+                {"role": "assistant", "text": "已按你的说明修正。"},
+            ],
+            "next_cursor": "older",
+        })
+
+    def test_compaction_hides_the_thread_identifier(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            model = CodexNotebookModel(
+                Path(directory),
+                compactor=lambda thread_id: {"thread_id": thread_id, "status": "completed"},
+            )
+            self.assertEqual(model.compact(thread_id="thread-abc"), {"status": "completed"})
 
 
 if __name__ == "__main__":

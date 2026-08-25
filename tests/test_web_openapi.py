@@ -87,9 +87,18 @@ class WebOpenApiContractTests(unittest.TestCase):
         operation = self.operation("/v1/conversations/latest/messages", "get")
         self.assertEqual(operation["responses"]["200"]["$ref"], "#/components/responses/ConversationHistory")
         schema = self.document["components"]["schemas"]["ConversationHistory"]
-        self.assertEqual(set(schema["properties"]), {"items"})
+        self.assertEqual(set(schema["properties"]), {"items", "next_cursor"})
+        self.assertEqual(schema["properties"]["items"]["maxItems"], 20)
+        self.assertEqual(operation["parameters"][0]["name"], "cursor")
         message = self.document["components"]["schemas"]["ConversationMessage"]
         self.assertEqual(set(message["properties"]), {"role", "text"})
+
+    def test_conversation_control_uses_owned_intake_routes(self) -> None:
+        stop = self.operation("/v1/intakes/{intake_id}/conversation/stop", "post")
+        compact = self.operation("/v1/intakes/{intake_id}/conversation/compact", "post")
+        self.assertEqual(stop["operationId"], "stopMathNotebookConversationTurn")
+        self.assertEqual(compact["operationId"], "compactMathNotebookConversation")
+        self.assertTrue({"404", "409", "503"}.issubset(compact["responses"]))
 
 
 if __name__ == "__main__":

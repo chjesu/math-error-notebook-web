@@ -40,6 +40,7 @@ class NotebookE2ETests(unittest.TestCase):
         return stream.getvalue()
 
     def call(self, path: str, *, method: str = "GET", payload: dict | None = None, body: bytes | None = None, content_type: str = "application/json", cookie: str | None = None, origin: str | None = "https://example.test", idempotency_key: str | None = None):
+        route_path, _, query = path.partition("?")
         raw = body if body is not None else json.dumps(payload or {}).encode("utf-8")
         requests = [{"type": "http.request", "body": raw, "more_body": False}]
         responses: list[dict] = []
@@ -57,7 +58,7 @@ class NotebookE2ETests(unittest.TestCase):
                 headers.append((b"origin", origin.encode("ascii")))
         if idempotency_key:
             headers.append((b"idempotency-key", idempotency_key.encode("ascii")))
-        scope = {"type": "http", "method": method, "path": path, "scheme": "https", "client": ("203.0.113.7", 12345), "headers": headers}
+        scope = {"type": "http", "method": method, "path": route_path, "query_string": query.encode("ascii"), "scheme": "https", "client": ("203.0.113.7", 12345), "headers": headers}
         asyncio.run(self.app(scope, receive, send))
         started = responses[0]
         response_headers = {key.decode("ascii"): value.decode("ascii") for key, value in started["headers"]}
@@ -305,6 +306,10 @@ class NotebookE2ETests(unittest.TestCase):
                     "route": {"task": "math-notebook-loop", "model": "test"},
                 }
 
+            def compact(_, *, thread_id):
+                self.assertEqual(thread_id, "thread-loop-test")
+                return {"status": "completed"}
+
         self.app.model_runner = FakeLoopModel()
         cookie = self.login("13000130000")
         other_cookie = self.login("13000130001")
@@ -317,6 +322,8 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(denied[0], 404)
         revised = self.call(f"/v1/intakes/{intake_id}/chat-turn", method="POST", payload=request, cookie=cookie)
         self.assertEqual((revised[0], revised[2]["intake"]["status"], revised[2]["intake"]["question_text"]), (200, "waiting_confirmation", "若 x+1=2，求 x。"))
+        self.assertEqual(self.call(f"/v1/intakes/{intake_id}/conversation/compact", method="POST", cookie=cookie)[2], {"status": "completed"})
+        self.assertEqual(self.call(f"/v1/intakes/{intake_id}/conversation/stop", method="POST", cookie=cookie)[2], {"status": "idle"})
         streamed = self.call(f"/v1/intakes/{intake_id}/chat-turn-stream", method="POST", payload=request, cookie=cookie)
         stream_events = [json.loads(line) for line in streamed[2].splitlines()]
         self.assertEqual(streamed[1]["content-type"], "application/x-ndjson; charset=utf-8")
@@ -330,11 +337,17 @@ class NotebookE2ETests(unittest.TestCase):
 
     def test_latest_conversation_history_is_user_scoped_and_hides_thread_id(self) -> None:
         class FakeHistoryModel:
-            def history(_, *, thread_id):
+            def history(_, *, thread_id, cursor, limit):
+                self.assertEqual(limit, 20)
                 if thread_id == "thread-empty-test":
-                    return []
+                    return {"items": [], "next_cursor": None}
                 self.assertEqual(thread_id, "thread-history-test")
-                return [{"role": "user", "text": "请再检查"}, {"role": "assistant", "text": "可以，我们继续核对。"}]
+                if cursor == "older-page":
+                    return {"items": [{"role": "user", "text": "更早的问题"}], "next_cursor": None}
+                return {
+                    "items": [{"role": "user", "text": "请再检查"}, {"role": "assistant", "text": "可以，我们继续核对。"}],
+                    "next_cursor": "older-page",
+                }
 
         self.app.model_runner = FakeHistoryModel()
         cookie = self.login("13000130002")
@@ -347,7 +360,10 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(response[2]["items"][0], {"role": "user", "text": "请再检查"})
         self.assertNotIn("thread_id", response[2])
         self.assertNotIn("conversation_id", response[2])
-        self.assertEqual(self.call("/v1/conversations/latest/messages", cookie=other_cookie)[2], {"items": []})
+        older = self.call(f"/v1/conversations/latest/messages?cursor={response[2]['next_cursor']}", cookie=cookie)
+        self.assertEqual(older[2], {"items": [{"role": "user", "text": "更早的问题"}], "next_cursor": None})
+        self.assertEqual(self.call(f"/v1/conversations/latest/messages?cursor={response[2]['next_cursor']}", cookie=other_cookie)[0], 404)
+        self.assertEqual(self.call("/v1/conversations/latest/messages", cookie=other_cookie)[2], {"items": [], "next_cursor": None})
 
     def test_manual_grade_requires_first_error_and_large_body_is_413(self) -> None:
         cookie = self.login("13700137000")

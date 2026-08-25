@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from typing import Any, Callable
 import uuid
 
-from scripts.codex_task_router import read_conversation_history, run_conversation_turn, run_review, run_structured_harness_turn, select
+from scripts.codex_task_router import compact_conversation, read_conversation_history, run_conversation_turn, run_review, run_structured_harness_turn, select
 
 
 CAUSE_CODES = {
@@ -34,7 +34,8 @@ class CodexNotebookModel:
         review: Callable[..., dict[str, Any]] = run_review,
         harness_review: Callable[..., dict[str, Any]] = run_structured_harness_turn,
         conversation_review: Callable[..., dict[str, Any]] = run_conversation_turn,
-        history_reader: Callable[[str], dict[str, Any]] = read_conversation_history,
+        history_reader: Callable[..., dict[str, Any]] = read_conversation_history,
+        compactor: Callable[[str], dict[str, Any]] = compact_conversation,
         route_selector: Callable[[str, list[str]], dict[str, Any]] = select,
         max_active: int = 2,
     ) -> None:
@@ -43,15 +44,16 @@ class CodexNotebookModel:
         self.harness_review = harness_review
         self.conversation_review = conversation_review
         self.history_reader = history_reader
+        self.compactor = compactor
         self.route_selector = route_selector
         self.max_active = max_active
         self._active: set[tuple[str, str, int]] = set()
         self._active_lock = Lock()
 
-    def history(self, *, thread_id: str) -> list[dict[str, str]]:
+    def history(self, *, thread_id: str, cursor: str | None = None, limit: int = 50) -> dict[str, Any]:
         """Translate persisted structured app-server items into product chat messages."""
         try:
-            value = self.history_reader(thread_id)
+            value = self.history_reader(thread_id, cursor, limit)
         except Exception as exc:
             raise ModelUnavailableError(
                 "Codex app-server history read failed",
@@ -77,7 +79,24 @@ class CodexNotebookModel:
             message = packet.get(field) if isinstance(packet, dict) else None
             if isinstance(message, str) and message.strip():
                 messages.append({"role": "user" if item_type == "userMessage" else "assistant", "text": message.strip()[:12_000]})
-        return messages
+        next_cursor = value.get("next_cursor")
+        return {
+            "items": messages,
+            "next_cursor": next_cursor if isinstance(next_cursor, str) and next_cursor else None,
+        }
+
+    def compact(self, *, thread_id: str) -> dict[str, Any]:
+        """Compact a persisted thread without exposing its identifier to the browser."""
+        try:
+            value = self.compactor(thread_id)
+        except Exception as exc:
+            raise ModelUnavailableError(
+                "Codex app-server compaction failed",
+                code=getattr(exc, "public_code", "model_unavailable"),
+            ) from exc
+        if not isinstance(value, dict) or value.get("status") != "completed":
+            raise ModelUnavailableError("Codex app-server returned invalid compaction status")
+        return {"status": "completed"}
 
     @staticmethod
     def _history_packet(text: str) -> dict[str, Any]:
@@ -196,6 +215,7 @@ class CodexNotebookModel:
         context: dict[str, Any],
         thread_id: str | None = None,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
+        cancel_event: Event | None = None,
     ) -> dict[str, Any]:
         if stage not in {"intake", "grade"}:
             raise ModelUnavailableError("unsupported conversation stage")
@@ -222,7 +242,12 @@ class CodexNotebookModel:
                 output,
                 thread_id,
             )
-            value = self.conversation_review(*arguments, event_callback) if event_callback else self.conversation_review(*arguments)
+            if cancel_event is not None:
+                value = self.conversation_review(*arguments, event_callback, cancel_event)
+            elif event_callback:
+                value = self.conversation_review(*arguments, event_callback)
+            else:
+                value = self.conversation_review(*arguments)
             result = value["result"]
             if any((
                 result.get("conversation_id") != conversation_id,

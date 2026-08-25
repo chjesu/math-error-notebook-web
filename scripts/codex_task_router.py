@@ -16,7 +16,12 @@ from threading import Lock
 import time
 import uuid
 
-from scripts.codex_app_server import AppServerError, list_thread_items as list_app_server_thread_items, run_turn as run_app_server_turn
+from scripts.codex_app_server import (
+    AppServerError,
+    compact_thread as compact_app_server_thread,
+    list_thread_items as list_app_server_thread_items,
+    run_turn as run_app_server_turn,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +49,7 @@ class CodexCliInvocationError(RuntimeError):
             "timeout": "model_network_error",
             "rate_limit": "model_rate_limited",
             "authentication": "model_authentication_error",
+            "interrupted": "model_interrupted",
         }.get(category, "model_unavailable")
         super().__init__(
             f"codex CLI {phase} failed ({category}) after {attempts} attempt(s); "
@@ -458,6 +464,7 @@ def run_conversation_turn(
     output_path: Path,
     session_id: str | None = None,
     event_callback=None,
+    cancel_event=None,
 ) -> dict:
     """Run one persistent Codex app-server turn and return its thread id."""
     output_path = output_path.resolve()
@@ -481,10 +488,13 @@ def run_conversation_turn(
         cli_attempts = attempt
         attempt_started = time.monotonic()
         try:
-            value = run_app_server_turn(
-                route=route, prompt=prompt, output_path=output_path,
-                thread_id=session_id, event_callback=event_callback,
-            )
+            arguments = {
+                "route": route, "prompt": prompt, "output_path": output_path,
+                "thread_id": session_id, "event_callback": event_callback,
+            }
+            if cancel_event is not None:
+                arguments["cancel_event"] = cancel_event
+            value = run_app_server_turn(**arguments)
             _write_cli_event({
                 "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "invocation_id": invocation_id, "task": route["task"], "model": route["model"],
@@ -528,13 +538,13 @@ def run_conversation_turn(
     }
 
 
-def read_conversation_history(thread_id: str) -> dict:
+def read_conversation_history(thread_id: str, cursor: str | None = None, limit: int = 50) -> dict:
     """Read the recent persisted app-server items with bounded retry logging."""
     invocation_id = uuid.uuid4().hex[:16]
     for attempt in range(1, CLI_MAX_ATTEMPTS + 1):
         started = time.monotonic()
         try:
-            value = list_app_server_thread_items(thread_id=thread_id)
+            value = list_app_server_thread_items(thread_id=thread_id, cursor=cursor, limit=limit)
             _write_cli_event({
                 "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "invocation_id": invocation_id, "task": "math-notebook-history", "model": None,
@@ -554,7 +564,31 @@ def read_conversation_history(thread_id: str) -> dict:
             if not will_retry:
                 raise CodexCliInvocationError("app_server_history", exc.category, attempt) from exc
             time.sleep(CLI_RETRY_DELAY_SECONDS * attempt)
-    raise AssertionError("unreachable")
+
+
+def compact_conversation(thread_id: str) -> dict:
+    """Compact one persisted conversation without retrying a possibly-started mutation."""
+    invocation_id = uuid.uuid4().hex[:16]
+    started = time.monotonic()
+    try:
+        value = compact_app_server_thread(thread_id=thread_id)
+    except AppServerError as exc:
+        _write_cli_event({
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "invocation_id": invocation_id, "task": "math-notebook-compact", "model": None,
+            "phase": "app_server_compact", "attempt": 1, "max_attempts": 1,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "outcome": "failed", "category": exc.category, "exit_code": None,
+        })
+        raise CodexCliInvocationError("app_server_compact", exc.category, 1) from exc
+    _write_cli_event({
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "invocation_id": invocation_id, "task": "math-notebook-compact", "model": None,
+        "phase": "app_server_compact", "attempt": 1, "max_attempts": 1,
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "outcome": "success", "exit_code": 0,
+    })
+    return value
 
 
 def run_review(route: dict, review_input: str, output_path: Path, images: list[Path] | None = None) -> dict:

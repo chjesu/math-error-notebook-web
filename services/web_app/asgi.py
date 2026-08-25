@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from email import policy
 from email.parser import BytesParser
 import json
 from pathlib import Path
 import secrets
+import string
+from threading import Event, Lock
 from typing import Any, Awaitable, Callable
+from urllib.parse import parse_qs
 
 from services.web_auth import AuthAsgiApp, RegistrationService
 from services.web_domain import ErrorEntry, GradeCandidate, IntakeItem, Job, NotebookService, Recommendation, ReviewTask
@@ -39,6 +43,8 @@ class NotebookAsgiApp:
         self.session_cookie = session_cookie
         self.max_upload_bytes = max_upload_bytes
         self.model_runner = model_runner
+        self._turn_cancellations: dict[tuple[str, str], Event] = {}
+        self._turn_cancellations_lock = Lock()
         root = Path(__file__).resolve().parents[2]
         self.static_files = {
             "/": (root / "web" / "index.html", "text/html; charset=utf-8", False),
@@ -115,13 +121,34 @@ class NotebookAsgiApp:
             elif path == "/v1/conversations/latest/messages" and method == "GET":
                 if self.model_runner is None:
                     raise ModelUnavailableError("local model processing is disabled")
-                mappings = await self._sync(self.notebook.store.list_recent_codex_threads, user_id=user.user_id, limit=5)
-                history = {"items": []}
-                for _, thread_id in mappings:
-                    items = await self._sync(self.model_runner.history, thread_id=thread_id)
-                    history = {"items": items}
-                    if items:
-                        break
+                query = self._query(scope)
+                cursor_token = query.get("cursor")
+                history = {"items": [], "next_cursor": None}
+                if cursor_token:
+                    conversation_id, upstream_cursor = self._decode_history_cursor(cursor_token)
+                    thread_id = await self._sync(
+                        self.notebook.store.get_codex_thread,
+                        user_id=user.user_id, conversation_id=conversation_id,
+                    )
+                    if not thread_id:
+                        raise LookupError
+                    page = await self._sync(
+                        self.model_runner.history, thread_id=thread_id, cursor=upstream_cursor, limit=20,
+                    )
+                    history = {
+                        "items": page["items"],
+                        "next_cursor": self._encode_history_cursor(conversation_id, page.get("next_cursor")),
+                    }
+                else:
+                    mappings = await self._sync(self.notebook.store.list_recent_codex_threads, user_id=user.user_id, limit=5)
+                    for conversation_id, thread_id in mappings:
+                        page = await self._sync(self.model_runner.history, thread_id=thread_id, cursor=None, limit=20)
+                        history = {
+                            "items": page["items"],
+                            "next_cursor": self._encode_history_cursor(conversation_id, page.get("next_cursor")),
+                        }
+                        if page["items"] or page.get("next_cursor"):
+                            break
                 await self._json(send, 200, history)
             elif path == "/v1/workbench" and method == "GET":
                 items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
@@ -287,6 +314,33 @@ class NotebookAsgiApp:
                 else:
                     result = await self._sync(self._chat_turn_core, user.user_id, intake_id, payload)
                     await self._json(send, 200, result)
+            elif path.startswith("/v1/intakes/") and path.endswith("/conversation/stop") and method == "POST":
+                intake_id = path.split("/")[-3]
+                intake = await self._sync(self.notebook.store.get_intake, user_id=user.user_id, intake_id=intake_id)
+                if not intake:
+                    raise LookupError
+                with self._turn_cancellations_lock:
+                    cancellation = self._turn_cancellations.get((user.user_id, intake_id))
+                    if cancellation is not None:
+                        cancellation.set()
+                await self._json(send, 200, {"status": "interrupt_requested" if cancellation else "idle"})
+            elif path.startswith("/v1/intakes/") and path.endswith("/conversation/compact") and method == "POST":
+                if self.model_runner is None:
+                    raise ModelUnavailableError("local model processing is disabled")
+                intake_id = path.split("/")[-3]
+                intake = await self._sync(self.notebook.store.get_intake, user_id=user.user_id, intake_id=intake_id)
+                if not intake:
+                    raise LookupError
+                with self._turn_cancellations_lock:
+                    if (user.user_id, intake_id) in self._turn_cancellations:
+                        raise RuntimeError("conflict")
+                thread_id = await self._sync(
+                    self.notebook.store.get_codex_thread, user_id=user.user_id, conversation_id=intake_id,
+                )
+                if not thread_id:
+                    raise LookupError
+                result = await self._sync(self.model_runner.compact, thread_id=thread_id)
+                await self._json(send, 200, result)
             elif path.startswith("/v1/intakes/") and path.endswith("/confirm") and method == "POST":
                 intake_id = path.split("/")[-2]
                 payload = await self._json_body(receive)
@@ -443,6 +497,7 @@ class NotebookAsgiApp:
         intake_id: str,
         payload: dict[str, Any],
         event_callback: Callable[[dict[str, Any]], None] | None = None,
+        cancel_event: Event | None = None,
     ) -> dict[str, Any]:
         if set(payload) != {"message", "stage", "input_version", "attempt_id", "candidate_id"}:
             raise ValueError("invalid chat turn request")
@@ -462,7 +517,7 @@ class NotebookAsgiApp:
                 conversation_id=intake_id, stage="intake", resource_id=intake_id,
                 input_version=intake.input_version, user_message=message,
                 context={"question_text": intake.question_text, "answer_text": intake.answer_text, "status": intake.status},
-                thread_id=thread_id, event_callback=event_callback,
+                thread_id=thread_id, event_callback=event_callback, cancel_event=cancel_event,
             )
             self.notebook.store.save_codex_thread(user_id=user_id, conversation_id=intake_id, thread_id=result["thread_id"])
             if result.get("action") == "revise_intake":
@@ -497,7 +552,7 @@ class NotebookAsgiApp:
             conversation_id=intake_id, stage="grade", resource_id=attempt_id,
             input_version=attempt.input_version, user_message=message,
             context={"question_text": attempt.question_text, "answer_text": attempt.answer_text, "candidate": self._candidate(candidate) if candidate else None},
-            thread_id=thread_id, event_callback=event_callback,
+            thread_id=thread_id, event_callback=event_callback, cancel_event=cancel_event,
         )
         self.notebook.store.save_codex_thread(user_id=user_id, conversation_id=intake_id, thread_id=result["thread_id"])
         if result.get("action") == "revise_grade":
@@ -514,11 +569,24 @@ class NotebookAsgiApp:
     async def _stream_chat_turn(self, send: Send, user_id: str, intake_id: str, payload: dict[str, Any]) -> None:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         loop = asyncio.get_running_loop()
+        key = (user_id, intake_id)
+        cancellation = Event()
+        with self._turn_cancellations_lock:
+            if key in self._turn_cancellations:
+                raise ModelUnavailableError("conversation turn is already running")
+            self._turn_cancellations[key] = cancellation
 
         def notify(event: dict[str, Any]) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, {"type": "runtime", "event": event})
 
-        task = asyncio.create_task(asyncio.to_thread(self._chat_turn_core, user_id, intake_id, payload, notify))
+        task = asyncio.create_task(asyncio.to_thread(self._chat_turn_core, user_id, intake_id, payload, notify, cancellation))
+
+        def release(_: asyncio.Task[Any]) -> None:
+            with self._turn_cancellations_lock:
+                if self._turn_cancellations.get(key) is cancellation:
+                    self._turn_cancellations.pop(key, None)
+
+        task.add_done_callback(release)
         await send({"type": "http.response.start", "status": 200, "headers": [
             (b"content-type", b"application/x-ndjson; charset=utf-8"),
             (b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff"),
@@ -560,6 +628,45 @@ class NotebookAsgiApp:
         if not isinstance(value, dict):
             raise ValueError("object required")
         return value
+
+    @staticmethod
+    def _query(scope: dict[str, Any]) -> dict[str, str]:
+        raw = scope.get("query_string", b"")
+        if not isinstance(raw, bytes) or len(raw) > 4096:
+            raise ValueError("invalid query")
+        values = parse_qs(raw.decode("ascii"), keep_blank_values=True, max_num_fields=4)
+        if set(values) - {"cursor"} or any(len(items) != 1 for items in values.values()):
+            raise ValueError("invalid query")
+        return {key: items[0] for key, items in values.items()}
+
+    @staticmethod
+    def _encode_history_cursor(conversation_id: str, upstream_cursor: Any) -> str | None:
+        if not isinstance(upstream_cursor, str) or not upstream_cursor:
+            return None
+        packet = json.dumps(
+            {"conversation_id": conversation_id, "cursor": upstream_cursor},
+            ensure_ascii=True, separators=(",", ":"),
+        ).encode("ascii")
+        return base64.urlsafe_b64encode(packet).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_history_cursor(token: str) -> tuple[str, str]:
+        if not isinstance(token, str) or not token or len(token) > 4096:
+            raise ValueError("invalid history cursor")
+        try:
+            padding = "=" * (-len(token) % 4)
+            value = json.loads(base64.b64decode(token + padding, altchars=b"-_", validate=True).decode("ascii"))
+        except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid history cursor") from exc
+        conversation_id = value.get("conversation_id") if isinstance(value, dict) else None
+        cursor = value.get("cursor") if isinstance(value, dict) else None
+        if (
+            not isinstance(conversation_id, str) or len(conversation_id) != 32
+            or any(character not in string.hexdigits for character in conversation_id)
+            or not isinstance(cursor, str) or not cursor or len(cursor) > 2048
+        ):
+            raise ValueError("invalid history cursor")
+        return conversation_id, cursor
 
     async def _multipart(self, receive: Receive, headers: dict[str, str]) -> tuple[str, str, bytes]:
         content_type = headers.get("content-type", "")

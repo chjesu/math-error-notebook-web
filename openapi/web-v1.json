@@ -107,8 +107,9 @@
     "/v1/conversations/latest/messages": {
       "get": {
         "operationId": "getLatestConversationMessages",
-        "description": "从服务端绑定的最近一个持久 app-server 线程恢复当前用户的产品对话；不向浏览器暴露 thread id、内部提示或结构化模型封包。",
+        "description": "从服务端绑定的最近一个持久 app-server 线程按官方游标恢复当前用户的产品对话；不向浏览器暴露 thread id、内部提示或结构化模型封包。",
         "security": [{"sessionCookie": []}],
+        "parameters": [{"name": "cursor", "in": "query", "required": false, "schema": {"type": "string", "maxLength": 4096}, "description": "上一页响应返回的产品游标；绑定当前用户和错题会话。"}],
         "responses": {"200": {"$ref": "#/components/responses/ConversationHistory"}, "401": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
       }
     },
@@ -173,6 +174,24 @@
           "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"},
           "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}
         }
+      }
+    },
+    "/v1/intakes/{intake_id}/conversation/stop": {
+      "post": {
+        "operationId": "stopMathNotebookConversationTurn",
+        "description": "使用官方 turn/interrupt 停止当前用户这道错题正在运行的回合；不会确认候选或写入错题本。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IntakeId"}],
+        "responses": {"200": {"description": "停止请求状态", "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"enum": ["interrupt_requested", "idle"]}}}}}}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/intakes/{intake_id}/conversation/compact": {
+      "post": {
+        "operationId": "compactMathNotebookConversation",
+        "description": "使用官方 thread/compact/start 压缩当前用户这道错题的持久会话；不改变题干、判题或入本状态。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IntakeId"}],
+        "responses": {"200": {"description": "压缩完成", "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"const": "completed"}}}}}}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/attempts/{attempt_id}/manual-grade": {
@@ -432,7 +451,7 @@
       "GradeCandidate": {"type": "object", "required": ["result_id", "input_version", "verdict", "status"], "properties": {"result_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "status": {"enum": ["candidate", "committed", "superseded", "rejected"]}, "first_error": {"type": ["string", "null"]}, "diagnosis": {"$ref": "#/components/schemas/Diagnosis"}}},
       "ChatTurnResponse": {"type": "object", "required": ["assistant_message", "action", "stage", "model"], "properties": {"assistant_message": {"type": "string"}, "action": {"enum": ["respond", "revise_intake", "revise_grade", "ready"]}, "stage": {"enum": ["intake", "grade"]}, "intake": {"$ref": "#/components/schemas/Intake"}, "candidate": {"oneOf": [{"$ref": "#/components/schemas/GradeCandidate"}, {"type": "null"}]}, "model": {"type": ["object", "null"]}}},
       "ConversationMessage": {"type": "object", "additionalProperties": false, "required": ["role", "text"], "properties": {"role": {"enum": ["user", "assistant"]}, "text": {"type": "string", "minLength": 1, "maxLength": 12000}}},
-      "ConversationHistory": {"type": "object", "additionalProperties": false, "required": ["items"], "properties": {"items": {"type": "array", "maxItems": 200, "items": {"$ref": "#/components/schemas/ConversationMessage"}}}},
+      "ConversationHistory": {"type": "object", "additionalProperties": false, "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "maxItems": 20, "items": {"$ref": "#/components/schemas/ConversationMessage"}}, "next_cursor": {"type": ["string", "null"], "maxLength": 4096}}},
       "ErrorEntry": {"type": "object", "required": ["error_id", "status", "question_text", "created_at"], "properties": {"error_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["open", "reviewing", "mastered", "removed"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}, "first_error": {"type": ["string", "null"]}, "diagnosis": {"$ref": "#/components/schemas/Diagnosis"}, "created_at": {"type": "string", "format": "date-time"}}},
       "Recommendation": {"type": "object", "required": ["recommendation_id", "question_id", "stem_text", "source", "reason", "status"], "properties": {"recommendation_id": {"$ref": "#/components/schemas/Id"}, "question_id": {"$ref": "#/components/schemas/Id"}, "stem_text": {"type": "string"}, "grade": {"type": ["integer", "null"]}, "difficulty": {"type": ["number", "null"]}, "source": {"type": "string"}, "reason": {"type": "string"}, "status": {"enum": ["assigned", "completed"]}}},
       "RecommendationList": {"type": "object", "required": ["items", "gap"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Recommendation"}}, "gap": {"type": "boolean"}}},
@@ -446,7 +465,7 @@
       "PracticeJob": {"allOf": [{"$ref": "#/components/schemas/Task"}, {"type": "object", "properties": {"download_url": {"type": "string"}}}]},
       "ExportJob": {"type": "object", "additionalProperties": false, "required": ["job_id", "status", "expires_at"], "properties": {"job_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["queued", "running", "completed", "failed_final", "cancelled"]}, "expires_at": {"type": "string", "format": "date-time"}, "download_url": {"type": "string"}}},
       "ExportCreated": {"type": "object", "additionalProperties": false, "required": ["job_id", "download_url", "expires_at"], "properties": {"job_id": {"$ref": "#/components/schemas/Id"}, "download_url": {"type": "string"}, "expires_at": {"type": "string", "format": "date-time"}}},
-      "ErrorEnvelope": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["code", "message", "retryable", "request_id"], "properties": {"code": {"enum": ["invalid_request", "invalid_code", "code_expired", "too_many_attempts", "weak_password", "agreement_required", "phone_not_registered", "phone_already_registered", "request_too_large", "invalid_host", "https_required", "method_not_allowed", "authentication_required", "sensitive_verification_failed", "forbidden", "not_found", "conflict", "input_version_changed", "waiting_confirmation", "rate_limited", "captcha_required", "temporarily_unavailable", "model_unavailable", "model_network_error", "model_rate_limited", "model_authentication_error", "failed_retryable", "failed_final"]}, "message": {"type": "string"}, "retryable": {"type": "boolean"}, "request_id": {"type": "string"}, "retry_after_seconds": {"type": "integer", "minimum": 1}}}}}
+      "ErrorEnvelope": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["code", "message", "retryable", "request_id"], "properties": {"code": {"enum": ["invalid_request", "invalid_code", "code_expired", "too_many_attempts", "weak_password", "agreement_required", "phone_not_registered", "phone_already_registered", "request_too_large", "invalid_host", "https_required", "method_not_allowed", "authentication_required", "sensitive_verification_failed", "forbidden", "not_found", "conflict", "input_version_changed", "waiting_confirmation", "rate_limited", "captcha_required", "temporarily_unavailable", "model_unavailable", "model_network_error", "model_rate_limited", "model_authentication_error", "model_interrupted", "failed_retryable", "failed_final"]}, "message": {"type": "string"}, "retryable": {"type": "boolean"}, "request_id": {"type": "string"}, "retry_after_seconds": {"type": "integer", "minimum": 1}}}}}
     }
   }
 }

@@ -4,6 +4,7 @@ from io import StringIO
 import json
 from pathlib import Path
 import tempfile
+from threading import Event
 import unittest
 from unittest import mock
 
@@ -69,20 +70,58 @@ class CodexAppServerTests(unittest.TestCase):
         ])
         self.assertEqual([event["type"] for event in events], ["turn_started", "agent_message_delta", "item_completed", "turn_completed"])
 
-    def test_history_uses_official_thread_read_protocol(self) -> None:
+    def test_history_uses_official_cursor_protocol(self) -> None:
         entries = [{"turnId": "turn-1", "item": {"id": "item-1", "type": "agentMessage", "text": "{}"}}]
         process = _Process([
             {"id": 0, "result": {"userAgent": "test"}},
-            {"id": 1, "result": {"thread": {"id": "thread-123", "turns": [{"id": "turn-1", "items": [entries[0]["item"]]}]}}},
+            {"id": 1, "result": {"data": entries, "nextCursor": "older-page"}},
         ])
         with mock.patch.object(codex_app_server.shutil, "which", return_value="codex"), mock.patch.object(
             codex_app_server.subprocess, "Popen", return_value=process,
         ), mock.patch.object(codex_app_server, "_codex_environment", return_value={}):
-            value = codex_app_server.list_thread_items(thread_id="thread-123")
+            value = codex_app_server.list_thread_items(thread_id="thread-123", cursor="page-1", limit=20)
         sent = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
-        self.assertEqual(value, {"items": entries, "next_cursor": None})
-        self.assertEqual([item["method"] for item in sent], ["initialize", "initialized", "thread/read"])
-        self.assertEqual(sent[2]["params"], {"threadId": "thread-123", "includeTurns": True})
+        self.assertEqual(value, {"items": entries, "next_cursor": "older-page"})
+        self.assertEqual([item["method"] for item in sent], ["initialize", "initialized", "thread/items/list"])
+        self.assertTrue(sent[0]["params"]["capabilities"]["experimentalApi"])
+        self.assertEqual(sent[2]["params"], {"threadId": "thread-123", "limit": 20, "sortDirection": "desc", "cursor": "page-1"})
+
+    def test_turn_interrupt_uses_the_official_turn_method(self) -> None:
+        process = _Process([
+            {"id": 0, "result": {}},
+            {"id": 1, "result": {"thread": {"id": "thread-123"}}},
+            {"id": 2, "result": {"turn": {"id": "turn-1"}}},
+            {"id": 3, "result": {}},
+            {"method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "interrupted"}}},
+        ])
+        cancellation = Event()
+        cancellation.set()
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            output = Path(temporary) / "result.json"
+            route = {"model": "test", "reasoning_effort": "low", "schema": str(Path(__file__).resolve().parents[1] / "schemas" / "math-loop-turn.schema.json")}
+            with mock.patch.object(codex_app_server.shutil, "which", return_value="codex"), mock.patch.object(
+                codex_app_server.subprocess, "Popen", return_value=process,
+            ), mock.patch.object(codex_app_server, "_codex_environment", return_value={}):
+                with self.assertRaises(codex_app_server.AppServerError) as raised:
+                    codex_app_server.run_turn(route=route, prompt="synthetic", output_path=output, cancel_event=cancellation)
+        sent = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        self.assertEqual(raised.exception.public_code, "model_interrupted")
+        self.assertIn({"method": "turn/interrupt", "id": 3, "params": {"threadId": "thread-123", "turnId": "turn-1"}}, sent)
+
+    def test_compaction_uses_the_official_thread_method(self) -> None:
+        process = _Process([
+            {"id": 0, "result": {}},
+            {"id": 1, "result": {"thread": {"id": "thread-123"}}},
+            {"id": 2, "result": {}},
+            {"method": "thread/compacted", "params": {"threadId": "thread-123"}},
+        ])
+        with mock.patch.object(codex_app_server.shutil, "which", return_value="codex"), mock.patch.object(
+            codex_app_server.subprocess, "Popen", return_value=process,
+        ), mock.patch.object(codex_app_server, "_codex_environment", return_value={}):
+            value = codex_app_server.compact_thread(thread_id="thread-123")
+        sent = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        self.assertEqual(value, {"thread_id": "thread-123", "status": "completed"})
+        self.assertEqual([item["method"] for item in sent], ["initialize", "initialized", "thread/resume", "thread/compact/start"])
 
 
 if __name__ == "__main__":
