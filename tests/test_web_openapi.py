@@ -91,7 +91,14 @@ class WebOpenApiContractTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["items"]["maxItems"], 20)
         self.assertEqual(operation["parameters"][0]["name"], "cursor")
         message = self.document["components"]["schemas"]["ConversationMessage"]
-        self.assertEqual(set(message["properties"]), {"role", "text"})
+        self.assertEqual(set(message["properties"]), {"role", "text", "attachments"})
+        self.assertEqual(message["properties"]["attachments"]["items"]["$ref"], "#/components/schemas/Attachment")
+
+    def test_owned_intake_source_image_is_documented(self) -> None:
+        operation = self.operation("/v1/intakes/{intake_id}/source", "get")
+        self.assertEqual(operation["operationId"], "getIntakeSourceImage")
+        self.assertTrue({"401", "404"}.issubset(operation["responses"]))
+        self.assertEqual(set(operation["responses"]["200"]["content"]), {"image/png", "image/jpeg"})
 
     def test_conversation_control_uses_owned_intake_routes(self) -> None:
         stop = self.operation("/v1/intakes/{intake_id}/conversation/stop", "post")
@@ -99,6 +106,12 @@ class WebOpenApiContractTests(unittest.TestCase):
         self.assertEqual(stop["operationId"], "stopMathNotebookConversationTurn")
         self.assertEqual(compact["operationId"], "compactMathNotebookConversation")
         self.assertTrue({"404", "409", "503"}.issubset(compact["responses"]))
+
+    def test_clear_conversation_preserves_notebook_scope(self) -> None:
+        operation = self.operation("/v1/conversations/latest", "delete")
+        self.assertEqual(operation["operationId"], "clearLatestConversation")
+        self.assertIn("不删除已入本错题", operation["description"])
+        self.assertTrue({"204", "401", "403"}.issubset(operation["responses"]))
 
 
 if __name__ == "__main__":

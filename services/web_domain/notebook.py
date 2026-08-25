@@ -78,6 +78,32 @@ class InMemoryNotebookStore:
         self.codex_threads[(user_id, conversation_id)] = thread_id
         return thread_id
 
+    def clear_conversation(self, *, user_id: str) -> None:
+        graded_intakes = {
+            self.attempts[candidate.attempt_id].intake_id
+            for candidate in self.candidates.values()
+            if candidate.attempt_id in self.attempts and self.attempts[candidate.attempt_id].user_id == user_id
+        }
+        active_intakes = {
+            item.intake_id for item in self.intakes.values()
+            if item.user_id == user_id and (
+                item.status in {"extracting", "waiting_confirmation"}
+                or item.status == "confirmed" and item.intake_id not in graded_intakes
+            )
+        }
+        for key in [key for key in self.codex_threads if key[0] == user_id]:
+            self.codex_threads.pop(key, None)
+        for intake_id in active_intakes:
+            item = self.intakes[intake_id]
+            self.intakes[intake_id] = IntakeItem(item.intake_id, item.user_id, item.file_id, item.input_version, "cancelled", item.question_text, item.answer_text, item.item_no)
+        for attempt_id, item in list(self.attempts.items()):
+            if item.user_id == user_id and item.status in {"grading", "grade_ready"}:
+                self.attempts[attempt_id] = Attempt(item.attempt_id, item.user_id, item.intake_id, item.input_version, item.question_text, item.answer_text, "cancelled")
+        for job_id, item in list(self.jobs.items()):
+            if item.user_id == user_id and item.job_type in {"extract", "grade"} and item.status not in {"completed", "cancelled", "failed_final"}:
+                self.jobs[job_id] = Job(item.job_id, item.user_id, item.job_type, item.resource_id, "cancelled", item.checkpoint, item.last_error_code)
+        self.audit_events.append({"user_id": user_id, "event_type": "conversation.cleared", "resource_type": "conversation", "resource_id": user_id, "outcome": "completed"})
+
     def create_file(self, *, user_id: str, purpose: str, original_name: str, object_key: str, content_sha256: str, media_type: str, byte_size: int, status: str = "ready", idempotency_key: str | None = None) -> FileRecord:
         signature = (purpose, original_name, content_sha256, media_type, byte_size)
         upload_key = (user_id, idempotency_key) if idempotency_key else None
@@ -116,7 +142,7 @@ class InMemoryNotebookStore:
         return [
             item for item in self.intakes.values()
             if item.user_id == user_id and (
-                item.status == "waiting_confirmation"
+                item.status in {"extracting", "waiting_confirmation"}
                 or item.status == "confirmed" and item.intake_id not in graded_intakes
             )
         ]
@@ -608,6 +634,9 @@ class NotebookService:
             candidate.local_path.unlink(missing_ok=True)
         return record
 
+    def clear_conversation(self, *, user_id: str) -> None:
+        self.store.clear_conversation(user_id=user_id)
+
     def create_practice_pdf(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool = False) -> Job:
         job = self.store.create_practice_job(user_id=user_id, error_ids=error_ids, idempotency_key=idempotency_key, include_answers=include_answers)
         if job.status == "completed":
@@ -639,6 +668,18 @@ class NotebookService:
         if hashlib.sha256(content).hexdigest() != record.content_sha256:
             raise RuntimeError("file_integrity_failed")
         return f"practice-{job.job_id[:8]}.pdf", content
+
+    def read_intake_source(self, *, user_id: str, intake_id: str) -> tuple[str, str, bytes]:
+        intake = self.store.get_intake(user_id=user_id, intake_id=intake_id)
+        if not intake or intake.status == "cancelled":
+            raise LookupError("intake source not found")
+        record = self.store.get_file(user_id=user_id, file_id=intake.file_id)
+        if not record or record.purpose != "question_image" or record.media_type not in {"image/jpeg", "image/png"}:
+            raise LookupError("intake source not found")
+        content = self.files.read(record.object_key)
+        if hashlib.sha256(content).hexdigest() != record.content_sha256:
+            raise RuntimeError("file_integrity_failed")
+        return record.original_name, record.media_type, content
 
     def create_export(self, *, user_id: str, idempotency_key: str, now: datetime | None = None) -> Job:
         created_at = now or _now()

@@ -161,10 +161,12 @@ function bindWorkbench() {
   let activeProgress = null;
   const conversationTurns = [];
   const renderedCandidates = new Set();
+  const renderedAttachmentIds = new Set();
   const uploadInput = $("#file");
   const sendButton = $("#upload-button");
   const chatInput = $("#chat-input");
   const compactButton = $("#compact-conversation");
+  const clearConversationButton = $("#clear-conversation");
   const actionGroup = $("#composer-actions");
   const dropZone = $("#drop-zone");
   const uploadSurface = $(".chat-main");
@@ -512,6 +514,19 @@ function bindWorkbench() {
   }
 
   function appendUserUpload(files) {
+    const freshFiles = files.map(item => {
+      const name = String(item.name || "附件");
+      const extension = String(item.extension || (name.includes(".") ? name.split(".").pop() : "file")).toLowerCase();
+      return {
+        ...item,
+        name,
+        extension,
+        previewUrl: item.previewUrl || item.preview_url || "",
+        attachmentId: item.attachmentId || item.attachment_id || "",
+      };
+    }).filter(item => !item.attachmentId || !renderedAttachmentIds.has(item.attachmentId));
+    if (!freshFiles.length) return;
+    freshFiles.forEach(item => { if (item.attachmentId) renderedAttachmentIds.add(item.attachmentId); });
     const turn = document.createElement("div");
     const bubble = document.createElement("div");
     const grid = document.createElement("div");
@@ -519,7 +534,7 @@ function bindWorkbench() {
     turn.className = "chat-turn user-turn";
     bubble.className = "chat-upload-bubble";
     grid.className = "chat-upload-grid";
-    for (const item of files) {
+    for (const item of freshFiles) {
       const card = document.createElement("div");
       const preview = document.createElement("div");
       const name = document.createElement("small");
@@ -529,7 +544,7 @@ function bindWorkbench() {
       else { const type = document.createElement("strong"); type.textContent = item.extension.toUpperCase(); preview.append(type); }
       name.textContent = item.name; card.append(preview, name); grid.append(card);
     }
-    label.textContent = `请整理这 ${files.length} 个文件`;
+    label.textContent = `请整理这 ${freshFiles.length} 个文件`;
     bubble.append(grid, label); turn.append(bubble); appendTurn(turn);
   }
 
@@ -625,7 +640,19 @@ function bindWorkbench() {
     try {
       const result = await api("/v1/intakes");
       if (activeIntake || pendingIntakes.length || !Array.isArray(result.items)) return;
-      pendingIntakes = result.items.map(item => ({
+      appendUserUpload(result.items.map(item => item.attachment).filter(Boolean));
+      const interrupted = result.items.filter(item => item.status === "extracting" && item.attachment);
+      for (const item of interrupted) {
+        if (uploadFiles.some(file => file.fileId === item.attachment.attachment_id)) continue;
+        const name = item.attachment.name;
+        uploadFiles.push({
+          id: crypto.randomUUID(), file: null, fileId: item.attachment.attachment_id, intakeId: item.intake_id,
+          name, extension: name.includes(".") ? name.split(".").pop().toLowerCase() : "file",
+          previewUrl: item.attachment.preview_url, state: "recognition_failed", progress: 100,
+          error: "上次识别未完成", submitted: false,
+        });
+      }
+      pendingIntakes = result.items.filter(item => item.status !== "extracting").map(item => ({
         intakeId: item.intake_id, itemNo: item.item_no, inputVersion: item.input_version,
         status: item.status, fileName: `待确认题目 ${item.item_no}`,
         questionText: item.question_text || "", answerText: item.answer_text || "",
@@ -635,6 +662,8 @@ function bindWorkbench() {
         intake.queueIndex = index + 1;
         intake.queueTotal = pendingIntakes.length;
       });
+      renderUploadFiles();
+      if (interrupted.length) assistantTurn("已恢复上次未完成的图片，点击重试即可继续识别。", true);
       if (pendingIntakes.length) activateNextIntake("已恢复上次尚未处理完的题目。" );
     } catch (_) {}
   }
@@ -653,7 +682,11 @@ function bindWorkbench() {
     if (!Array.isArray(items)) return;
     const before = conversationTurns.length;
     for (const item of items) {
-      if (!item || typeof item.text !== "string" || !item.text.trim()) continue;
+      if (!item) continue;
+      const attachments = Array.isArray(item.attachments) ? item.attachments : [];
+      if (attachments.length) appendUserUpload(attachments);
+      if (attachments.length && item.role === "user") continue;
+      if (typeof item.text !== "string" || !item.text.trim()) continue;
       if (item.role === "user") userTurn(item.text);
       else if (item.role === "assistant") assistantTurn(item.text);
     }
@@ -687,6 +720,18 @@ function bindWorkbench() {
     await restoreConversationHistory();
     await restorePendingIntakes();
   }
+
+  clearConversationButton?.addEventListener("click", async () => {
+    if (!window.confirm("确定清空当前会话吗？未完成的题目和上传附件会从工作台移除；已经入本的错题不受影响。")) return;
+    clearConversationButton.disabled = true;
+    try {
+      await api("/v1/conversations/latest", {method: "DELETE"});
+      location.reload();
+    } catch (error) {
+      clearConversationButton.disabled = false;
+      status($("#upload-status"), `清空会话失败：${authError(error)}`, true);
+    }
+  });
 
   async function confirmAndGrade() {
     if (!activeAttempt && (!activeIntake?.questionText || !["waiting_confirmation", "confirmed"].includes(activeIntake.status))) {

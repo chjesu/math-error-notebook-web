@@ -113,6 +113,14 @@
         "responses": {"200": {"$ref": "#/components/responses/ConversationHistory"}, "401": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
       }
     },
+    "/v1/conversations/latest": {
+      "delete": {
+        "operationId": "clearLatestConversation",
+        "description": "清除当前用户的工作台会话映射、未完成录入及其附件；不删除已入本错题、复习记录或账号。",
+        "security": [{"sessionCookie": []}],
+        "responses": {"204": {"description": "会话已清空"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}}
+      }
+    },
     "/v1/intakes/{intake_id}": {
       "patch": {
         "operationId": "reviseIntake",
@@ -120,6 +128,15 @@
         "parameters": [{"$ref": "#/components/parameters/IntakeId"}],
         "requestBody": {"$ref": "#/components/requestBodies/IntakeRevision"},
         "responses": {"200": {"$ref": "#/components/responses/Intake"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/intakes/{intake_id}/source": {
+      "get": {
+        "operationId": "getIntakeSourceImage",
+        "description": "仅向当前录入任务的所属用户返回经过完整性校验的原始 PNG/JPEG；不暴露对象存储路径。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IntakeId"}],
+        "responses": {"200": {"description": "当前用户上传的原始题目图片", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}, "image/jpeg": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/intakes/{intake_id}/confirm": {
@@ -445,12 +462,13 @@
       "Version": {"type": "object", "additionalProperties": false, "required": ["input_version"], "properties": {"input_version": {"type": "integer", "minimum": 1}}},
       "TaskAccepted": {"type": "object", "required": ["resource_id", "task_id"], "properties": {"resource_id": {"$ref": "#/components/schemas/Id"}, "task_id": {"$ref": "#/components/schemas/Id"}}},
       "Task": {"type": "object", "required": ["task_id", "type", "status"], "properties": {"task_id": {"$ref": "#/components/schemas/Id"}, "type": {"enum": ["extract", "grade", "import", "practice_pdf", "export"]}, "status": {"enum": ["queued", "running", "waiting_confirmation", "completed", "failed_retryable", "failed_final", "cancelled"]}, "checkpoint": {"type": ["object", "null"]}, "last_error_code": {"type": ["string", "null"]}}},
-      "Intake": {"type": "object", "required": ["intake_id", "item_no", "input_version", "status", "question_text", "answer_text"], "properties": {"intake_id": {"$ref": "#/components/schemas/Id"}, "item_no": {"type": "integer", "minimum": 1, "maximum": 20}, "input_version": {"type": "integer", "minimum": 1}, "status": {"enum": ["extracting", "waiting_confirmation", "confirmed", "cancelled"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}}},
+      "Attachment": {"type": "object", "additionalProperties": false, "required": ["attachment_id", "name", "media_type", "preview_url"], "properties": {"attachment_id": {"$ref": "#/components/schemas/Id"}, "name": {"type": "string", "minLength": 1}, "media_type": {"enum": ["image/png", "image/jpeg"]}, "preview_url": {"type": "string", "pattern": "^/v1/intakes/[0-9a-f]{32}/source$"}}},
+      "Intake": {"type": "object", "required": ["intake_id", "item_no", "input_version", "status", "question_text", "answer_text"], "properties": {"intake_id": {"$ref": "#/components/schemas/Id"}, "item_no": {"type": "integer", "minimum": 1, "maximum": 20}, "input_version": {"type": "integer", "minimum": 1}, "status": {"enum": ["extracting", "waiting_confirmation", "confirmed", "cancelled"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}, "attachment": {"oneOf": [{"$ref": "#/components/schemas/Attachment"}, {"type": "null"}]}}},
       "IntakeBatch": {"allOf": [{"$ref": "#/components/schemas/Intake"}, {"type": "object", "required": ["items", "model_status"], "properties": {"items": {"type": "array", "maxItems": 20, "items": {"$ref": "#/components/schemas/Intake"}}, "model_status": {"enum": ["complete", "unclear", "existing"]}, "model": {"type": ["object", "null"]}}}]},
       "Diagnosis": {"type": "object", "properties": {"cause_code": {"type": ["string", "null"]}, "cause_evidence": {"type": ["string", "null"]}, "correct_solution": {"type": ["string", "null"]}, "final_answer": {"type": ["string", "null"]}, "prevention_cue": {"type": ["string", "null"]}}},
       "GradeCandidate": {"type": "object", "required": ["result_id", "input_version", "verdict", "status"], "properties": {"result_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "status": {"enum": ["candidate", "committed", "superseded", "rejected"]}, "first_error": {"type": ["string", "null"]}, "diagnosis": {"$ref": "#/components/schemas/Diagnosis"}}},
       "ChatTurnResponse": {"type": "object", "required": ["assistant_message", "action", "stage", "model"], "properties": {"assistant_message": {"type": "string"}, "action": {"enum": ["respond", "revise_intake", "revise_grade", "ready"]}, "stage": {"enum": ["intake", "grade"]}, "intake": {"$ref": "#/components/schemas/Intake"}, "candidate": {"oneOf": [{"$ref": "#/components/schemas/GradeCandidate"}, {"type": "null"}]}, "model": {"type": ["object", "null"]}}},
-      "ConversationMessage": {"type": "object", "additionalProperties": false, "required": ["role", "text"], "properties": {"role": {"enum": ["user", "assistant"]}, "text": {"type": "string", "minLength": 1, "maxLength": 12000}}},
+      "ConversationMessage": {"type": "object", "additionalProperties": false, "required": ["role", "text"], "properties": {"role": {"enum": ["user", "assistant"]}, "text": {"type": "string", "minLength": 1, "maxLength": 12000}, "attachments": {"type": "array", "maxItems": 20, "uniqueItems": true, "items": {"$ref": "#/components/schemas/Attachment"}}}},
       "ConversationHistory": {"type": "object", "additionalProperties": false, "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "maxItems": 20, "items": {"$ref": "#/components/schemas/ConversationMessage"}}, "next_cursor": {"type": ["string", "null"], "maxLength": 4096}}},
       "ErrorEntry": {"type": "object", "required": ["error_id", "status", "question_text", "created_at"], "properties": {"error_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["open", "reviewing", "mastered", "removed"]}, "question_text": {"type": "string"}, "answer_text": {"type": "string"}, "first_error": {"type": ["string", "null"]}, "diagnosis": {"$ref": "#/components/schemas/Diagnosis"}, "created_at": {"type": "string", "format": "date-time"}}},
       "Recommendation": {"type": "object", "required": ["recommendation_id", "question_id", "stem_text", "source", "reason", "status"], "properties": {"recommendation_id": {"$ref": "#/components/schemas/Id"}, "question_id": {"$ref": "#/components/schemas/Id"}, "stem_text": {"type": "string"}, "grade": {"type": ["integer", "null"]}, "difficulty": {"type": ["number", "null"]}, "source": {"type": "string"}, "reason": {"type": "string"}, "status": {"enum": ["assigned", "completed"]}}},

@@ -164,8 +164,11 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .chat-main { position: relative; display: flex; height: 100vh; min-height: 0; padding: 0 36px 20px; flex-direction: column; overflow: hidden; }
 .chat-main.drag-active::after { position: absolute; z-index: 20; display: grid; inset: 12px; border: 2px dashed #7793d1; border-radius: 18px; background: rgba(237, 242, 252, .92); color: var(--brand); content: "松开即可添加文件"; font-size: 20px; font-weight: 700; place-items: center; pointer-events: none; }
-.chat-header { width: 100%; flex: 0 0 auto; margin: 0 auto; padding: 20px 0 14px; }
+.chat-header { display: flex; width: 100%; flex: 0 0 auto; align-items: center; justify-content: space-between; margin: 0 auto; padding: 20px 0 14px; }
 .chat-header h1 { font-size: 22px; }
+.clear-conversation-button { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; background: #fff; color: var(--muted); cursor: pointer; }
+.clear-conversation-button:hover { border-color: #b9c4d6; color: var(--ink); }
+.clear-conversation-button:disabled { cursor: wait; opacity: .55; }
 .chat-workspace { display: flex; width: calc(100% + 72px); min-height: 0; margin: 0 -36px; flex: 1; flex-direction: column; }
 .chat-thread { min-height: 0; padding: 20px 44px; flex: 1; overflow-y: auto; scrollbar-gutter: stable; }
 .chat-welcome { display: grid; min-height: 45%; place-content: center; justify-items: center; text-align: center; }

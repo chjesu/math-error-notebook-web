@@ -117,7 +117,13 @@ class NotebookAsgiApp:
         try:
             if path == "/v1/intakes" and method == "GET":
                 intakes = await self._sync(self.notebook.store.list_pending_intakes, user_id=user.user_id)
-                await self._json(send, 200, {"items": [self._intake(item) for item in intakes]})
+                await self._json(send, 200, {"items": [self._intake_with_attachment(user.user_id, item) for item in intakes]})
+            elif path.startswith("/v1/intakes/") and path.endswith("/source") and method == "GET":
+                intake_id = path.split("/")[3]
+                _, media_type, content = await self._sync(
+                    self.notebook.read_intake_source, user_id=user.user_id, intake_id=intake_id,
+                )
+                await self._inline_bytes(send, 200, content, media_type)
             elif path == "/v1/conversations/latest/messages" and method == "GET":
                 if self.model_runner is None:
                     raise ModelUnavailableError("local model processing is disabled")
@@ -143,13 +149,22 @@ class NotebookAsgiApp:
                     mappings = await self._sync(self.notebook.store.list_recent_codex_threads, user_id=user.user_id, limit=20)
                     for conversation_id, thread_id in mappings:
                         page = await self._sync(self.model_runner.history, thread_id=thread_id, cursor=None, limit=20)
+                        items = self._history_items(user.user_id, conversation_id, page["items"])
                         history = {
-                            "items": page["items"],
+                            "items": items,
                             "next_cursor": self._encode_history_cursor(conversation_id, page.get("next_cursor")),
                         }
-                        if page["items"] or page.get("next_cursor"):
+                        if items or page.get("next_cursor"):
                             break
                 await self._json(send, 200, history)
+            elif path == "/v1/conversations/latest" and method == "DELETE":
+                with self._turn_cancellations_lock:
+                    cancellations = [event for (owner, _), event in self._turn_cancellations.items() if owner == user.user_id]
+                for cancellation in cancellations:
+                    cancellation.set()
+                await self._sync(self.notebook.clear_conversation, user_id=user.user_id)
+                await send({"type": "http.response.start", "status": 204, "headers": [(b"cache-control", b"no-store")]})
+                await send({"type": "http.response.body", "body": b""})
             elif path == "/v1/workbench" and method == "GET":
                 items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
                 pending = await self._sync(self.notebook.store.pending_job_count, user_id=user.user_id)
@@ -746,6 +761,34 @@ class NotebookAsgiApp:
     def _intake(value: IntakeItem) -> dict[str, Any]:
         return {"intake_id": value.intake_id, "item_no": value.item_no, "input_version": value.input_version, "status": value.status, "question_text": value.question_text, "answer_text": value.answer_text}
 
+    def _attachment(self, user_id: str, value: IntakeItem) -> dict[str, Any] | None:
+        record = self.notebook.store.get_file(user_id=user_id, file_id=value.file_id)
+        if not record or record.purpose != "question_image" or record.media_type not in {"image/jpeg", "image/png"}:
+            return None
+        return {
+            "attachment_id": record.file_id,
+            "name": record.original_name,
+            "media_type": record.media_type,
+            "preview_url": f"/v1/intakes/{value.intake_id}/source",
+        }
+
+    def _intake_with_attachment(self, user_id: str, value: IntakeItem) -> dict[str, Any]:
+        payload = self._intake(value)
+        payload["attachment"] = self._attachment(user_id, value)
+        return payload
+
+    def _history_items(self, user_id: str, conversation_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        intake = self.notebook.store.get_intake(user_id=user_id, intake_id=conversation_id)
+        attachment = self._attachment(user_id, intake) if intake else None
+        if not attachment:
+            return items
+        result = [dict(item) for item in items]
+        for item in result:
+            if item.get("role") == "user":
+                item["attachments"] = [attachment]
+                return result
+        return [{"role": "user", "text": "请整理这 1 个文件", "attachments": [attachment]}, *result[:19]]
+
     @staticmethod
     def _candidate(value: GradeCandidate) -> dict[str, Any]:
         return {"result_id": value.candidate_id, "input_version": value.input_version, "verdict": value.verdict, "status": value.status, "first_error": value.first_error, "diagnosis": NotebookAsgiApp._diagnosis(value.evidence)}
@@ -829,6 +872,11 @@ class NotebookAsgiApp:
     @staticmethod
     async def _bytes(send: Send, status: int, body: bytes, media_type: str, filename: str) -> None:
         await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", media_type.encode("ascii")), (b"content-length", str(len(body)).encode("ascii")), (b"content-disposition", f'attachment; filename="{filename}"'.encode("ascii")), (b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff")]})
+        await send({"type": "http.response.body", "body": body})
+
+    @staticmethod
+    async def _inline_bytes(send: Send, status: int, body: bytes, media_type: str) -> None:
+        await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", media_type.encode("ascii")), (b"content-length", str(len(body)).encode("ascii")), (b"cache-control", b"private,no-store"), (b"x-content-type-options", b"nosniff")]})
         await send({"type": "http.response.body", "body": body})
 
     @staticmethod

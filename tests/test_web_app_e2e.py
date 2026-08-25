@@ -107,6 +107,63 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(len(self.domain_store.files), 1)
         self.assertEqual(len([path for path in Path(self.temp.name).rglob("*") if path.is_file()]), 1)
 
+    def test_refresh_history_restores_owned_image_attachment_and_preview(self) -> None:
+        class EmptyHistoryModel:
+            @staticmethod
+            def history(*, thread_id, cursor, limit):
+                self.assertEqual((thread_id, cursor, limit), ("thread-with-image", None, 20))
+                return {"items": [], "next_cursor": None}
+
+        self.app.model_runner = EmptyHistoryModel()
+        cookie = self.login("13200132000")
+        other_cookie = self.login("13200132001")
+        content = self.png_bytes()
+        content_type, body = self.multipart("refresh-kept.png", content)
+        uploaded = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="upload-refresh-image")
+        created = self.call("/v1/intakes", method="POST", payload={"file_id": uploaded[2]["file_id"]}, cookie=cookie, idempotency_key="intake-refresh-image")
+        intake_id = created[2]["resource_id"]
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        self.domain_store.save_codex_thread(user_id=user.user_id, conversation_id=intake_id, thread_id="thread-with-image")
+
+        pending = self.call("/v1/intakes", cookie=cookie)
+        attachment = pending[2]["items"][0]["attachment"]
+        self.assertEqual(attachment["name"], "refresh-kept.png")
+        self.assertEqual(attachment["media_type"], "image/png")
+        self.assertEqual(attachment["preview_url"], f"/v1/intakes/{intake_id}/source")
+        self.assertNotIn("object_key", attachment)
+
+        preview = self.call(attachment["preview_url"], cookie=cookie)
+        self.assertEqual((preview[0], preview[1]["content-type"], preview[2]), (200, "image/png", content))
+        self.assertEqual(preview[1]["cache-control"], "private,no-store")
+        self.assertEqual(self.call(attachment["preview_url"], cookie=other_cookie)[0], 404)
+
+        history = self.call("/v1/conversations/latest/messages", cookie=cookie)
+        self.assertEqual(history[2]["items"], [{"role": "user", "text": "请整理这 1 个文件", "attachments": [attachment]}])
+
+    def test_clear_conversation_removes_only_current_users_workbench_content(self) -> None:
+        cookie = self.login("13200132002")
+        other_cookie = self.login("13200132003")
+        content_type, body = self.multipart("clear-me.png", self.png_bytes())
+        uploaded = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="upload-clear-conversation")
+        created = self.call("/v1/intakes", method="POST", payload={"file_id": uploaded[2]["file_id"]}, cookie=cookie, idempotency_key="intake-clear-conversation")
+        intake_id = created[2]["resource_id"]
+        other_type, other_body = self.multipart("keep-me.png", self.png_bytes())
+        other_uploaded = self.call("/v1/files", method="POST", body=other_body, content_type=other_type, cookie=other_cookie, idempotency_key="upload-keep-conversation")
+        other_created = self.call("/v1/intakes", method="POST", payload={"file_id": other_uploaded[2]["file_id"]}, cookie=other_cookie, idempotency_key="intake-keep-conversation")
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        other_user = self.auth_service.authenticate_session(other_cookie.split("=", 1)[1])
+        self.domain_store.save_codex_thread(user_id=user.user_id, conversation_id=intake_id, thread_id="thread-clear")
+        self.domain_store.save_codex_thread(user_id=other_user.user_id, conversation_id=other_created[2]["resource_id"], thread_id="thread-keep")
+
+        cleared = self.call("/v1/conversations/latest", method="DELETE", cookie=cookie)
+        self.assertEqual((cleared[0], cleared[2]), (204, None))
+        self.assertEqual(self.call("/v1/intakes", cookie=cookie)[2], {"items": []})
+        self.assertEqual(self.domain_store.list_recent_codex_threads(user_id=user.user_id), [])
+        self.assertEqual(self.call(f"/v1/intakes/{intake_id}/source", cookie=cookie)[0], 404)
+        self.assertEqual(len(self.call("/v1/intakes", cookie=other_cookie)[2]["items"]), 1)
+        self.assertEqual(self.domain_store.list_recent_codex_threads(user_id=other_user.user_id), [(other_created[2]["resource_id"], "thread-keep")])
+        self.assertEqual(self.domain_store.files[uploaded[2]["file_id"]].status, "ready")
+
     def test_cookie_writes_require_exact_same_origin(self) -> None:
         cookie = self.login("13500135000")
         cases = (

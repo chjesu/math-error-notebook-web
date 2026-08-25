@@ -178,6 +178,30 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def clear_conversation(self, *, user_id: str) -> None:
+        user = _required(user_id, "user_id", 32)
+        connection = self._connect()
+        cursor = connection.cursor()
+        now = _utcnow()
+        try:
+            connection.begin()
+            cursor.execute("DELETE FROM codex_conversations WHERE user_id=%s", (user,))
+            cursor.execute("UPDATE web_jobs SET status='cancelled',lease_owner=NULL,lease_expires_at=NULL,updated_at=%s WHERE user_id=%s AND job_type IN ('extract','grade') AND status IN ('queued','running','waiting_confirmation','failed_retryable')", (now, user))
+            cursor.execute("UPDATE attempts SET status='cancelled',updated_at=%s WHERE user_id=%s AND status='grading'", (now, user))
+            cursor.execute(
+                "UPDATE intake_items i SET i.status='cancelled',i.updated_at=%s WHERE i.user_id=%s AND (i.status IN ('extracting','waiting_confirmation') OR (i.status='confirmed' AND NOT EXISTS ("
+                "SELECT 1 FROM attempts a JOIN grade_candidates c ON c.attempt_id=a.id AND c.user_id=a.user_id WHERE a.user_id=%s AND a.intake_id=i.id)))",
+                (now, user, user),
+            )
+            cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'conversation.cleared','conversation',%s,%s,%s)", (user, user, json.dumps({"outcome": "completed"}), now))
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
     def create_file(
         self,
         *,
@@ -282,7 +306,7 @@ class MySqlDomainStore:
         try:
             cursor.execute(
                 "SELECT id,file_id,input_version,status,COALESCE(question_text,''),COALESCE(answer_text,''),item_no "
-                "FROM intake_items i WHERE i.user_id=%s AND (i.status='waiting_confirmation' OR (i.status='confirmed' AND NOT EXISTS ("
+                "FROM intake_items i WHERE i.user_id=%s AND (i.status IN ('extracting','waiting_confirmation') OR (i.status='confirmed' AND NOT EXISTS ("
                 "SELECT 1 FROM attempts a JOIN grade_candidates c ON c.attempt_id=a.id AND c.user_id=a.user_id "
                 "WHERE a.user_id=%s AND a.intake_id=i.id))) ORDER BY created_at,item_no",
                 (user_id, user_id),
