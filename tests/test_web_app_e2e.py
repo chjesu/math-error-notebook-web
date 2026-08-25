@@ -267,6 +267,8 @@ class NotebookE2ETests(unittest.TestCase):
         refreshed = self.call(f"/v1/intakes/{intake_id}/model-candidate", method="POST", payload={"refresh": True}, cookie=cookie)
         self.assertEqual((refreshed[0], refreshed[2]["model_status"], len(refreshed[2]["items"])), (201, "complete", 2))
         confirmed = self.call(f"/v1/intakes/{intake_id}/confirm", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="model-grade")
+        pending = self.call("/v1/intakes", cookie=cookie)
+        self.assertEqual([(item["item_no"], item["question_text"]) for item in pending[2]["items"]], [(2, "若 y-1=2，求 y。")])
         self.assertEqual(self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/model-grade", method="POST", payload={"input_version": 1}, cookie=other_cookie)[0], 404)
         graded = self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/model-grade", method="POST", payload={"input_version": 1}, cookie=cookie)
         self.assertEqual((graded[0], graded[2]["verdict"], graded[2]["diagnosis"]["final_answer"]), (201, "incorrect", "x=1"))

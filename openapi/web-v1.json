@@ -91,6 +91,11 @@
       }
     },
     "/v1/intakes": {
+      "get": {
+        "operationId": "listPendingIntakes",
+        "security": [{"sessionCookie": []}],
+        "responses": {"200": {"description": "Pending intake queue", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Intake"}}}}}}}, "401": {"$ref": "#/components/responses/Error"}}
+      },
       "post": {
         "operationId": "createIntake",
         "security": [{"sessionCookie": []}],

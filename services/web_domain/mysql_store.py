@@ -259,6 +259,23 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def list_pending_intakes(self, *, user_id: str) -> list[IntakeItem]:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT id,file_id,input_version,status,COALESCE(question_text,''),COALESCE(answer_text,''),item_no "
+                "FROM intake_items WHERE user_id=%s AND status='waiting_confirmation' ORDER BY created_at,item_no",
+                (user_id,),
+            )
+            return [
+                IntakeItem(str(row[0]), user_id, str(row[1]), int(row[2]), str(row[3]), str(row[4]), str(row[5]), int(row[6]))
+                for row in cursor.fetchall()
+            ]
+        finally:
+            cursor.close()
+            connection.close()
+
     def get_file_intakes(self, *, user_id: str, file_id: str) -> list[IntakeItem]:
         connection = self._connect()
         cursor = connection.cursor()

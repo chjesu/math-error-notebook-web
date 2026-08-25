@@ -109,7 +109,10 @@ class NotebookAsgiApp:
                 await self._error(send, 403, "forbidden")
                 return
         try:
-            if path == "/v1/workbench" and method == "GET":
+            if path == "/v1/intakes" and method == "GET":
+                intakes = await self._sync(self.notebook.store.list_pending_intakes, user_id=user.user_id)
+                await self._json(send, 200, {"items": [self._intake(item) for item in intakes]})
+            elif path == "/v1/workbench" and method == "GET":
                 items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
                 pending = await self._sync(self.notebook.store.pending_job_count, user_id=user.user_id)
                 progress = await self._sync(self.notebook.store.progress, user_id=user.user_id)

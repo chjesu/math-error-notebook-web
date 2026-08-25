@@ -481,6 +481,23 @@ function bindWorkbench() {
     } else setProgress(progress, "附件发送失败", "文件仍保留在输入框中，可以重试。", "error");
   }
 
+  async function restorePendingIntakes() {
+    try {
+      const result = await api("/v1/intakes");
+      if (activeIntake || pendingIntakes.length || !Array.isArray(result.items)) return;
+      pendingIntakes = result.items.map(item => ({
+        intakeId: item.intake_id, itemNo: item.item_no, inputVersion: item.input_version,
+        status: item.status, fileName: `待确认题目 ${item.item_no}`,
+        questionText: item.question_text || "", answerText: item.answer_text || "",
+      }));
+      pendingIntakes.forEach((intake, index) => {
+        intake.queueIndex = index + 1;
+        intake.queueTotal = pendingIntakes.length;
+      });
+      if (pendingIntakes.length) activateNextIntake("已恢复上次尚未处理完的题目。" );
+    } catch (_) {}
+  }
+
   async function confirmAndGrade() {
     if (!activeIntake?.questionText || activeIntake.status !== "waiting_confirmation") {
       assistantTurn("当前还没有可确认的完整题干。请直接告诉我题干、作答或需要修正的内容。", true);
@@ -495,6 +512,11 @@ function bindWorkbench() {
     setProgress(progress, "正在判题", "定位第一处实质错误并生成完整解法。" );
     activeCandidate = await api(`/v1/attempts/${activeAttempt}/model-grade`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion})});
     appendCandidate(activeCandidate);
+    if (activeCandidate.verdict === "correct") {
+      setProgress(progress, "判题候选已生成", "本题正确，无需入本，正在继续下一题。", "complete");
+      activateNextIntake("本题判定正确，无需写入错题本。" );
+      return;
+    }
     const canCommit = ["incorrect", "partial"].includes(activeCandidate.verdict);
     setProgress(progress, "判题候选已生成", canCommit ? "可继续追问或修正；确认后发送“确认入本”。" : "本题不会自动入本；可以继续追问或发送“下一题”。", "complete");
   }
@@ -635,6 +657,7 @@ function bindWorkbench() {
   $("#upload-form").addEventListener("submit", event => { event.preventDefault(); uploadFiles.some(item => !item.submitted && ["queued", "failed"].includes(item.state)) ? uploadQueued() : sendMessage(); });
   window.addEventListener("beforeunload", () => uploadFiles.forEach(item => item.previewUrl && URL.revokeObjectURL(item.previewUrl)));
   setComposerState();
+  restorePendingIntakes();
 }
 
 function bindErrors() {
