@@ -120,6 +120,8 @@ function bindWorkbench() {
   let busy = false;
   let uploadFiles = [];
   let pendingIntakes = [];
+  let intakeBatch = [];
+  let intakeBatchTurn = null;
   let historyCursor = null;
   let historyLoading = false;
   let stoppable = false;
@@ -148,14 +150,14 @@ function bindWorkbench() {
   const nextCommands = new Set(["下一题", "处理下一个", "跳过"]);
   const previewDialog = $("#image-preview-dialog");
   const previewContent = $("#image-preview-content");
+  let composerAction = "ask";
 
   function selectedComposerAction() {
-    return actionGroup.querySelector('input[name="composer-action"]:checked')?.value || "ask";
+    return composerAction;
   }
 
   function selectComposerAction(value) {
-    const option = Array.from(actionGroup.querySelectorAll('input[name="composer-action"]')).find(input => input.value === value);
-    if (option) option.checked = true;
+    composerAction = value;
   }
 
   function openImagePreview(url, name) {
@@ -310,75 +312,109 @@ function bindWorkbench() {
   }
 
   function appendIntake(intake) {
-    const turn = document.createElement("div");
-    const avatar = document.createElement("img");
-    const response = document.createElement("div");
-    const heading = document.createElement("strong");
-    const question = document.createElement("p");
-    const answer = document.createElement("p");
-    turn.className = "chat-turn assistant-turn";
-    avatar.className = "chat-avatar";
-    avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
-    avatar.alt = "";
-    response.className = "chat-response chat-intake-candidate";
-    heading.textContent = `题干与作答候选 · 进度 ${intake.queueIndex || 1}/${intake.queueTotal || 1}`;
-    question.textContent = `题干：${intake.questionText || "尚未识别，请直接告诉我题干或需要修正的内容。"}`;
-    answer.textContent = `作答：${intake.answerText || "未识别或未作答"}`;
-    renderMath(question);
-    renderMath(answer);
-    response.append(heading, question, answer);
-    turn.append(avatar, response);
-    appendTurn(turn);
+    if (!intakeBatch.includes(intake)) intakeBatch.push(intake);
+    renderIntakeBatch();
+  }
+
+  function renderIntakeBatch() {
+    if (!intakeBatch.length) return;
+    if (!intakeBatchTurn) {
+      intakeBatchTurn = document.createElement("div");
+      const avatar = document.createElement("img");
+      const response = document.createElement("div");
+      intakeBatchTurn.className = "chat-turn assistant-turn intake-batch-turn";
+      avatar.className = "chat-avatar";
+      avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
+      avatar.alt = "";
+      response.className = "chat-response intake-batch";
+      intakeBatchTurn.append(avatar, response);
+      appendTurn(intakeBatchTurn);
+    }
+    const response = intakeBatchTurn.querySelector(".intake-batch");
+    const heading = document.createElement("div");
+    const title = document.createElement("strong");
+    const hint = document.createElement("p");
+    const list = document.createElement("div");
+    heading.className = "intake-batch-heading";
+    title.textContent = `识别结果 · 共 ${intakeBatch.length} 道题`;
+    hint.textContent = "请逐题检查题干与作答。可在输入框直接说明修正，确认后按顺序判题。";
+    list.className = "recognized-question-list";
+    heading.append(title, hint);
+    let activeCard = null;
+    for (const [index, intake] of intakeBatch.entries()) {
+      const card = document.createElement("article");
+      const cardHeading = document.createElement("header");
+      const cardTitle = document.createElement("strong");
+      const badge = document.createElement("span");
+      const question = document.createElement("section");
+      const answer = document.createElement("section");
+      const stateLabels = {current: "当前待确认", grading: "正在判题", graded: "已生成判题", correct: "答案正确", saved: "已收入错题本", skipped: "已跳过"};
+      const state = intake === activeIntake ? (intake.uiState || (stage === "grade" ? "graded" : "current")) : (intake.uiState || "waiting");
+      card.className = `recognized-question-card is-${state}`;
+      card.dataset.intakeId = intake.intakeId;
+      if (intake === activeIntake) activeCard = card;
+      cardTitle.textContent = `题目 ${index + 1}`;
+      badge.className = "question-state";
+      badge.textContent = stateLabels[state] || "待处理";
+      cardHeading.append(cardTitle, badge);
+      question.innerHTML = `<strong>题干</strong><p></p>`;
+      question.querySelector("p").textContent = intake.questionText || "尚未识别，请在输入框补充题干。";
+      answer.innerHTML = `<strong>识别作答</strong><p></p>`;
+      answer.querySelector("p").textContent = intake.answerText || "未识别或未作答";
+      card.append(cardHeading, question, answer);
+      if (intake === activeIntake && stage === "intake" && !busy) {
+        const actions = document.createElement("div");
+        actions.className = "question-card-actions";
+        for (const [value, label, className] of [["confirm-intake", "确认并判题", "primary"], ["next", "跳过本题", "ghost"]]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = className;
+          button.dataset.intakeAction = value;
+          button.textContent = label;
+          actions.append(button);
+        }
+        card.append(actions);
+      }
+      renderMath(card);
+      list.append(card);
+    }
+    response.replaceChildren(heading, list);
+    requestAnimationFrame(() => activeCard?.scrollIntoView({block: "nearest"}));
   }
 
   function setComposerState() {
     const retryable = uploadFiles.some(item => !item.submitted && retryableUploadStates.has(item.state));
-    const actions = stage === "intake"
-      ? [["ask", "询问或修正"], ["confirm-intake", "确认并判题"], ["next", "下一题"]]
-      : stage === "grade"
-        ? [["ask", "询问或修正"], ...(["incorrect", "partial"].includes(activeCandidate?.verdict) ? [["commit", "确认入本"]] : []), ["next", "下一题"]]
-        : [["ask", "询问"]];
+    const actions = stage === "grade"
+      ? [...(["incorrect", "partial"].includes(activeCandidate?.verdict) ? [["commit", "确认入本"]] : []), ["next", "下一题"]]
+      : [];
     const signature = actions.map(([value, label]) => `${value}:${label}`).join("|");
     if (actionGroup.dataset.signature !== signature) {
-      const selected = selectedComposerAction();
-      const preferred = actions.some(([value]) => value === selected) ? selected : "ask";
       actionGroup.replaceChildren(...actions.map(([value, label]) => {
-        const item = document.createElement("label");
-        const radio = document.createElement("input");
-        const text = document.createElement("span");
-        item.className = "composer-action";
-        radio.type = "radio";
-        radio.name = "composer-action";
-        radio.value = value;
-        radio.checked = value === preferred;
-        text.textContent = label;
-        item.append(radio, text);
-        return item;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `composer-action${value === "commit" ? " is-primary" : ""}`;
+        button.dataset.composerAction = value;
+        button.textContent = label;
+        return button;
       }));
       actionGroup.dataset.signature = signature;
     }
     chatInput.disabled = false;
-    actionGroup.querySelectorAll("input").forEach(input => { input.disabled = busy; });
+    actionGroup.querySelectorAll("button").forEach(button => { button.disabled = busy; });
     compactButton.hidden = !activeIntake;
     compactButton.disabled = busy;
-    const selectedAction = selectedComposerAction();
-    const actionPlaceholders = {
-      "confirm-intake": "无需输入，点击发送即可确认题干与作答并开始判题",
-      commit: "无需输入，点击发送即可将当前错题写入错题本",
-      next: "无需输入，点击发送即可处理下一题",
-    };
-    chatInput.placeholder = actionPlaceholders[selectedAction] || (stage === "upload"
+    chatInput.placeholder = stage === "upload"
       ? "输入消息，或添加图片、PDF、DOCX"
       : stage === "intake"
-        ? "询问题目，或输入对题干与作答的修正"
-        : "继续追问判题依据，或输入需要修正的内容");
+        ? "例如：第 2 题答案改为 C；或继续询问题目"
+        : "继续追问判题依据，或输入需要修正的内容";
     sendButton.classList.toggle("is-stop", stoppable);
     sendButton.setAttribute("aria-label", stoppable ? "停止处理" : "发送");
     if (stoppable) {
       sendButton.disabled = stopRequested;
       sendButton.textContent = stopRequested ? "…" : "■";
     } else {
-      sendButton.disabled = busy || (!retryable && selectedAction === "ask" && !chatInput.value.trim());
+      sendButton.disabled = busy || (!retryable && !chatInput.value.trim());
       sendButton.textContent = retryable && uploadFiles.some(item => ["failed", "processing_failed", "recognition_failed"].includes(item.state)) ? "↻" : "↑";
     }
   }
@@ -483,9 +519,9 @@ function bindWorkbench() {
     activeCandidate = null;
     stage = activeIntake ? "intake" : "upload";
     if (activeIntake) {
+      activeIntake.uiState = "current";
       appendIntake(activeIntake);
-      assistantTurn(`你可以直接输入修正或追问。内容无误时发送“确认并判题”${pendingIntakes.length ? `；后面还有 ${pendingIntakes.length} 道题` : ""}。`);
-    }
+    } else renderIntakeBatch();
     setComposerState();
     if (!chatInput.disabled) chatInput.focus();
   }
@@ -520,7 +556,7 @@ function bindWorkbench() {
         const candidate = await api(`/v1/intakes/${item.intakeId}/model-candidate`, {method: "POST", body: JSON.stringify({refresh: true})});
         const extractedItems = Array.isArray(candidate.items) && candidate.items.length ? candidate.items : [candidate];
         for (const extracted of extractedItems) {
-          pendingIntakes.push({
+          const intake = {
             intakeId: extracted.intake_id || item.intakeId,
             itemNo: extracted.item_no || 1,
             inputVersion: extracted.input_version || 1,
@@ -528,7 +564,9 @@ function bindWorkbench() {
             fileName: extractedItems.length > 1 ? `${item.name} · 第 ${extracted.item_no || 1} 题` : item.name,
             questionText: extracted.question_text || "",
             answerText: extracted.answer_text || "",
-          });
+          };
+          pendingIntakes.push(intake);
+          intakeBatch.push(intake);
         }
         recognized += extractedItems.filter(extracted => extracted.question_text).length;
         item.state = "done";
@@ -570,6 +608,7 @@ function bindWorkbench() {
         status: item.status, fileName: `待确认题目 ${item.item_no}`,
         questionText: item.question_text || "", answerText: item.answer_text || "",
       }));
+      intakeBatch = [...pendingIntakes];
       pendingIntakes.forEach((intake, index) => {
         intake.queueIndex = index + 1;
         intake.queueTotal = pendingIntakes.length;
@@ -631,6 +670,8 @@ function bindWorkbench() {
       return;
     }
     const progress = progressTurn();
+    activeIntake.uiState = "grading";
+    renderIntakeBatch();
     setProgress(progress, "正在确认题干与作答", "锁定当前版本，准备判题。" );
     const confirmed = await api(`/v1/intakes/${activeIntake.intakeId}/confirm`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion}), headers: {"Idempotency-Key": crypto.randomUUID()}});
     activeAttempt = confirmed.resource_id;
@@ -640,11 +681,15 @@ function bindWorkbench() {
     activeCandidate = await api(`/v1/attempts/${activeAttempt}/model-grade`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion})});
     appendCandidate(activeCandidate);
     if (activeCandidate.verdict === "correct") {
+      activeIntake.uiState = "correct";
+      renderIntakeBatch();
       setProgress(progress, "判题候选已生成", "本题正确，无需入本，正在继续下一题。", "complete");
       activateNextIntake("本题判定正确，无需写入错题本。" );
       return;
     }
     const canCommit = ["incorrect", "partial"].includes(activeCandidate.verdict);
+    activeIntake.uiState = "graded";
+    renderIntakeBatch();
     setProgress(progress, "判题候选已生成", canCommit ? "可继续追问或修正；确认后发送“确认入本”。" : "本题不会自动入本；可以继续追问或发送“下一题”。", "complete");
   }
 
@@ -659,6 +704,8 @@ function bindWorkbench() {
       const recommendations = await api(`/v1/errors/${entry.error_id}/recommendations`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}});
       message = `已写入错题本并安排首次复习，已匹配 ${recommendations.items.length} 道已验证练习。`;
     } catch (_) {}
+    activeIntake.uiState = "saved";
+    renderIntakeBatch();
     activateNextIntake(message);
   }
 
@@ -766,7 +813,8 @@ function bindWorkbench() {
     try {
       if (stage === "intake" && confirmIntakeCommands.has(message)) await confirmAndGrade();
       else if (stage === "grade" && commitCommands.has(message)) await commitCurrent();
-      else if (stage === "grade" && nextCommands.has(message)) activateNextIntake("本题未写入错题本，继续处理下一份。" );
+      else if (stage === "intake" && nextCommands.has(message)) { activeIntake.uiState = "skipped"; renderIntakeBatch(); activateNextIntake("已跳过本题。" ); }
+      else if (stage === "grade" && nextCommands.has(message)) { activeIntake.uiState = "skipped"; renderIntakeBatch(); activateNextIntake("本题未写入错题本，继续处理下一份。" ); }
       else {
         progress = progressTurn();
         activeProgress = progress;
@@ -799,9 +847,14 @@ function bindWorkbench() {
   compactButton.addEventListener("click", compactConversation);
   uploadInput.addEventListener("change", () => { addUploadFiles(uploadInput.files); uploadInput.value = ""; });
   dropZone.addEventListener("click", event => { if (!event.target.closest("button, textarea, input, label")) chatInput.focus(); });
-  actionGroup.addEventListener("change", setComposerState);
+  actionGroup.addEventListener("click", event => {
+    const button = event.target.closest("[data-composer-action]");
+    if (!button || busy) return;
+    selectComposerAction(button.dataset.composerAction);
+    sendMessage();
+  });
   chatInput.addEventListener("input", () => {
-    if (chatInput.value.trim() && selectedComposerAction() !== "ask") selectComposerAction("ask");
+    selectComposerAction("ask");
     chatInput.style.height = "auto";
     chatInput.style.height = `${Math.min(chatInput.scrollHeight, 150)}px`;
     setComposerState();
@@ -829,7 +882,11 @@ function bindWorkbench() {
   });
   $("#chat-stream").addEventListener("click", event => {
     const opener = event.target.closest("[data-preview-url]");
-    if (opener) openImagePreview(opener.dataset.previewUrl, opener.dataset.previewName);
+    if (opener) return openImagePreview(opener.dataset.previewUrl, opener.dataset.previewName);
+    const action = event.target.closest("[data-intake-action]");
+    if (!action || busy || !activeIntake) return;
+    selectComposerAction(action.dataset.intakeAction);
+    sendMessage();
   });
   previewDialog?.addEventListener("click", event => { if (event.target === previewDialog) previewDialog.close(); });
   previewDialog?.addEventListener("close", () => { previewContent.removeAttribute("src"); });
