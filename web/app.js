@@ -843,11 +843,71 @@ function bindWorkbench() {
     return Array.from(transfer?.items || []).filter(item => item.kind === "file").map(item => item.getAsFile?.()).filter(Boolean);
   }
 
-  uploadSurface.addEventListener("dragenter", event => { if (hasTransferredFiles(event.dataTransfer)) { event.preventDefault(); uploadSurface.classList.add("drag-active"); } });
-  uploadSurface.addEventListener("dragover", event => { if (hasTransferredFiles(event.dataTransfer)) { event.preventDefault(); uploadSurface.classList.add("drag-active"); } });
-  uploadSurface.addEventListener("dragleave", event => { if (!event.relatedTarget || !uploadSurface.contains(event.relatedTarget)) uploadSurface.classList.remove("drag-active"); });
-  uploadSurface.addEventListener("drop", event => { const files = transferredFiles(event.dataTransfer); if (files.length) { event.preventDefault(); event.stopPropagation(); uploadSurface.classList.remove("drag-active"); addUploadFiles(files); } });
-  document.addEventListener("paste", event => { const files = transferredFiles(event.clipboardData); if (files.length) { event.preventDefault(); addUploadFiles(files); } });
+  function isInsideUploadSurface(event) {
+    return event.target instanceof Node && uploadSurface.contains(event.target);
+  }
+
+  async function clipboardFiles() {
+    if (!navigator.clipboard?.read) return [];
+    const files = [];
+    try {
+      for (const item of await navigator.clipboard.read()) {
+        for (const type of item.types) {
+          const extension = mimeExtensions.get(type.toLowerCase());
+          if (!extension) continue;
+          const blob = await item.getType(type);
+          files.push(new File([blob], `粘贴图片-${files.length + 1}.${extension}`, {type}));
+        }
+      }
+    } catch (_error) {
+      return [];
+    }
+    return files;
+  }
+
+  let pasteHandledAt = 0;
+  let clipboardReadPending = false;
+  async function addClipboardFiles() {
+    if (clipboardReadPending) return false;
+    clipboardReadPending = true;
+    try {
+      const files = await clipboardFiles();
+      if (!files.length) return false;
+      pasteHandledAt = performance.now();
+      addUploadFiles(files);
+      return true;
+    } finally {
+      clipboardReadPending = false;
+    }
+  }
+
+  window.addEventListener("dragenter", event => { if (isInsideUploadSurface(event) && hasTransferredFiles(event.dataTransfer)) { event.preventDefault(); uploadSurface.classList.add("drag-active"); } }, true);
+  window.addEventListener("dragover", event => { if (isInsideUploadSurface(event) && hasTransferredFiles(event.dataTransfer)) { event.preventDefault(); uploadSurface.classList.add("drag-active"); } }, true);
+  window.addEventListener("dragleave", event => { if (!event.relatedTarget || !uploadSurface.contains(event.relatedTarget)) uploadSurface.classList.remove("drag-active"); }, true);
+  window.addEventListener("drop", event => {
+    if (!isInsideUploadSurface(event) || !hasTransferredFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    uploadSurface.classList.remove("drag-active");
+    addUploadFiles(transferredFiles(event.dataTransfer));
+  }, true);
+  window.addEventListener("paste", async event => {
+    const files = transferredFiles(event.clipboardData);
+    if (files.length) {
+      event.preventDefault();
+      pasteHandledAt = performance.now();
+      addUploadFiles(files);
+      return;
+    }
+    if (await addClipboardFiles()) event.preventDefault();
+  }, true);
+  window.addEventListener("keydown", event => {
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "v") return;
+    setTimeout(async () => {
+      if (performance.now() - pasteHandledAt < 250) return;
+      await addClipboardFiles();
+    }, 0);
+  }, true);
   $("#upload-form").addEventListener("submit", event => {
     event.preventDefault();
     if (stoppable) stopActiveTurn();
