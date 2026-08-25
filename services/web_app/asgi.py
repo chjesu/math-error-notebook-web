@@ -140,7 +140,7 @@ class NotebookAsgiApp:
                         "next_cursor": self._encode_history_cursor(conversation_id, page.get("next_cursor")),
                     }
                 else:
-                    mappings = await self._sync(self.notebook.store.list_recent_codex_threads, user_id=user.user_id, limit=5)
+                    mappings = await self._sync(self.notebook.store.list_recent_codex_threads, user_id=user.user_id, limit=20)
                     for conversation_id, thread_id in mappings:
                         page = await self._sync(self.model_runner.history, thread_id=thread_id, cursor=None, limit=20)
                         history = {

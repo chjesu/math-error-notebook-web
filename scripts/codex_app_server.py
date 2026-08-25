@@ -64,6 +64,61 @@ def _drain_stderr(stream: Any, target: list[str]) -> None:
         del target[:-8]
 
 
+def _initialize(
+    send: Callable[[dict[str, Any]], None],
+    messages: Queue[str | None],
+    process: Any,
+    stderr_tail: list[str],
+    *,
+    experimental: bool = False,
+    timeout_seconds: float = 30.0,
+) -> None:
+    """Complete the app-server handshake before sending any other request."""
+    params: dict[str, Any] = {
+        "clientInfo": {
+            "name": "lzl_math_error_notebook",
+            "title": "李兆霖数学错题本",
+            "version": "0.5.0",
+        },
+    }
+    if experimental:
+        params["capabilities"] = {"experimentalApi": True}
+    send({"method": "initialize", "id": 0, "params": params})
+    deadline = time.monotonic() + min(timeout_seconds, 30.0)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AppServerError("codex app-server initialization timed out", category="timeout")
+        try:
+            line = messages.get(timeout=min(remaining, 1.0))
+        except Empty:
+            if process.poll() is not None:
+                raise AppServerError(
+                    "codex app-server exited during initialization",
+                    category=_classify_error("".join(stderr_tail)),
+                )
+            continue
+        if line is None:
+            raise AppServerError(
+                "codex app-server closed during initialization",
+                category=_classify_error("".join(stderr_tail)),
+            )
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(message, dict) or message.get("id") != 0:
+            continue
+        if message.get("error"):
+            error = message.get("error") if isinstance(message.get("error"), dict) else {}
+            raise AppServerError(
+                "codex app-server rejected initialization",
+                category=_classify_error(str(error.get("message", ""))),
+            )
+        send({"method": "initialized", "params": {}})
+        return
+
+
 def _safe_event(message: dict[str, Any]) -> dict[str, Any] | None:
     method = message.get("method")
     params = message.get("params")
@@ -127,11 +182,7 @@ def run_turn(
             process.stdin.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
             process.stdin.flush()
 
-        send({
-            "method": "initialize", "id": 0,
-            "params": {"clientInfo": {"name": "lzl_math_error_notebook", "title": "李兆霖数学错题本", "version": "0.5.0"}},
-        })
-        send({"method": "initialized", "params": {}})
+        _initialize(send, messages, process, stderr_tail, timeout_seconds=timeout_seconds)
         thread_method = "thread/resume" if thread_id else "thread/start"
         thread_params: dict[str, Any] = {
             "model": route["model"], "approvalPolicy": "never", "sandbox": "read-only", "cwd": isolated,
@@ -279,6 +330,14 @@ def list_thread_items(
         raise ValueError("invalid Codex history sort direction")
     if cursor is not None and (not isinstance(cursor, str) or not cursor or len(cursor) > 2048):
         raise ValueError("invalid Codex history cursor")
+    legacy_offset = 0
+    if cursor and cursor.startswith("legacy:"):
+        try:
+            legacy_offset = int(cursor.removeprefix("legacy:"))
+        except ValueError as exc:
+            raise ValueError("invalid Codex history cursor") from exc
+        if legacy_offset < 0:
+            raise ValueError("invalid Codex history cursor")
     executable = shutil.which("codex")
     if not executable:
         raise AppServerError("codex CLI is not installed or not on PATH")
@@ -306,20 +365,16 @@ def list_thread_items(
             process.stdin.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
             process.stdin.flush()
 
-        send({
-            "method": "initialize", "id": 0,
-            "params": {
-                "clientInfo": {"name": "lzl_math_error_notebook", "title": "李兆霖数学错题本", "version": "0.5.0"},
-                "capabilities": {"experimentalApi": True},
-            },
-        })
-        send({"method": "initialized", "params": {}})
-        params: dict[str, Any] = {
-            "threadId": thread_id, "limit": limit, "sortDirection": sort_direction,
-        }
-        if cursor is not None:
-            params["cursor"] = cursor
-        send({"method": "thread/items/list", "id": 1, "params": params})
+        _initialize(send, messages, process, stderr_tail, experimental=True, timeout_seconds=timeout_seconds)
+        if cursor and cursor.startswith("legacy:"):
+            send({"method": "thread/read", "id": 2, "params": {"threadId": thread_id, "includeTurns": True}})
+        else:
+            params: dict[str, Any] = {
+                "threadId": thread_id, "limit": limit, "sortDirection": sort_direction,
+            }
+            if cursor is not None:
+                params["cursor"] = cursor
+            send({"method": "thread/items/list", "id": 1, "params": params})
         deadline = time.monotonic() + timeout_seconds
         try:
             while True:
@@ -352,9 +407,13 @@ def list_thread_items(
                 if message.get("id") == 1:
                     if message.get("error"):
                         error = message.get("error") if isinstance(message.get("error"), dict) else {}
+                        detail = str(error.get("message", "")).casefold()
+                        if error.get("code") == -32601 or "not supported" in detail:
+                            send({"method": "thread/read", "id": 2, "params": {"threadId": thread_id, "includeTurns": True}})
+                            continue
                         raise AppServerError(
                             "codex app-server rejected the history request",
-                            category=_classify_error(str(error.get("message", ""))),
+                            category=_classify_error(detail),
                         )
                     result = message.get("result") if isinstance(message.get("result"), dict) else {}
                     entries = result.get("data") if isinstance(result.get("data"), list) else []
@@ -363,6 +422,29 @@ def list_thread_items(
                     return {
                         "items": entries,
                         "next_cursor": next_cursor if isinstance(next_cursor, str) and next_cursor else None,
+                    }
+                if message.get("id") == 2:
+                    if message.get("error"):
+                        error = message.get("error") if isinstance(message.get("error"), dict) else {}
+                        raise AppServerError(
+                            "codex app-server rejected the legacy history request",
+                            category=_classify_error(str(error.get("message", ""))),
+                        )
+                    result = message.get("result") if isinstance(message.get("result"), dict) else {}
+                    thread = result.get("thread") if isinstance(result.get("thread"), dict) else {}
+                    turns = thread.get("turns") if isinstance(thread.get("turns"), list) else []
+                    entries = [
+                        {"turnId": turn.get("id"), "item": item}
+                        for turn in turns if isinstance(turn, dict)
+                        for item in (turn.get("items") if isinstance(turn.get("items"), list) else [])
+                        if isinstance(item, dict)
+                    ]
+                    entries.reverse()
+                    page = entries[legacy_offset:legacy_offset + limit]
+                    next_offset = legacy_offset + len(page)
+                    return {
+                        "items": page,
+                        "next_cursor": f"legacy:{next_offset}" if next_offset < len(entries) else None,
                     }
         finally:
             try:
@@ -405,10 +487,7 @@ def compact_thread(*, thread_id: str, timeout_seconds: float = 180.0) -> dict[st
             process.stdin.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
             process.stdin.flush()
 
-        send({"method": "initialize", "id": 0, "params": {
-            "clientInfo": {"name": "lzl_math_error_notebook", "title": "李兆霖数学错题本", "version": "0.5.0"},
-        }})
-        send({"method": "initialized", "params": {}})
+        _initialize(send, messages, process, stderr_tail, timeout_seconds=timeout_seconds)
         send({"method": "thread/resume", "id": 1, "params": {
             "threadId": thread_id, "approvalPolicy": "never", "sandbox": "read-only", "cwd": isolated,
         }})

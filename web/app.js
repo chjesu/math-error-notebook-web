@@ -660,7 +660,9 @@ function bindWorkbench() {
       const result = await api("/v1/conversations/latest/messages");
       historyCursor = typeof result.next_cursor === "string" ? result.next_cursor : null;
       appendHistoryItems(result.items);
-    } catch (_) {}
+    } catch (error) {
+      status($("#upload-status"), `历史会话暂时无法加载：${authError(error)}`, true);
+    }
   }
 
   function appendHistoryItems(items, prepend = false) {

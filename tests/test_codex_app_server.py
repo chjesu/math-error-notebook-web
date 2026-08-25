@@ -86,6 +86,33 @@ class CodexAppServerTests(unittest.TestCase):
         self.assertTrue(sent[0]["params"]["capabilities"]["experimentalApi"])
         self.assertEqual(sent[2]["params"], {"threadId": "thread-123", "limit": 20, "sortDirection": "desc", "cursor": "page-1"})
 
+    def test_history_falls_back_to_thread_read_for_legacy_threads(self) -> None:
+        user = {"id": "item-user", "type": "userMessage", "content": [{"type": "text", "text": "question"}]}
+        assistant = {"id": "item-agent", "type": "agentMessage", "text": "answer"}
+        process = _Process([
+            {"id": 0, "result": {"userAgent": "test"}},
+            {"id": 1, "error": {"code": -32601, "message": "thread/items/list is not supported yet"}},
+            {"id": 2, "result": {"thread": {"turns": [{"id": "turn-1", "items": [user, assistant]}]}}},
+        ])
+        with mock.patch.object(codex_app_server.shutil, "which", return_value="codex"), mock.patch.object(
+            codex_app_server.subprocess, "Popen", return_value=process,
+        ), mock.patch.object(codex_app_server, "_codex_environment", return_value={}):
+            value = codex_app_server.list_thread_items(thread_id="thread-123", limit=1)
+        sent = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        self.assertEqual(value, {"items": [{"turnId": "turn-1", "item": assistant}], "next_cursor": "legacy:1"})
+        self.assertEqual([item["method"] for item in sent], ["initialize", "initialized", "thread/items/list", "thread/read"])
+
+        next_process = _Process([
+            {"id": 0, "result": {"userAgent": "test"}},
+            {"id": 2, "result": {"thread": {"turns": [{"id": "turn-1", "items": [user, assistant]}]}}},
+        ])
+        with mock.patch.object(codex_app_server.shutil, "which", return_value="codex"), mock.patch.object(
+            codex_app_server.subprocess, "Popen", return_value=next_process,
+        ), mock.patch.object(codex_app_server, "_codex_environment", return_value={}):
+            older = codex_app_server.list_thread_items(thread_id="thread-123", cursor="legacy:1", limit=1)
+        self.assertEqual(older, {"items": [{"turnId": "turn-1", "item": user}], "next_cursor": None})
+        self.assertEqual([item["method"] for item in map(json.loads, next_process.stdin.getvalue().splitlines())], ["initialize", "initialized", "thread/read"])
+
     def test_turn_interrupt_uses_the_official_turn_method(self) -> None:
         process = _Process([
             {"id": 0, "result": {}},

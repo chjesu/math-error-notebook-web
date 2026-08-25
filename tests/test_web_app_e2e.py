@@ -349,7 +349,15 @@ class NotebookE2ETests(unittest.TestCase):
                     "next_cursor": "older-page",
                 }
 
+        original_list = self.domain_store.list_recent_codex_threads
+        requested_limits = []
+
+        def list_recent_codex_threads(*, user_id, limit):
+            requested_limits.append(limit)
+            return original_list(user_id=user_id, limit=limit)
+
         self.app.model_runner = FakeHistoryModel()
+        self.domain_store.list_recent_codex_threads = list_recent_codex_threads
         cookie = self.login("13000130002")
         other_cookie = self.login("13000130003")
         user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
@@ -357,6 +365,7 @@ class NotebookE2ETests(unittest.TestCase):
         self.domain_store.save_codex_thread(user_id=user.user_id, conversation_id="b" * 32, thread_id="thread-empty-test")
         response = self.call("/v1/conversations/latest/messages", cookie=cookie)
         self.assertEqual(response[0], 200)
+        self.assertEqual(requested_limits, [20])
         self.assertEqual(response[2]["items"][0], {"role": "user", "text": "请再检查"})
         self.assertNotIn("thread_id", response[2])
         self.assertNotIn("conversation_id", response[2])
