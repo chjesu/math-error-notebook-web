@@ -10,9 +10,9 @@ import unittest
 from services.web_app.codex_model import CodexNotebookModel, ModelUnavailableError
 
 
-def solution_review(route, review_input, output, images):
+def solution_review(route, review_input, output, images, thread_id=None, event_callback=None):
     frozen = json.loads(review_input)
-    return {"route": route, "result": {
+    return {"route": route, "thread_id": thread_id or "thread-solution", "result": {
         "attempt_id": frozen["attempt_id"], "input_version": frozen["input_version"],
         "solution": "独立解题过程", "final_answer": "答案",
         "verification_checks": [{"left": "1+1", "right": "2", "variables": []}],
@@ -180,9 +180,9 @@ class CodexNotebookModelTests(unittest.TestCase):
         ])
 
     def test_grade_rejects_unbounded_verification_requests_before_adjudication(self) -> None:
-        def bad_solution(route, review_input, output, images):
+        def bad_solution(route, review_input, output, images, thread_id=None, event_callback=None):
             frozen = json.loads(review_input)
-            return {"route": route, "result": {
+            return {"route": route, "thread_id": thread_id or "thread-solution", "result": {
                 "attempt_id": frozen["attempt_id"], "input_version": frozen["input_version"],
                 "solution": "过程", "final_answer": "答案",
                 "verification_checks": [{"left": "1", "right": "1", "variables": [], "command": "whoami"}],

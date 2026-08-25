@@ -282,8 +282,10 @@ class MySqlDomainStore:
         try:
             cursor.execute(
                 "SELECT id,file_id,input_version,status,COALESCE(question_text,''),COALESCE(answer_text,''),item_no "
-                "FROM intake_items WHERE user_id=%s AND status='waiting_confirmation' ORDER BY created_at,item_no",
-                (user_id,),
+                "FROM intake_items i WHERE i.user_id=%s AND (i.status='waiting_confirmation' OR (i.status='confirmed' AND NOT EXISTS ("
+                "SELECT 1 FROM attempts a JOIN grade_candidates c ON c.attempt_id=a.id AND c.user_id=a.user_id "
+                "WHERE a.user_id=%s AND a.intake_id=i.id))) ORDER BY created_at,item_no",
+                (user_id, user_id),
             )
             return [
                 IntakeItem(str(row[0]), user_id, str(row[1]), int(row[2]), str(row[3]), str(row[4]), str(row[5]), int(row[6]))

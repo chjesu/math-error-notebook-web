@@ -108,9 +108,17 @@ class InMemoryNotebookStore:
         return value if value and value.user_id == user_id else None
 
     def list_pending_intakes(self, *, user_id: str) -> list[IntakeItem]:
+        graded_intakes = {
+            self.attempts[candidate.attempt_id].intake_id
+            for candidate in self.candidates.values()
+            if candidate.attempt_id in self.attempts and self.attempts[candidate.attempt_id].user_id == user_id
+        }
         return [
             item for item in self.intakes.values()
-            if item.user_id == user_id and item.status == "waiting_confirmation"
+            if item.user_id == user_id and (
+                item.status == "waiting_confirmation"
+                or item.status == "confirmed" and item.intake_id not in graded_intakes
+            )
         ]
 
     def get_file_intakes(self, *, user_id: str, file_id: str) -> list[IntakeItem]:

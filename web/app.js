@@ -689,7 +689,7 @@ function bindWorkbench() {
   }
 
   async function confirmAndGrade() {
-    if (!activeIntake?.questionText || activeIntake.status !== "waiting_confirmation") {
+    if (!activeAttempt && (!activeIntake?.questionText || !["waiting_confirmation", "confirmed"].includes(activeIntake.status))) {
       activeIntake.uiState = "needs_input";
       assistantTurn("这道题的题干还不完整，请直接补充题干、作答或需要修正的内容。", true);
       return;
@@ -697,13 +697,16 @@ function bindWorkbench() {
     const progress = progressTurn();
     activeIntake.uiState = "grading";
     renderIntakeBatch();
-    setProgress(progress, "正在固定识别结果", "锁定当前版本，准备自动判题。" );
-    const confirmed = await api(`/v1/intakes/${activeIntake.intakeId}/confirm`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-    activeAttempt = confirmed.resource_id;
+    if (!activeAttempt) {
+      setProgress(progress, "正在固定识别结果", "锁定当前版本，准备自动判题。" );
+      const confirmed = await api(`/v1/intakes/${activeIntake.intakeId}/confirm`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+      activeAttempt = confirmed.resource_id;
+    }
     stage = "grade";
     setComposerState();
     setProgress(progress, "正在判题", "定位第一处实质错误并生成完整解法。" );
     activeCandidate = await api(`/v1/attempts/${activeAttempt}/model-grade`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion})});
+    activeIntake.automaticRetries = 0;
     appendCandidate(activeCandidate);
     if (activeCandidate.verdict === "correct") {
       activeIntake.uiState = "correct";
@@ -724,19 +727,29 @@ function bindWorkbench() {
   }
 
   async function processActiveIntake() {
-    if (busy || !activeIntake || stage !== "intake") return;
+    if (busy || !activeIntake || (stage !== "intake" && !(stage === "grade" && activeAttempt && !activeCandidate))) return;
     busy = true;
     setComposerState();
+    let retryAutomatically = false;
     try {
       await confirmAndGrade();
     } catch (error) {
-      if (activeIntake) activeIntake.uiState = "needs_input";
-      assistantTurn(`本题自动处理未完成：${authError(error)}。题目已保留，可补充信息后重试。`, true);
+      retryAutomatically = ["model_network_error", "model_rate_limited"].includes(error.message)
+        && Boolean(activeAttempt) && (activeIntake.automaticRetries || 0) < 1;
+      if (retryAutomatically) {
+        activeIntake.automaticRetries = (activeIntake.automaticRetries || 0) + 1;
+        activeIntake.uiState = "grading";
+        assistantTurn("网络连接出现波动，题目已保留，3 秒后自动续跑。", true);
+      } else {
+        activeIntake.uiState = "needs_input";
+        assistantTurn(`本题自动处理未完成：${authError(error)} 题目已保留，可补充信息后重试。`, true);
+      }
     } finally {
       busy = false;
       renderIntakeBatch();
       setComposerState();
       if (!chatInput.disabled) focusChatInput();
+      if (retryAutomatically) setTimeout(processActiveIntake, 3000);
     }
   }
 

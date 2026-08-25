@@ -8,7 +8,7 @@ from threading import Event, Lock
 from typing import Any, Callable
 import uuid
 
-from scripts.codex_task_router import compact_conversation, read_conversation_history, run_conversation_turn, run_review, run_structured_harness_turn, select
+from scripts.codex_task_router import compact_conversation, read_conversation_history, run_conversation_turn, run_structured_harness_turn, select
 from .math_verifier import verify_equations
 
 
@@ -32,7 +32,7 @@ class CodexNotebookModel:
         self,
         output_root: Path,
         *,
-        review: Callable[..., dict[str, Any]] = run_review,
+        review: Callable[..., dict[str, Any]] = run_structured_harness_turn,
         harness_review: Callable[..., dict[str, Any]] = run_structured_harness_turn,
         conversation_review: Callable[..., dict[str, Any]] = run_conversation_turn,
         history_reader: Callable[..., dict[str, Any]] = read_conversation_history,
@@ -246,6 +246,8 @@ class CodexNotebookModel:
                 json.dumps(frozen, ensure_ascii=False, separators=(",", ":")),
                 output,
                 [image_path],
+                None,
+                None,
             )
             result = value.get("result") if isinstance(value, dict) else None
             if not isinstance(result, dict) or result.get("attempt_id") != attempt.attempt_id or result.get("input_version") != attempt.input_version:

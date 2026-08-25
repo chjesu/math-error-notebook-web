@@ -125,7 +125,7 @@ flowchart LR
 
 模型任务统一走 `scripts/codex_task_router.py`，外发前必须显式授权。团队岗位和波次由 `config/team-roles.json` 声明；每个岗位对应一个独立、临时、只读的 Codex CLI 子进程，最多并行 4 个，完整职责见 `docs/14-CODEX-MULTI-AGENT-TEAM.md`。批量 `team-run` 只接受位于固定输入根目录、按岗位拆分的公开/合成资料包，并把结果限制到固定候选根目录；真实项目材料不得用该命令批量外发。手机号、验证码、密码、密钥和数据库凭据永不进入模型输入。本地数学流程只发送当前用户已授权处理的题目图片或当前题干/作答候选，且移除 `user_id` 等身份字段；图片外发前必须复验隔离对象哈希、解码并重编码为去 EXIF 的有界 PNG 预览。判题先以不含学生作答的临时只读任务独立求解，再把原图、参考解、受限 AST 验算报告与学生作答交给同图父 Harness 线程复核；验算器不提供 Shell、文件、网络或任意函数调用。同一任务资源与输入版本只允许一个进行中的调用，全局最多两个；图片识别结果必须按 `item_no` 连续编号，服务端在一个事务中把同一文件的每道题保存为独立 `intake_item`，输出匹配 JSON Schema、资源 ID 和冻结版本后才能进入自动处理队列。单项低置信度最多自动升级一次，批量波次不自动升级。
 
-本地 Web 启动的 CLI 复用桌面用户的 Codex 登录目录，并只继承标准代理、上游代理和 CA 证书环境，不复制短信、数据库等业务秘密；调用仍带 `--ignore-user-config`，避免加载用户配置中的任意 MCP、工具或提示。瞬时连接、超时和限流错误总计最多尝试两次；证书、认证和非网络 CLI 错误不做盲目重试。每次尝试写入 `data/audits/codex-routing/codex-cli-events.jsonl`，仅记录调用标识、任务、模型、阶段、耗时、尝试次数、结果和错误分类，不记录题目、图片路径、提示词、stdout、stderr、账号或密钥。
+本地 Web 的图片识别、独立解题和判题复核统一使用官方 Codex app-server 通道，以复用桌面客户端已经工作的登录与网络策略；不再让独立解题回退到普通 `codex exec` 子进程。瞬时连接、超时和限流错误在 app-server 调用层最多尝试两次，自动工作流仍失败时再延迟续跑一次；证书、认证和非网络错误不做盲目重试。每次尝试写入 `data/audits/codex-routing/codex-cli-events.jsonl`，仅记录调用标识、任务、模型、阶段、耗时、尝试次数、结果和错误分类，不记录题目、图片路径、提示词、stdout、stderr、账号或密钥。
 
 错题会话使用 `math-notebook-loop` 路由和官方 `codex app-server`：首轮通过 `thread/start` 建立持久线程，后续轮次只按 MySQL 中当前用户与 intake 绑定的不透明 thread id 调用 `thread/resume`；刷新与翻页时服务端通过 `thread/items/list` 和官方游标读取线程，只将结构化封包中的真实 `user_message` 与 `assistant_message` 转为产品消息。浏览器不能读取或提交 thread id，也不能看到内部提示；浏览器收到的产品游标同时绑定用户拥有的 intake。运行时固定只读 sandbox、拒绝审批、关闭 shell 与 MCP，最终消息必须通过 `math-loop-turn.schema.json`。真实 turn/item/delta/压缩/完成事件经 NDJSON 推送；工作台停止按钮调用 `turn/interrupt`，整理上下文调用 `thread/compact/start`。详细能力边界见 `docs/16-CODEX-APP-SERVER-HARNESS.md`。
 
