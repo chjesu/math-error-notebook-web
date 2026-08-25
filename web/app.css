@@ -166,8 +166,8 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .chat-main.drag-active::after { position: absolute; z-index: 20; display: grid; inset: 12px; border: 2px dashed #7793d1; border-radius: 18px; background: rgba(237, 242, 252, .92); color: var(--brand); content: "松开即可添加文件"; font-size: 20px; font-weight: 700; place-items: center; pointer-events: none; }
 .chat-header { width: 100%; flex: 0 0 auto; margin: 0 auto; padding: 20px 0 14px; }
 .chat-header h1 { font-size: 22px; }
-.chat-workspace { display: flex; width: min(100%, 920px); min-height: 0; margin: 0 auto; flex: 1; flex-direction: column; }
-.chat-thread { min-height: 0; padding: 20px 8px; flex: 1; overflow-y: auto; scrollbar-gutter: stable; }
+.chat-workspace { display: flex; width: calc(100% + 72px); min-height: 0; margin: 0 -36px; flex: 1; flex-direction: column; }
+.chat-thread { min-height: 0; padding: 20px 44px; flex: 1; overflow-y: auto; scrollbar-gutter: stable; }
 .chat-welcome { display: grid; min-height: 45%; place-content: center; justify-items: center; text-align: center; }
 .chat-welcome img { width: 52px; height: 52px; }
 .chat-welcome h2 { margin: 16px 0 4px; font-size: 26px; }
@@ -328,13 +328,14 @@ textarea:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset
   .page-header { align-items: flex-start; }
   .grid { grid-template-columns: 1fr; }
   .chat-main { height: 100vh; padding: 0 12px 78px; }
+  .chat-workspace { width: calc(100% + 24px); margin-inline: -12px; }
   .chat-header { padding: 14px 4px 10px; }
   .chat-header .eyebrow { display: none; }
   .chat-header h1 { font-size: 19px; }
-  .chat-thread { padding: 12px 0; }
+  .chat-thread { padding: 12px; }
   .chat-welcome { min-height: 42%; padding: 24px 12px; }
   .chat-welcome h2 { font-size: 23px; }
-  .conversation-dock { width: 100%; }
+  .conversation-dock { width: calc(100% - 24px); }
   .composer-interaction { max-height: 48vh; padding: 14px; border-radius: 16px; }
   .composer-surface { border-radius: 18px; }
   .composer-placeholder { font-size: 13px; }
