@@ -135,6 +135,12 @@ function bindWorkbench() {
   const dropZone = $("#drop-zone");
   const uploadSurface = $(".chat-main");
   const allowedExtensions = new Set(["pdf", "png", "jpg", "jpeg", "docx"]);
+  const mimeExtensions = new Map([
+    ["application/pdf", "pdf"],
+    ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"],
+    ["image/jpeg", "jpg"],
+    ["image/png", "png"],
+  ]);
   const retryableUploadStates = new Set(["queued", "failed", "processing_failed", "recognition_failed"]);
   const maxFileBytes = 25 * 1024 * 1024;
   const confirmIntakeCommands = new Set(["确认并判题", "确认题干与作答", "开始判题"]);
@@ -165,8 +171,8 @@ function bindWorkbench() {
     button.type = "button";
     button.className = "image-preview-trigger";
     button.dataset.previewUrl = item.previewUrl;
-    button.dataset.previewName = item.file.name;
-    button.setAttribute("aria-label", `查看 ${item.file.name} 原图`);
+    button.dataset.previewName = item.name;
+    button.setAttribute("aria-label", `查看 ${item.name} 原图`);
     image.src = item.previewUrl;
     image.alt = "";
     button.append(image);
@@ -397,7 +403,7 @@ function bindWorkbench() {
       if (retryableUploadStates.has(item.state)) {
         const remove = document.createElement("button"); remove.type = "button"; remove.dataset.removeFile = item.id; remove.textContent = "×"; preview.append(remove);
       }
-      name.textContent = item.file.name;
+      name.textContent = item.name;
       card.append(preview, name);
       return card;
     });
@@ -408,12 +414,15 @@ function bindWorkbench() {
   function addUploadFiles(files) {
     const rejected = [];
     let duplicates = 0;
-    for (const file of files) {
-      const extension = file.name.split(".").pop().toLowerCase();
-      if (!allowedExtensions.has(extension)) rejected.push(`${file.name}：格式不支持`);
-      else if (file.size > maxFileBytes) rejected.push(`${file.name}：超过 25 MB`);
-      else if (uploadFiles.some(item => item.file.name.toLowerCase() === file.name.toLowerCase() && item.file.size === file.size && item.file.lastModified === file.lastModified)) duplicates += 1;
-      else uploadFiles.push({id: crypto.randomUUID(), file, extension, previewUrl: ["png", "jpg", "jpeg"].includes(extension) ? URL.createObjectURL(file) : "", state: "queued", progress: 0, error: "", submitted: false});
+    for (const [index, file] of Array.from(files).entries()) {
+      const originalName = String(file.name || "").trim();
+      const nameExtension = originalName.includes(".") ? originalName.split(".").pop().toLowerCase() : "";
+      const extension = nameExtension || mimeExtensions.get(String(file.type || "").toLowerCase()) || "";
+      const name = originalName || `粘贴图片-${index + 1}.${extension || "bin"}`;
+      if (!allowedExtensions.has(extension)) rejected.push(`${name}：格式不支持`);
+      else if (file.size > maxFileBytes) rejected.push(`${name}：超过 25 MB`);
+      else if (uploadFiles.some(item => item.name.toLowerCase() === name.toLowerCase() && item.file.size === file.size && item.file.lastModified === file.lastModified)) duplicates += 1;
+      else uploadFiles.push({id: crypto.randomUUID(), file, name, extension, previewUrl: ["png", "jpg", "jpeg"].includes(extension) ? URL.createObjectURL(file) : "", state: "queued", progress: 0, error: "", submitted: false});
     }
     renderUploadFiles();
     const notice = [rejected.join("；"), duplicates ? `已忽略 ${duplicates} 个重复文件` : ""].filter(Boolean).join("；");
@@ -424,7 +433,7 @@ function bindWorkbench() {
     return new Promise((resolve, reject) => {
       const form = new FormData();
       form.append("purpose", "question_image");
-      form.append("file", item.file);
+      form.append("file", item.file, item.name);
       const xhr = new XMLHttpRequest();
       xhr.open("POST", "/v1/files");
       xhr.withCredentials = true;
@@ -461,7 +470,7 @@ function bindWorkbench() {
       preview.className = "chat-upload-preview";
       if (item.previewUrl) preview.append(imagePreviewButton(item));
       else { const type = document.createElement("strong"); type.textContent = item.extension.toUpperCase(); preview.append(type); }
-      name.textContent = item.file.name; card.append(preview, name); grid.append(card);
+      name.textContent = item.name; card.append(preview, name); grid.append(card);
     }
     label.textContent = `请整理这 ${files.length} 个文件`;
     bubble.append(grid, label); turn.append(bubble); appendTurn(turn);
@@ -494,20 +503,20 @@ function bindWorkbench() {
     let failed = 0;
     for (const [index, item] of files.entries()) {
       item.state = "uploading";
-      setProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · 0%`);
+      setProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.name} · 0%`);
       try {
         if (!item.fileId) {
-          const uploaded = await uploadFile(item, percent => setProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · ${percent}%`));
+          const uploaded = await uploadFile(item, percent => setProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.name} · ${percent}%`));
           item.fileId = uploaded.file_id;
           item.progress = 100;
         }
         if (!item.intakeId) {
           item.state = "processing";
-          setProgress(progress, "正在建立错题会话", `${index + 1}/${files.length} · ${item.file.name}`);
+          setProgress(progress, "正在建立错题会话", `${index + 1}/${files.length} · ${item.name}`);
           const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: item.fileId}), headers: {"Idempotency-Key": crypto.randomUUID()}});
           item.intakeId = task.resource_id;
         }
-        setProgress(progress, "正在识别题目与作答", `${index + 1}/${files.length} · ${item.file.name}`);
+        setProgress(progress, "正在识别题目与作答", `${index + 1}/${files.length} · ${item.name}`);
         const candidate = await api(`/v1/intakes/${item.intakeId}/model-candidate`, {method: "POST", body: JSON.stringify({refresh: true})});
         const extractedItems = Array.isArray(candidate.items) && candidate.items.length ? candidate.items : [candidate];
         for (const extracted of extractedItems) {
@@ -516,7 +525,7 @@ function bindWorkbench() {
             itemNo: extracted.item_no || 1,
             inputVersion: extracted.input_version || 1,
             status: extracted.status || "extracting",
-            fileName: extractedItems.length > 1 ? `${item.file.name} · 第 ${extracted.item_no || 1} 题` : item.file.name,
+            fileName: extractedItems.length > 1 ? `${item.name} · 第 ${extracted.item_no || 1} 题` : item.name,
             questionText: extracted.question_text || "",
             answerText: extracted.answer_text || "",
           });
@@ -824,10 +833,21 @@ function bindWorkbench() {
   });
   previewDialog?.addEventListener("click", event => { if (event.target === previewDialog) previewDialog.close(); });
   previewDialog?.addEventListener("close", () => { previewContent.removeAttribute("src"); });
-  uploadSurface.addEventListener("dragover", event => { if (Array.from(event.dataTransfer?.types || []).includes("Files")) { event.preventDefault(); uploadSurface.classList.add("drag-active"); } });
+  function hasTransferredFiles(transfer) {
+    return Array.from(transfer?.types || []).includes("Files") || Array.from(transfer?.items || []).some(item => item.kind === "file");
+  }
+
+  function transferredFiles(transfer) {
+    const files = Array.from(transfer?.files || []);
+    if (files.length) return files;
+    return Array.from(transfer?.items || []).filter(item => item.kind === "file").map(item => item.getAsFile?.()).filter(Boolean);
+  }
+
+  uploadSurface.addEventListener("dragenter", event => { if (hasTransferredFiles(event.dataTransfer)) { event.preventDefault(); uploadSurface.classList.add("drag-active"); } });
+  uploadSurface.addEventListener("dragover", event => { if (hasTransferredFiles(event.dataTransfer)) { event.preventDefault(); uploadSurface.classList.add("drag-active"); } });
   uploadSurface.addEventListener("dragleave", event => { if (!event.relatedTarget || !uploadSurface.contains(event.relatedTarget)) uploadSurface.classList.remove("drag-active"); });
-  uploadSurface.addEventListener("drop", event => { if (event.dataTransfer?.files?.length) { event.preventDefault(); uploadSurface.classList.remove("drag-active"); addUploadFiles(event.dataTransfer.files); } });
-  document.addEventListener("paste", event => { const files = event.clipboardData?.files; if (files?.length) { event.preventDefault(); addUploadFiles(files); } });
+  uploadSurface.addEventListener("drop", event => { const files = transferredFiles(event.dataTransfer); if (files.length) { event.preventDefault(); event.stopPropagation(); uploadSurface.classList.remove("drag-active"); addUploadFiles(files); } });
+  document.addEventListener("paste", event => { const files = transferredFiles(event.clipboardData); if (files.length) { event.preventDefault(); addUploadFiles(files); } });
   $("#upload-form").addEventListener("submit", event => {
     event.preventDefault();
     if (stoppable) stopActiveTurn();
