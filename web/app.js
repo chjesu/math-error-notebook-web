@@ -122,6 +122,7 @@ function bindWorkbench() {
   let pendingIntakes = [];
   let intakeBatch = [];
   let intakeBatchTurn = null;
+  let holdScroll = false;
   let historyCursor = null;
   let historyLoading = false;
   let stoppable = false;
@@ -182,7 +183,12 @@ function bindWorkbench() {
   }
 
   function scrollChatToEnd() {
+    if (holdScroll) return;
     requestAnimationFrame(() => { $("#chat-thread").scrollTop = $("#chat-thread").scrollHeight; });
+  }
+
+  function focusChatInput() {
+    chatInput.focus({preventScroll: holdScroll});
   }
 
   function renderConversationWindow() {
@@ -318,6 +324,7 @@ function bindWorkbench() {
 
   function renderIntakeBatch() {
     if (!intakeBatch.length) return;
+    const initialRender = !intakeBatchTurn;
     if (!intakeBatchTurn) {
       intakeBatchTurn = document.createElement("div");
       const avatar = document.createElement("img");
@@ -379,7 +386,7 @@ function bindWorkbench() {
       list.append(card);
     }
     response.replaceChildren(heading, list);
-    requestAnimationFrame(() => activeCard?.scrollIntoView({block: "nearest"}));
+    if (initialRender) requestAnimationFrame(() => activeCard?.scrollIntoView({block: "nearest"}));
   }
 
   function setComposerState() {
@@ -523,7 +530,7 @@ function bindWorkbench() {
       appendIntake(activeIntake);
     } else renderIntakeBatch();
     setComposerState();
-    if (!chatInput.disabled) chatInput.focus();
+    if (!chatInput.disabled) focusChatInput();
   }
 
   async function uploadQueued() {
@@ -791,11 +798,13 @@ function bindWorkbench() {
     }
   }
 
-  async function sendMessage() {
+  async function sendMessage(preserveScroll = false) {
     const selectedAction = selectedComposerAction();
     const fixedMessages = {"confirm-intake": "确认并判题", commit: "确认入本", next: "下一题"};
     const message = fixedMessages[selectedAction] || chatInput.value.trim();
     if (!message || busy) return;
+    const previousHoldScroll = holdScroll;
+    if (preserveScroll) holdScroll = true;
     if (selectedAction === "ask") {
       chatInput.value = "";
       chatInput.style.height = "auto";
@@ -838,8 +847,10 @@ function bindWorkbench() {
       stopRequested = false;
       activeProgress = null;
       busy = false;
+      renderIntakeBatch();
       setComposerState();
-      if (!chatInput.disabled) chatInput.focus();
+      if (!chatInput.disabled) focusChatInput();
+      holdScroll = previousHoldScroll;
     }
   }
 
@@ -851,7 +862,7 @@ function bindWorkbench() {
     const button = event.target.closest("[data-composer-action]");
     if (!button || busy) return;
     selectComposerAction(button.dataset.composerAction);
-    sendMessage();
+    sendMessage(true);
   });
   chatInput.addEventListener("input", () => {
     selectComposerAction("ask");
@@ -886,7 +897,7 @@ function bindWorkbench() {
     const action = event.target.closest("[data-intake-action]");
     if (!action || busy || !activeIntake) return;
     selectComposerAction(action.dataset.intakeAction);
-    sendMessage();
+    sendMessage(true);
   });
   previewDialog?.addEventListener("click", event => { if (event.target === previewDialog) previewDialog.close(); });
   previewDialog?.addEventListener("close", () => { previewContent.removeAttribute("src"); });
