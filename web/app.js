@@ -127,7 +127,7 @@ function bindWorkbench() {
   const uploadInput = $("#file");
   const sendButton = $("#upload-button");
   const chatInput = $("#chat-input");
-  const actionSelect = $("#composer-action");
+  const actionGroup = $("#composer-actions");
   const dropZone = $("#drop-zone");
   const uploadSurface = $(".chat-main");
   const allowedExtensions = new Set(["pdf", "png", "jpg", "jpeg", "docx"]);
@@ -137,6 +137,15 @@ function bindWorkbench() {
   const nextCommands = new Set(["下一题", "处理下一个", "跳过"]);
   const previewDialog = $("#image-preview-dialog");
   const previewContent = $("#image-preview-content");
+
+  function selectedComposerAction() {
+    return actionGroup.querySelector('input[name="composer-action"]:checked')?.value || "ask";
+  }
+
+  function selectComposerAction(value) {
+    const option = Array.from(actionGroup.querySelectorAll('input[name="composer-action"]')).find(input => input.value === value);
+    if (option) option.checked = true;
+  }
 
   function openImagePreview(url, name) {
     if (!url || !previewDialog || !previewContent) return;
@@ -316,30 +325,38 @@ function bindWorkbench() {
         ? [["ask", "询问或修正"], ...(["incorrect", "partial"].includes(activeCandidate?.verdict) ? [["commit", "确认入本"]] : []), ["next", "下一题"]]
         : [["ask", "询问"]];
     const signature = actions.map(([value, label]) => `${value}:${label}`).join("|");
-    if (actionSelect.dataset.signature !== signature) {
-      const selected = actionSelect.value;
-      actionSelect.replaceChildren(...actions.map(([value, label]) => {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = label;
-        return option;
+    if (actionGroup.dataset.signature !== signature) {
+      const selected = selectedComposerAction();
+      const preferred = actions.some(([value]) => value === selected) ? selected : "ask";
+      actionGroup.replaceChildren(...actions.map(([value, label]) => {
+        const item = document.createElement("label");
+        const radio = document.createElement("input");
+        const text = document.createElement("span");
+        item.className = "composer-action";
+        radio.type = "radio";
+        radio.name = "composer-action";
+        radio.value = value;
+        radio.checked = value === preferred;
+        text.textContent = label;
+        item.append(radio, text);
+        return item;
       }));
-      actionSelect.dataset.signature = signature;
-      actionSelect.value = actions.some(([value]) => value === selected) ? selected : "ask";
+      actionGroup.dataset.signature = signature;
     }
     chatInput.disabled = false;
-    actionSelect.disabled = busy;
+    actionGroup.querySelectorAll("input").forEach(input => { input.disabled = busy; });
+    const selectedAction = selectedComposerAction();
     const actionPlaceholders = {
       "confirm-intake": "无需输入，点击发送即可确认题干与作答并开始判题",
       commit: "无需输入，点击发送即可将当前错题写入错题本",
       next: "无需输入，点击发送即可处理下一题",
     };
-    chatInput.placeholder = actionPlaceholders[actionSelect.value] || (stage === "upload"
+    chatInput.placeholder = actionPlaceholders[selectedAction] || (stage === "upload"
       ? "输入消息，或添加图片、PDF、DOCX"
       : stage === "intake"
         ? "询问题目，或输入对题干与作答的修正"
         : "继续追问判题依据，或输入需要修正的内容");
-    sendButton.disabled = busy || (!retryable && actionSelect.value === "ask" && !chatInput.value.trim());
+    sendButton.disabled = busy || (!retryable && selectedAction === "ask" && !chatInput.value.trim());
     sendButton.textContent = retryable && uploadFiles.some(item => item.state === "failed") ? "↻" : "↑";
   }
 
@@ -611,7 +628,7 @@ function bindWorkbench() {
   }
 
   async function sendMessage() {
-    const selectedAction = actionSelect.value;
+    const selectedAction = selectedComposerAction();
     const fixedMessages = {"confirm-intake": "确认并判题", commit: "确认入本", next: "下一题"};
     const message = fixedMessages[selectedAction] || chatInput.value.trim();
     if (!message || busy) return;
@@ -638,7 +655,7 @@ function bindWorkbench() {
         await chatTurn(message, progress);
         setProgress(progress, "本轮已完成", "会话上下文已保留，可以继续输入。", "complete");
       }
-      actionSelect.value = "ask";
+      selectComposerAction("ask");
     } catch (error) {
       assistantTurn(`本轮未完成：${authError(error)}。你的消息没有触发写库，可以重试。`, true);
     } finally {
@@ -657,10 +674,10 @@ function bindWorkbench() {
   });
   uploadInput.addEventListener("change", () => { addUploadFiles(uploadInput.files); uploadInput.value = ""; });
   $("#file-picker").addEventListener("click", () => uploadInput.click());
-  dropZone.addEventListener("click", event => { if (!event.target.closest("button, textarea, select")) chatInput.focus(); });
-  actionSelect.addEventListener("change", setComposerState);
+  dropZone.addEventListener("click", event => { if (!event.target.closest("button, textarea, input, label")) chatInput.focus(); });
+  actionGroup.addEventListener("change", setComposerState);
   chatInput.addEventListener("input", () => {
-    if (chatInput.value.trim() && actionSelect.value !== "ask") actionSelect.value = "ask";
+    if (chatInput.value.trim() && selectedComposerAction() !== "ask") selectComposerAction("ask");
     chatInput.style.height = "auto";
     chatInput.style.height = `${Math.min(chatInput.scrollHeight, 150)}px`;
     setComposerState();

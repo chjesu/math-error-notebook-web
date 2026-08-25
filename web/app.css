@@ -232,10 +232,13 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .send-button { width: 40px; min-height: 40px; padding: 0; flex: 0 0 40px; border-radius: 50%; font-size: 24px; line-height: 1; }
 .attach-button { border: 1px solid var(--line); background: var(--paper); color: var(--ink); font-weight: 400; }
 .send-button { font-size: 21px; }
-.composer-action { min-height: 34px; max-width: 160px; padding: 0 28px 0 10px; border: 0; border-radius: 8px; outline: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; }
-.composer-action:hover { background: var(--soft); }
-.composer-action:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
-.composer-action:disabled { cursor: default; opacity: .55; }
+.composer-actions { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 2px; }
+.composer-action { position: relative; display: inline-flex; }
+.composer-action input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.composer-action span { display: inline-flex; min-height: 34px; align-items: center; padding: 0 10px; border-radius: 8px; color: var(--muted); font-size: 14px; cursor: pointer; }
+.composer-action input:checked + span { background: var(--soft); color: var(--ink); font-weight: 650; }
+.composer-action input:focus-visible + span { outline: 2px solid var(--primary); outline-offset: 1px; }
+.composer-action input:disabled + span { cursor: default; opacity: .55; }
 .composer-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
 .upload-file-list { display: flex; flex-wrap: wrap; gap: 10px; padding: 2px 2px 10px; margin: 0; list-style: none; }
 .upload-file-list:empty { display: none; }
