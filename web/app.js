@@ -119,7 +119,7 @@ function bindWorkbench() {
   let stage = "upload";
   let busy = false;
   let uploadFiles = [];
-  const pendingIntakes = [];
+  let pendingIntakes = [];
   const conversationTurns = [];
   const renderedCandidates = new Set();
   const CHAT_PAGE_SIZE = 10;
@@ -127,6 +127,7 @@ function bindWorkbench() {
   const uploadInput = $("#file");
   const sendButton = $("#upload-button");
   const chatInput = $("#chat-input");
+  const actionSelect = $("#composer-action");
   const dropZone = $("#drop-zone");
   const uploadSurface = $(".chat-main");
   const allowedExtensions = new Set(["pdf", "png", "jpg", "jpeg", "docx"]);
@@ -309,13 +310,36 @@ function bindWorkbench() {
 
   function setComposerState() {
     const retryable = uploadFiles.some(item => !item.submitted && ["queued", "failed"].includes(item.state));
+    const actions = stage === "intake"
+      ? [["ask", "询问或修正"], ["confirm-intake", "确认并判题"], ["next", "下一题"]]
+      : stage === "grade"
+        ? [["ask", "询问或修正"], ...(["incorrect", "partial"].includes(activeCandidate?.verdict) ? [["commit", "确认入本"]] : []), ["next", "下一题"]]
+        : [["ask", "询问"]];
+    const signature = actions.map(([value, label]) => `${value}:${label}`).join("|");
+    if (actionSelect.dataset.signature !== signature) {
+      const selected = actionSelect.value;
+      actionSelect.replaceChildren(...actions.map(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        return option;
+      }));
+      actionSelect.dataset.signature = signature;
+      actionSelect.value = actions.some(([value]) => value === selected) ? selected : "ask";
+    }
     chatInput.disabled = false;
-    chatInput.placeholder = stage === "upload"
+    actionSelect.disabled = busy;
+    const actionPlaceholders = {
+      "confirm-intake": "无需输入，点击发送即可确认题干与作答并开始判题",
+      commit: "无需输入，点击发送即可将当前错题写入错题本",
+      next: "无需输入，点击发送即可处理下一题",
+    };
+    chatInput.placeholder = actionPlaceholders[actionSelect.value] || (stage === "upload"
       ? "输入消息，或添加图片、PDF、DOCX"
       : stage === "intake"
-        ? "输入修正或补充；确认无误请发送“确认并判题”"
-        : "继续追问或修正；确认无误请发送“确认入本”";
-    sendButton.disabled = busy || (!retryable && !chatInput.value.trim());
+        ? "询问题目，或输入对题干与作答的修正"
+        : "继续追问判题依据，或输入需要修正的内容");
+    sendButton.disabled = busy || (!retryable && actionSelect.value === "ask" && !chatInput.value.trim());
     sendButton.textContent = retryable && uploadFiles.some(item => item.state === "failed") ? "↻" : "↑";
   }
 
@@ -587,10 +611,14 @@ function bindWorkbench() {
   }
 
   async function sendMessage() {
-    const message = chatInput.value.trim();
+    const selectedAction = actionSelect.value;
+    const fixedMessages = {"confirm-intake": "确认并判题", commit: "确认入本", next: "下一题"};
+    const message = fixedMessages[selectedAction] || chatInput.value.trim();
     if (!message || busy) return;
-    chatInput.value = "";
-    chatInput.style.height = "auto";
+    if (selectedAction === "ask") {
+      chatInput.value = "";
+      chatInput.style.height = "auto";
+    }
     userTurn(message);
     if (!activeIntake) {
       assistantTurn("请先添加题目图片、PDF 或 DOCX，我才能结合题目继续处理。");
@@ -610,6 +638,7 @@ function bindWorkbench() {
         await chatTurn(message, progress);
         setProgress(progress, "本轮已完成", "会话上下文已保留，可以继续输入。", "complete");
       }
+      actionSelect.value = "ask";
     } catch (error) {
       assistantTurn(`本轮未完成：${authError(error)}。你的消息没有触发写库，可以重试。`, true);
     } finally {
@@ -628,9 +657,21 @@ function bindWorkbench() {
   });
   uploadInput.addEventListener("change", () => { addUploadFiles(uploadInput.files); uploadInput.value = ""; });
   $("#file-picker").addEventListener("click", () => uploadInput.click());
-  dropZone.addEventListener("click", event => { if (!event.target.closest("button, textarea")) chatInput.focus(); });
-  chatInput.addEventListener("input", () => { chatInput.style.height = "auto"; chatInput.style.height = `${Math.min(chatInput.scrollHeight, 150)}px`; setComposerState(); });
-  chatInput.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#upload-form").requestSubmit(); } });
+  dropZone.addEventListener("click", event => { if (!event.target.closest("button, textarea, select")) chatInput.focus(); });
+  actionSelect.addEventListener("change", setComposerState);
+  chatInput.addEventListener("input", () => {
+    if (chatInput.value.trim() && actionSelect.value !== "ask") actionSelect.value = "ask";
+    chatInput.style.height = "auto";
+    chatInput.style.height = `${Math.min(chatInput.scrollHeight, 150)}px`;
+    setComposerState();
+  });
+  chatInput.addEventListener("keydown", event => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (!event.repeat) $("#upload-form").requestSubmit();
+    }
+  });
   $("#upload-file-list").addEventListener("click", event => {
     const opener = event.target.closest("[data-preview-url]");
     if (opener) {
