@@ -71,6 +71,22 @@ class CodexNotebookModelTests(unittest.TestCase):
             result = model.extract(intake=intake, file_record=file_record, image_path=Path(directory) / "paper.jpg")
             self.assertEqual([(item["item_no"], item["question_text"]) for item in result["items"]], [(1, "错题编号 ERR-1：第一道题"), (2, "错题编号 ERR-2：第二道题")])
 
+    def test_unclear_extraction_without_readable_question_keeps_the_conversation_open(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            def review(route, review_input, output, images, thread_id=None, event_callback=None):
+                frozen = json.loads(review_input)
+                return {"route": route, "thread_id": thread_id or "thread-unclear", "result": {
+                    "intake_id": frozen["intake_id"], "input_version": 1, "status": "unclear",
+                    "items": [{"item_no": 1, "status": "unclear", "question_text": "", "answer_text": "", "notes": "图片不清晰", "confidence": 0.4}],
+                    "notes": "请用户补充题干", "confidence": 0.4,
+                }}
+
+            model = CodexNotebookModel(Path(directory), harness_review=review, route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"})
+            intake = SimpleNamespace(intake_id="a" * 32, input_version=1)
+            file_record = SimpleNamespace(media_type="image/jpeg", original_name="paper.jpg")
+            result = model.extract(intake=intake, file_record=file_record, image_path=Path(directory) / "paper.jpg")
+            self.assertEqual((result["status"], result["items"], result["thread_id"]), ("unclear", [], "thread-unclear"))
+
     def test_same_resource_and_version_has_only_one_active_model_call(self) -> None:
         started = Event()
         release = Event()

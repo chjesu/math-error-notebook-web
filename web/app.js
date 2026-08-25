@@ -318,7 +318,7 @@ function bindWorkbench() {
   }
 
   function setComposerState() {
-    const retryable = uploadFiles.some(item => !item.submitted && ["queued", "failed"].includes(item.state));
+    const retryable = uploadFiles.some(item => !item.submitted && ["queued", "failed", "processing_failed", "recognition_failed"].includes(item.state));
     const actions = stage === "intake"
       ? [["ask", "询问或修正"], ["confirm-intake", "确认并判题"], ["next", "下一题"]]
       : stage === "grade"
@@ -357,11 +357,11 @@ function bindWorkbench() {
         ? "询问题目，或输入对题干与作答的修正"
         : "继续追问判题依据，或输入需要修正的内容");
     sendButton.disabled = busy || (!retryable && selectedAction === "ask" && !chatInput.value.trim());
-    sendButton.textContent = retryable && uploadFiles.some(item => item.state === "failed") ? "↻" : "↑";
+    sendButton.textContent = retryable && uploadFiles.some(item => ["failed", "processing_failed", "recognition_failed"].includes(item.state)) ? "↻" : "↑";
   }
 
   function renderUploadFiles() {
-    const labels = {queued: "等待上传", uploading: "上传中", processing: "处理中", done: "上传完成", failed: "上传失败"};
+    const labels = {queued: "等待上传", uploading: "上传中", processing: "处理中", done: "处理完成", failed: "上传失败", processing_failed: "建会话失败", recognition_failed: "识别失败"};
     const cards = uploadFiles.filter(item => !item.submitted).map(item => {
       const card = document.createElement("li");
       const preview = document.createElement("div");
@@ -465,7 +465,7 @@ function bindWorkbench() {
   }
 
   async function uploadQueued() {
-    const files = uploadFiles.filter(item => !item.submitted && ["queued", "failed"].includes(item.state));
+    const files = uploadFiles.filter(item => !item.submitted && ["queued", "failed", "processing_failed", "recognition_failed"].includes(item.state));
     if (!files.length || busy) return;
     busy = true;
     files.forEach(item => { item.submitted = true; });
@@ -479,11 +479,15 @@ function bindWorkbench() {
       item.state = "uploading";
       setProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · 0%`);
       try {
-        if (!item.intakeId) {
+        if (!item.fileId) {
           const uploaded = await uploadFile(item, percent => setProgress(progress, "正在上传附件", `${index + 1}/${files.length} · ${item.file.name} · ${percent}%`));
+          item.fileId = uploaded.file_id;
+          item.progress = 100;
+        }
+        if (!item.intakeId) {
           item.state = "processing";
           setProgress(progress, "正在建立错题会话", `${index + 1}/${files.length} · ${item.file.name}`);
-          const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: uploaded.file_id}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+          const task = await api("/v1/intakes", {method: "POST", body: JSON.stringify({file_id: item.fileId}), headers: {"Idempotency-Key": crypto.randomUUID()}});
           item.intakeId = task.resource_id;
         }
         setProgress(progress, "正在识别题目与作答", `${index + 1}/${files.length} · ${item.file.name}`);
@@ -504,7 +508,7 @@ function bindWorkbench() {
         item.state = "done";
         completed += 1;
       } catch (error) {
-        item.state = "failed";
+        item.state = item.intakeId ? "recognition_failed" : item.fileId ? "processing_failed" : "failed";
         item.error = authError(error);
         item.submitted = false;
         failed += 1;
@@ -519,7 +523,16 @@ function bindWorkbench() {
     if (completed) {
       setProgress(progress, "文件已准备好", `已从 ${completed} 个文件识别 ${recognized} 道题${failed ? `，${failed} 个文件可重试` : ""}。`, failed ? "warning" : "complete");
       if (!activeIntake) activateNextIntake();
-    } else setProgress(progress, "附件发送失败", "文件仍保留在输入框中，可以重试。", "error");
+    } else {
+      const firstFailure = files.find(item => ["failed", "processing_failed", "recognition_failed"].includes(item.state));
+      if (firstFailure?.state === "recognition_failed") {
+        setProgress(progress, "题目识别未完成", `${firstFailure.error} 文件已经保存，可直接重试识别，不会重复上传。`, "error");
+      } else if (firstFailure?.state === "processing_failed") {
+        setProgress(progress, "错题会话创建失败", `${firstFailure.error} 文件已经上传，可直接重试。`, "error");
+      } else {
+        setProgress(progress, "附件上传失败", `${firstFailure?.error || "请稍后重试。"} 文件仍保留在输入框中。`, "error");
+      }
+    }
   }
 
   async function restorePendingIntakes() {

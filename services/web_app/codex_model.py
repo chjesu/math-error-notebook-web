@@ -119,7 +119,11 @@ class CodexNotebookModel:
             item_status = raw_item.get("status")
             if item_status not in {"complete", "unclear"}:
                 raise ModelUnavailableError("model returned an unsupported intake item status")
-            question_text = self._text(raw_item.get("question_text"), "question_text", required=True)
+            question_text = self._text(raw_item.get("question_text"), "question_text")
+            if not question_text:
+                if item_status == "unclear":
+                    continue
+                raise ModelUnavailableError("model omitted required question_text")
             if self._is_supplementary_item(question_text):
                 continue
             items.append({
@@ -128,7 +132,7 @@ class CodexNotebookModel:
                 "question_text": question_text,
                 "answer_text": self._text(raw_item.get("answer_text"), "answer_text"),
             })
-        if not items:
+        if not items and status != "unclear":
             raise ModelUnavailableError("model returned no target questions")
         return {
             **result,
