@@ -25,7 +25,7 @@ python -X utf8 -B scripts/codex_task_router.py route --task web-security-review 
 
 服务仅监听 `127.0.0.1:8000`。请求验证码后，页面会明确标记“仅限本地测试”并自动填入模拟验证码；正式服务响应不会返回验证码。测试 CAPTCHA token 为 `local-captcha`。停止数据库使用：
 
-默认不向外部模型发送材料。当前用户明确授权本地测试时，可使用 `python -X utf8 -B scripts/local_env.py serve --enable-codex-model` 启用数学候选与官方 Codex app-server 持续会话：PNG/JPEG 先生成识别候选，上传后底部输入框进入持久线程，可用自然语言修正题干、作答 OCR、判题和解法；“确认并判题”“确认入本”分别经过确定性版本门和写库门。外发前复验上传哈希，并仅发送去元数据、限尺寸的重编码预览图；同资源/版本只允许一个进行中的调用，全局同时最多两个；任何候选都不会自动进入正式错题。
+默认不向外部模型发送材料。当前用户明确授权本地测试时，可使用 `python -X utf8 -B scripts/local_env.py serve --enable-codex-model` 启用数学候选与官方 Codex app-server 持续会话：PNG/JPEG 先生成识别候选，上传后系统按顺序自动冻结版本并判题；正确题自动跳过，错误或部分正确在确定性版本门和写库门校验后自动入本，无法识别或证据冲突时停留等待补充。底部输入框始终可用于自然语言修正题干、作答 OCR、判题和解法。外发前复验上传哈希，并仅发送去元数据、限尺寸的重编码预览图；同资源/版本只允许一个进行中的调用，全局同时最多两个。
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py stop
@@ -37,7 +37,7 @@ python -X utf8 -B scripts/codex_task_router.py route --task web-security-review 
 
 ## 后续生产部署（当前不执行）
 
-当前 localhost + MySQL 8 的个人错题本支持：上传→Codex CLI 识别候选→官方 app-server 同一线程自然语言修正→确认判题→Codex CLI 判题候选→继续追问/修正→确认入本→仅已验证推荐→复习→PDF；工作台接收真实 Harness 事件，线程映射可跨 Web 服务重启恢复，刷新后会恢复最近一次会话的产品消息，模型不可用时安全停止。导出为业务 JSON+文件元数据（不含上传原始二进制，最多下载 3 次并审计），注销执行停用、业务失效和对象文件删除，认证/协议/审计按策略留存。更深历史的服务端游标分页、运行中追加/停止/分叉控制、生产异步 Worker、PDF/DOCX 自动解析、真实短信/CAPTCHA/KMS/OSS、PWA、运营后台、压测/灾备/观测、正式部署和生产恢复均延期，不得写成完成。
+当前 localhost + MySQL 8 的个人错题本支持：上传→Codex CLI 批量识别候选→系统自动逐题冻结版本→Codex CLI 判题→正确题跳过、错误或部分正确自动入本→仅已验证推荐→复习→PDF；官方 app-server 同一线程仍支持自然语言修正和追问。工作台接收真实 Harness 事件，线程映射可跨 Web 服务重启恢复，刷新后会恢复最近一次会话的产品消息，无法识别、证据冲突或模型不可用时安全停止。导出为业务 JSON+文件元数据（不含上传原始二进制，最多下载 3 次并审计），注销执行停用、业务失效和对象文件删除，认证/协议/审计按策略留存。更深历史的服务端游标分页、运行中追加/停止/分叉控制、生产异步 Worker、PDF/DOCX 自动解析、真实短信/CAPTCHA/KMS/OSS、PWA、运营后台、压测/灾备/观测、正式部署和生产恢复均延期，不得写成完成。
 
 1. 在 MySQL 8 执行 `services/web_auth/migrations/0001_phone_registration.sql`。
 2. 从密钥管理服务注入 `services/web_auth/README.md` 列出的环境变量。

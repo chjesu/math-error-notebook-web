@@ -228,8 +228,6 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .recognized-question-card section > strong { color: var(--muted); font-size: 12px; letter-spacing: .04em; }
 .recognized-question-card p { margin: 4px 0 0; line-height: 1.7; white-space: pre-wrap; }
 .question-state { padding: 3px 8px; border-radius: 999px; background: #e8ecf2; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.question-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.question-card-actions button { min-height: 36px; padding: 0 14px; }
 .chat-candidate { padding: 2px 0; }
 .chat-candidate dl { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 7px 14px; margin: 10px 0 0; }
 .chat-candidate dt { color: var(--muted); font-weight: 650; }

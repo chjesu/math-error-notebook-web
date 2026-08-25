@@ -177,8 +177,6 @@ function bindWorkbench() {
   ]);
   const retryableUploadStates = new Set(["queued", "failed", "processing_failed", "recognition_failed"]);
   const maxFileBytes = 25 * 1024 * 1024;
-  const confirmIntakeCommands = new Set(["确认并判题", "确认题干与作答", "开始判题"]);
-  const commitCommands = new Set(["确认入本", "确认写入错题本", "加入错题本"]);
   const nextCommands = new Set(["下一题", "处理下一个", "跳过"]);
   const previewDialog = $("#image-preview-dialog");
   const previewContent = $("#image-preview-content");
@@ -375,7 +373,7 @@ function bindWorkbench() {
     const list = document.createElement("div");
     heading.className = "intake-batch-heading";
     title.textContent = `识别结果 · 共 ${intakeBatch.length} 道题`;
-    hint.textContent = "请逐题检查题干与作答。可在输入框直接说明修正，确认后按顺序判题。";
+    hint.textContent = "系统会按顺序自动判题并整理错题；识别不清时可在输入框直接补充或修正。";
     list.className = "recognized-question-list";
     heading.append(title, hint);
     let activeCard = null;
@@ -386,7 +384,7 @@ function bindWorkbench() {
       const badge = document.createElement("span");
       const question = document.createElement("section");
       const answer = document.createElement("section");
-      const stateLabels = {current: "当前待确认", grading: "正在判题", graded: "已生成判题", correct: "答案正确", saved: "已收入错题本", skipped: "已跳过"};
+      const stateLabels = {current: "等待自动处理", grading: "正在判题", needs_input: "需要补充", correct: "答案正确", saved: "已收入错题本", skipped: "已跳过"};
       const state = intake === activeIntake ? (intake.uiState || (stage === "grade" ? "graded" : "current")) : (intake.uiState || "waiting");
       card.className = `recognized-question-card is-${state}`;
       card.dataset.intakeId = intake.intakeId;
@@ -400,19 +398,6 @@ function bindWorkbench() {
       answer.innerHTML = `<strong>识别作答</strong><p></p>`;
       answer.querySelector("p").textContent = intake.answerText || "未识别或未作答";
       card.append(cardHeading, question, answer);
-      if (intake === activeIntake && stage === "intake" && !busy) {
-        const actions = document.createElement("div");
-        actions.className = "question-card-actions";
-        for (const [value, label, className] of [["confirm-intake", "确认并判题", "primary"], ["next", "跳过本题", "ghost"]]) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = className;
-          button.dataset.intakeAction = value;
-          button.textContent = label;
-          actions.append(button);
-        }
-        card.append(actions);
-      }
       renderMath(card);
       list.append(card);
     }
@@ -422,9 +407,7 @@ function bindWorkbench() {
 
   function setComposerState() {
     const retryable = uploadFiles.some(item => !item.submitted && retryableUploadStates.has(item.state));
-    const actions = stage === "grade"
-      ? [...(["incorrect", "partial"].includes(activeCandidate?.verdict) ? [["commit", "确认入本"]] : []), ["next", "下一题"]]
-      : [];
+    const actions = stage === "grade" && activeCandidate?.verdict === "unclear" ? [["next", "跳过本题"]] : [];
     const signature = actions.map(([value, label]) => `${value}:${label}`).join("|");
     if (actionGroup.dataset.signature !== signature) {
       actionGroup.replaceChildren(...actions.map(([value, label]) => {
@@ -444,7 +427,7 @@ function bindWorkbench() {
     chatInput.placeholder = stage === "upload"
       ? "输入消息，或添加图片、PDF、DOCX"
       : stage === "intake"
-        ? "例如：第 2 题答案改为 C；或继续询问题目"
+        ? "系统正在自动处理；也可以输入补充或修正"
         : "继续追问判题依据，或输入需要修正的内容";
     sendButton.classList.toggle("is-stop", stoppable);
     sendButton.setAttribute("aria-label", stoppable ? "停止处理" : "发送");
@@ -559,6 +542,7 @@ function bindWorkbench() {
     if (activeIntake) {
       activeIntake.uiState = "current";
       appendIntake(activeIntake);
+      setTimeout(processActiveIntake, 0);
     } else renderIntakeBatch();
     setComposerState();
     if (!chatInput.disabled) focusChatInput();
@@ -706,13 +690,14 @@ function bindWorkbench() {
 
   async function confirmAndGrade() {
     if (!activeIntake?.questionText || activeIntake.status !== "waiting_confirmation") {
-      assistantTurn("当前还没有可确认的完整题干。请直接告诉我题干、作答或需要修正的内容。", true);
+      activeIntake.uiState = "needs_input";
+      assistantTurn("这道题的题干还不完整，请直接补充题干、作答或需要修正的内容。", true);
       return;
     }
     const progress = progressTurn();
     activeIntake.uiState = "grading";
     renderIntakeBatch();
-    setProgress(progress, "正在确认题干与作答", "锁定当前版本，准备判题。" );
+    setProgress(progress, "正在固定识别结果", "锁定当前版本，准备自动判题。" );
     const confirmed = await api(`/v1/intakes/${activeIntake.intakeId}/confirm`, {method: "POST", body: JSON.stringify({input_version: activeIntake.inputVersion}), headers: {"Idempotency-Key": crypto.randomUUID()}});
     activeAttempt = confirmed.resource_id;
     stage = "grade";
@@ -727,10 +712,32 @@ function bindWorkbench() {
       activateNextIntake("本题判定正确，无需写入错题本。" );
       return;
     }
-    const canCommit = ["incorrect", "partial"].includes(activeCandidate.verdict);
-    activeIntake.uiState = "graded";
+    if (["incorrect", "partial"].includes(activeCandidate.verdict)) {
+      setProgress(progress, "正在整理错题", "判题已完成，正在写入错题本并安排复习。" );
+      await commitCurrent();
+      setProgress(progress, "本题已处理", "已自动写入错题本，并继续处理下一题。", "complete");
+      return;
+    }
+    activeIntake.uiState = "needs_input";
     renderIntakeBatch();
-    setProgress(progress, "判题候选已生成", canCommit ? "可继续追问或修正；确认后发送“确认入本”。" : "本题不会自动入本；可以继续追问或发送“下一题”。", "complete");
+    setProgress(progress, "需要补充信息", "当前证据不足，未写入错题本。请在输入框补充或修正，也可以跳过本题。", "warning");
+  }
+
+  async function processActiveIntake() {
+    if (busy || !activeIntake || stage !== "intake") return;
+    busy = true;
+    setComposerState();
+    try {
+      await confirmAndGrade();
+    } catch (error) {
+      if (activeIntake) activeIntake.uiState = "needs_input";
+      assistantTurn(`本题自动处理未完成：${authError(error)}。题目已保留，可补充信息后重试。`, true);
+    } finally {
+      busy = false;
+      renderIntakeBatch();
+      setComposerState();
+      if (!chatInput.disabled) focusChatInput();
+    }
   }
 
   async function commitCurrent() {
@@ -798,6 +805,7 @@ function bindWorkbench() {
       activeCandidate = result.candidate;
       appendCandidate(activeCandidate);
     }
+    return result;
   }
 
   async function stopActiveTurn() {
@@ -833,7 +841,7 @@ function bindWorkbench() {
 
   async function sendMessage(preserveScroll = false) {
     const selectedAction = selectedComposerAction();
-    const fixedMessages = {"confirm-intake": "确认并判题", commit: "确认入本", next: "下一题"};
+    const fixedMessages = {next: "下一题"};
     const message = fixedMessages[selectedAction] || chatInput.value.trim();
     if (!message || busy) return;
     const previousHoldScroll = holdScroll;
@@ -852,10 +860,9 @@ function bindWorkbench() {
     busy = true;
     setComposerState();
     let progress = null;
+    let resumeAutomaticIntake = false;
     try {
-      if (stage === "intake" && confirmIntakeCommands.has(message)) await confirmAndGrade();
-      else if (stage === "grade" && commitCommands.has(message)) await commitCurrent();
-      else if (stage === "intake" && nextCommands.has(message)) { activeIntake.uiState = "skipped"; renderIntakeBatch(); activateNextIntake("已跳过本题。" ); }
+      if (stage === "intake" && nextCommands.has(message)) { activeIntake.uiState = "skipped"; renderIntakeBatch(); activateNextIntake("已跳过本题。" ); }
       else if (stage === "grade" && nextCommands.has(message)) { activeIntake.uiState = "skipped"; renderIntakeBatch(); activateNextIntake("本题未写入错题本，继续处理下一份。" ); }
       else {
         progress = progressTurn();
@@ -864,7 +871,8 @@ function bindWorkbench() {
         stoppable = true;
         stopRequested = false;
         setComposerState();
-        await chatTurn(message, progress);
+        const result = await chatTurn(message, progress);
+        resumeAutomaticIntake = stage === "intake" && result.intake?.status === "waiting_confirmation";
         setProgress(progress, "本轮已完成", "会话上下文已保留，可以继续输入。", "complete");
       }
       selectComposerAction("ask");
@@ -884,6 +892,7 @@ function bindWorkbench() {
       setComposerState();
       if (!chatInput.disabled) focusChatInput();
       holdScroll = previousHoldScroll;
+      if (resumeAutomaticIntake) setTimeout(processActiveIntake, 0);
     }
   }
 
@@ -927,10 +936,6 @@ function bindWorkbench() {
   $("#chat-stream").addEventListener("click", event => {
     const opener = event.target.closest("[data-preview-url]");
     if (opener) return openImagePreview(opener.dataset.previewUrl, opener.dataset.previewName);
-    const action = event.target.closest("[data-intake-action]");
-    if (!action || busy || !activeIntake) return;
-    selectComposerAction(action.dataset.intakeAction);
-    sendMessage(true);
   });
   previewDialog?.addEventListener("click", event => { if (event.target === previewDialog) previewDialog.close(); });
   previewDialog?.addEventListener("close", () => { previewContent.removeAttribute("src"); });

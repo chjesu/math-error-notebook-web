@@ -61,9 +61,9 @@ stateDiagram-v2
     [*] --> uploaded
     uploaded --> extracting
     extracting --> waiting_confirmation
-    waiting_confirmation --> grading: 用户确认题干与作答
+    waiting_confirmation --> grading: 自动冻结当前输入版本
     grading --> grade_ready
-    grade_ready --> committed: 用户确认入本且 input_version 未变化
+    grade_ready --> committed: 错误或部分正确且 input_version 未变化
     extracting --> failed_retryable
     grading --> failed_retryable
     failed_retryable --> extracting: 重试提取
