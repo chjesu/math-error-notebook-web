@@ -27,6 +27,10 @@ class CodexTaskRouterTests(unittest.TestCase):
         math_route = router.select("math-grade-candidate", [])
         self.assertEqual(math_route["model"], "gpt-5.6-terra")
         self.assertTrue(math_route["schema"].endswith("math-grade-result.schema.json"))
+        self.assertEqual(router.select("math-grade-solution", [])["reasoning_effort"], "medium")
+        self.assertEqual(router.select("math-grade-solution-hard", [])["reasoning_effort"], "xhigh")
+        self.assertEqual(router.select("math-grade-solution-max", [])["reasoning_effort"], "max")
+        self.assertTrue(router.select("math-grade-solution", [])["schema"].endswith("math-solution-result.schema.json"))
         intake_route = router.select("math-intake-candidate", [])
         self.assertEqual(intake_route["model"], "gpt-5.6-terra")
         self.assertTrue(intake_route["schema"].endswith("intake-candidate.schema.json"))
@@ -92,6 +96,8 @@ class CodexTaskRouterTests(unittest.TestCase):
         self.assertFalse(router.needs_escalation(math_value))
         math_value["result"] = {"verdict": "unclear", "confidence": 0.95}
         self.assertTrue(router.needs_escalation(math_value))
+        solution_value = {"route": router.select("math-grade-solution", []), "result": {"confidence": 0.95}}
+        self.assertFalse(router.needs_escalation(solution_value))
 
     def test_invoke_uses_read_only_ephemeral_codex_and_writes_metadata_only_audit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

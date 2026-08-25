@@ -245,8 +245,10 @@ class NotebookE2ETests(unittest.TestCase):
                     {"item_no": 2, "status": "complete", "question_text": "若 y-1=2，求 y。", "answer_text": "y=2", "confidence": 0.97},
                 ], "confidence": 0.98, "thread_id": "thread-e2e", "route": {"task": "math-intake-adjudication", "model": "test"}}
 
-            def grade(_, *, attempt, thread_id=None):
+            def grade(_, *, attempt, image_path, thread_id=None):
                 resumed_threads.append(thread_id)
+                self.assertTrue(image_path.is_file())
+                self.assertEqual(image_path.parent.name, "model-previews")
                 return {"attempt_id": attempt.attempt_id, "input_version": attempt.input_version, "verdict": "incorrect", "first_error": "移项后结果错误", "cause_code": "algebra_transform", "cause_evidence": "由 x+1=2 得到 x=0", "correct_solution": "x=2-1=1", "final_answer": "x=1", "prevention_cue": "移项后验算", "confidence": 0.97, "thread_id": "thread-e2e", "route": {"task": "math-grade-adjudication", "model": "test"}}
 
         self.app.model_runner = FakeModel()
@@ -277,6 +279,10 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(self.call("/v1/errors", cookie=cookie)[2]["items"], [])
         committed = self.call(f"/v1/grade-results/{graded[2]['result_id']}/commit", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="model-commit")
         self.assertEqual((committed[0], committed[2]["question_text"]), (201, "若 x+1=2，求 x。"))
+        second_id = refreshed[2]["items"][1]["intake_id"]
+        second = self.call(f"/v1/intakes/{second_id}/confirm", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="model-grade-second")
+        second_grade = self.call(f"/v1/attempts/{second[2]['resource_id']}/model-grade", method="POST", payload={"input_version": 1}, cookie=cookie)
+        self.assertEqual((second_grade[0], resumed_threads[-1]), (201, "thread-e2e"))
 
     def test_model_endpoints_are_disabled_by_default(self) -> None:
         cookie = self.login("13100131000")

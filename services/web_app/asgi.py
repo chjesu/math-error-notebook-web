@@ -253,11 +253,7 @@ class NotebookAsgiApp:
                     raise LookupError
                 if file_record.media_type not in {"image/png", "image/jpeg"}:
                     raise ModelUnavailableError("automatic extraction currently supports PNG and JPEG")
-                thread_id = await self._sync(
-                    self.notebook.store.get_codex_thread,
-                    user_id=user.user_id,
-                    conversation_id=intake_id,
-                )
+                thread_owner_id, thread_id = await self._sync(self._intake_thread, user.user_id, intake)
                 with self.notebook.files.model_preview(file_record.object_key, file_record.content_sha256) as image_path:
                     result = await self._sync(
                         self.model_runner.extract,
@@ -269,7 +265,7 @@ class NotebookAsgiApp:
                 await self._sync(
                     self.notebook.store.save_codex_thread,
                     user_id=user.user_id,
-                    conversation_id=intake_id,
+                    conversation_id=thread_owner_id,
                     thread_id=result["thread_id"],
                 )
                 if result.get("intake_id") != intake.intake_id or result.get("input_version") != intake.input_version:
@@ -334,9 +330,7 @@ class NotebookAsgiApp:
                 with self._turn_cancellations_lock:
                     if (user.user_id, intake_id) in self._turn_cancellations:
                         raise RuntimeError("conflict")
-                thread_id = await self._sync(
-                    self.notebook.store.get_codex_thread, user_id=user.user_id, conversation_id=intake_id,
-                )
+                _, thread_id = await self._sync(self._intake_thread, user.user_id, intake)
                 if not thread_id:
                     raise LookupError
                 result = await self._sync(self.model_runner.compact, thread_id=thread_id)
@@ -377,16 +371,21 @@ class NotebookAsgiApp:
                     raise LookupError
                 if int(payload["input_version"]) != attempt.input_version:
                     raise RuntimeError("input_version_changed")
-                thread_id = await self._sync(
-                    self.notebook.store.get_codex_thread,
-                    user_id=user.user_id,
-                    conversation_id=attempt.intake_id,
-                )
-                result = await self._sync(self.model_runner.grade, attempt=attempt, thread_id=thread_id)
+                intake = await self._sync(self.notebook.store.get_intake, user_id=user.user_id, intake_id=attempt.intake_id)
+                if not intake:
+                    raise LookupError
+                file_record = await self._sync(self.notebook.store.get_file, user_id=user.user_id, file_id=intake.file_id)
+                if not file_record or file_record.media_type not in {"image/png", "image/jpeg"}:
+                    raise ModelUnavailableError("grading requires the original PNG or JPEG")
+                thread_owner_id, thread_id = await self._sync(self._intake_thread, user.user_id, intake)
+                with self.notebook.files.model_preview(file_record.object_key, file_record.content_sha256) as image_path:
+                    result = await self._sync(
+                        self.model_runner.grade, attempt=attempt, image_path=image_path, thread_id=thread_id,
+                    )
                 await self._sync(
                     self.notebook.store.save_codex_thread,
                     user_id=user.user_id,
-                    conversation_id=attempt.intake_id,
+                    conversation_id=thread_owner_id,
                     thread_id=result["thread_id"],
                 )
                 if result.get("attempt_id") != attempt.attempt_id or result.get("input_version") != attempt.input_version:
@@ -509,7 +508,7 @@ class NotebookAsgiApp:
             raise LookupError
         if int(payload["input_version"]) != intake.input_version:
             raise RuntimeError("input_version_changed")
-        thread_id = self.notebook.store.get_codex_thread(user_id=user_id, conversation_id=intake_id)
+        thread_owner_id, thread_id = self._intake_thread(user_id, intake)
         if stage == "intake":
             if payload["attempt_id"] is not None or payload["candidate_id"] is not None:
                 raise ValueError("invalid intake chat context")
@@ -519,7 +518,7 @@ class NotebookAsgiApp:
                 context={"question_text": intake.question_text, "answer_text": intake.answer_text, "status": intake.status},
                 thread_id=thread_id, event_callback=event_callback, cancel_event=cancel_event,
             )
-            self.notebook.store.save_codex_thread(user_id=user_id, conversation_id=intake_id, thread_id=result["thread_id"])
+            self.notebook.store.save_codex_thread(user_id=user_id, conversation_id=thread_owner_id, thread_id=result["thread_id"])
             if result.get("action") == "revise_intake":
                 if intake.status == "extracting":
                     intake = self.notebook.store.save_extraction_candidate(
@@ -554,7 +553,7 @@ class NotebookAsgiApp:
             context={"question_text": attempt.question_text, "answer_text": attempt.answer_text, "candidate": self._candidate(candidate) if candidate else None},
             thread_id=thread_id, event_callback=event_callback, cancel_event=cancel_event,
         )
-        self.notebook.store.save_codex_thread(user_id=user_id, conversation_id=intake_id, thread_id=result["thread_id"])
+        self.notebook.store.save_codex_thread(user_id=user_id, conversation_id=thread_owner_id, thread_id=result["thread_id"])
         if result.get("action") == "revise_grade":
             verdict, first_error, evidence = self._grade_values(result, evidence_key="cause_evidence")
             candidate = self.notebook.store.record_grade_candidate(
@@ -565,6 +564,17 @@ class NotebookAsgiApp:
             "assistant_message": result["assistant_message"], "action": result["action"],
             "stage": "grade", "candidate": self._candidate(candidate) if candidate else None, "model": result.get("route"),
         }
+
+    def _intake_thread(self, user_id: str, intake: IntakeItem) -> tuple[str, str | None]:
+        """Resolve one parent Harness thread for every question split from the same file."""
+        direct = self.notebook.store.get_codex_thread(user_id=user_id, conversation_id=intake.intake_id)
+        if direct:
+            return intake.intake_id, direct
+        for sibling in self.notebook.store.get_file_intakes(user_id=user_id, file_id=intake.file_id):
+            thread_id = self.notebook.store.get_codex_thread(user_id=user_id, conversation_id=sibling.intake_id)
+            if thread_id:
+                return sibling.intake_id, thread_id
+        return intake.intake_id, None
 
     async def _stream_chat_turn(self, send: Send, user_id: str, intake_id: str, payload: dict[str, Any]) -> None:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()

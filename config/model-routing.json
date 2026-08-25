@@ -39,10 +39,40 @@
       "minimum_confidence": 0.90,
       "schema": "schemas/math-grade-result.schema.json"
     },
+    "math-grade-solution": {
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "medium",
+      "minimum_confidence": 0.90,
+      "schema": "schemas/math-solution-result.schema.json"
+    },
+    "math-grade-solution-hard": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "xhigh",
+      "minimum_confidence": 0.92,
+      "schema": "schemas/math-solution-result.schema.json"
+    },
+    "math-grade-solution-max": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "max",
+      "minimum_confidence": 0.94,
+      "schema": "schemas/math-solution-result.schema.json"
+    },
     "math-grade-adjudication": {
       "model": "gpt-5.6-sol",
       "reasoning_effort": "high",
       "minimum_confidence": 0.92,
+      "schema": "schemas/math-grade-result.schema.json"
+    },
+    "math-grade-adjudication-hard": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "xhigh",
+      "minimum_confidence": 0.92,
+      "schema": "schemas/math-grade-result.schema.json"
+    },
+    "math-grade-adjudication-max": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "max",
+      "minimum_confidence": 0.94,
       "schema": "schemas/math-grade-result.schema.json"
     },
     "math-notebook-loop": {

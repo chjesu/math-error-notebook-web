@@ -34,6 +34,7 @@
 | [13-LOGIN-REGISTER-PRD.md](./13-LOGIN-REGISTER-PRD.md) | 登录/注册页面、字段、状态、风控、目标 API 与验收标准 | v0.4.0 | 本地实现已验收；生产安全门禁未完成 |
 | [14-CODEX-MULTI-AGENT-TEAM.md](./14-CODEX-MULTI-AGENT-TEAM.md) | 多角色子智能体、岗位能力、并行工作流、模型路由和治理边界 | v1.0 | 已建立 |
 | [16-CODEX-APP-SERVER-HARNESS.md](./16-CODEX-APP-SERVER-HARNESS.md) | 官方 app-server 会话运行时、事件流、持久线程和能力边界 | v0.4.0 | 核心运行时已接入 |
+| [17-GRADING-ABILITY-ENHANCEMENT.md](./17-GRADING-ABILITY-ENHANCEMENT.md) | 原图复核、同图父线程、独立解题、受限验算与动态推理路由 | v0.4.0 | 已实现，待完整验收 |
 | [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前完整本地候选机器可校验 API 契约 | v0.4.0 | 36 paths；生产部署前仍需契约复核 |
 
 ## 活跃需求

@@ -2,7 +2,7 @@
 
 ## 1. 决策
 
-工作台不再自行模拟 Codex 会话循环。首轮图片识别、题干与作答修正、判题和追问直接复用官方开源 Codex `app-server` 协议；`codex exec` 只保留给无用户会话的批量工程审查。工作台的权威运行时入口为 `scripts/codex_app_server.py`，业务仍统一经 `scripts/codex_task_router.py` 选择模型和 Schema。
+工作台不再自行模拟 Codex 会话循环。首轮图片识别、题干与作答修正、判题复核和追问直接复用官方开源 Codex `app-server` 协议；判题前的独立参考解使用临时、只读、无历史的 `codex exec --ephemeral`，避免先看到学生答案。工作台的权威运行时入口为 `scripts/codex_app_server.py`，业务仍统一经 `scripts/codex_task_router.py` 选择模型和 Schema。
 
 这里的“拥有 Harness 能力”是指复用同一上游线程、回合、条目和事件运行时，而不是复制 Codex 桌面界面，也不是把开发者电脑权限交给普通用户。
 
@@ -11,7 +11,7 @@
 - `initialize` / `initialized` 标准握手；
 - `thread/start` 创建可持久化线程，`thread/resume` 跨 Web 服务进程恢复同一线程；
 - `turn/start`、结构化 `outputSchema`、Sol 路由和多轮上下文；
-- `localImage` 首轮图片输入；首次识别、判题和后续交互恢复同一 thread；
+- `localImage` 首轮图片输入；同一图片拆出的所有题目复用首题的父 thread，判题复核重新附带原图；
 - `turn/started`、`item/started`、`item/agentMessage/delta`、`item/completed`、token 使用、上下文压缩和 `turn/completed` 真实通知；
 - `POST /v1/intakes/{intake_id}/chat-turn-stream` NDJSON 流，页面按真实事件更新“正在连接、理解、分析、组织回复、整理上下文”；
 - `codex_conversations` MySQL 映射，浏览器永远看不到或提交上游 thread id；
@@ -38,7 +38,8 @@
 | 停止当前回合 | 已接通 `turn/interrupt`；输入框发送键在运行中变为停止键 |
 | 运行中追加指令、重新生成、分叉 | 待产品数据模型；分叉不能覆盖 intake 当前 thread 映射，须先定义一题多分支的归属、展示和入本规则 |
 | Shell、文件修改、MCP、插件、任意技能 | 工作台明确禁用；不属于学生错题流程 |
-| 首次图片识别与判题预处理也并入同一线程 | 已接通；图片使用 `localImage`，识别与判题使用 Sol 高推理档 |
+| 判题参考解与复核 | 已接通；独立解题不含学生答案，复核附原图并回到父线程；常规题使用 medium/high，困难与几何题才升级 xhigh/max |
+| 受限数学验证 | 已接通；只支持白名单 AST 表达式并返回 verified/conflict/unsupported，不开放 Shell |
 
 因此，当前版本已经从“仿 Harness 的页面”切换到“官方 Harness 驱动的连续会话核心”，历史翻页、停止和主动压缩已有真实控制面；运行中追加、重新生成和分叉仍不能写成已完成。
 

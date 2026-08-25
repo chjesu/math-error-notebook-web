@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lizhaolin.local/schemas/math-solution-result.schema.json",
+  "title": "Independent math solution candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["attempt_id", "input_version", "solution", "final_answer", "verification_checks", "confidence"],
+  "properties": {
+    "attempt_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "input_version": {"type": "integer", "minimum": 1},
+    "solution": {"type": "string", "minLength": 1},
+    "final_answer": {"type": "string", "minLength": 1},
+    "verification_checks": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["left", "right", "variables"],
+        "properties": {
+          "left": {"type": "string", "maxLength": 200},
+          "right": {"type": "string", "maxLength": 200},
+          "variables": {
+            "type": "array",
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[a-z]$"}
+          }
+        }
+      }
+    },
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

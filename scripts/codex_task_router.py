@@ -318,8 +318,15 @@ def _review_prompt(route: dict, review_input: str) -> str:
             "examples, even when they contain a complete stem and solution. Preserve mathematical notation. Never "
             "invent unreadable content; mark only the affected target item unclear when evidence is insufficient."
         )
+    elif route["task"].startswith("math-grade-solution"):
+        purpose = (
+            "Solve the frozen math question independently. Do not infer, inspect, or grade any student answer. "
+            "Use the attached original image only to recover diagrams and question context. Return a complete "
+            "reference solution and final answer. Optionally request up to eight bounded equation checks using "
+            "plain expressions with numbers, single-letter variables, +, -, *, /, powers up to 8, and sqrt only."
+        )
     elif route["task"].startswith("math-grade"):
-        purpose = "Produce a read-only math grading candidate from the frozen attempt. Find the first substantive error, classify its cause, give direct evidence, a complete correct solution, final answer, and a short prevention cue. Never invent unreadable content; use unclear when evidence is insufficient."
+        purpose = "Produce a read-only math grading candidate from the frozen attempt, attached original image, independent reference solution, and deterministic verification report. Recheck the conclusion rather than blindly copying the reference solution. Find the first substantive error, classify its cause, give direct evidence, a complete correct solution, final answer, and a short prevention cue. Never invent unreadable content; use unclear when evidence is insufficient or evidence conflicts."
     else:
         purpose = "Perform a read-only engineering review."
     role_context = ""
@@ -598,7 +605,7 @@ def run_review(route: dict, review_input: str, output_path: Path, images: list[P
         initial_path.write_text(
             json.dumps(value["result"], ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        expert_task = "math-intake-adjudication" if value["route"]["task"].startswith("math-intake") else "math-grade-adjudication" if value["route"]["task"].startswith("math-grade") else "web-security-review"
+        expert_task = "math-intake-adjudication" if value["route"]["task"].startswith("math-intake") else "math-grade-solution-hard" if value["route"]["task"].startswith("math-grade-solution") else "math-grade-adjudication" if value["route"]["task"].startswith("math-grade") else "web-security-review"
         expert = select(expert_task, route["risks"])
         expert.update(
             {
@@ -650,6 +657,8 @@ def needs_escalation(value: dict) -> bool:
     route, result = value["route"], value["result"]
     if route["model"] == "gpt-5.6-sol":
         return False
+    if route["task"].startswith("math-grade-solution"):
+        return float(result.get("confidence", 0)) < float(route["minimum_confidence"])
     if route["task"].startswith("math-grade"):
         return bool(
             result.get("verdict") == "unclear"

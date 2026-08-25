@@ -9,6 +9,7 @@ from typing import Any, Callable
 import uuid
 
 from scripts.codex_task_router import compact_conversation, read_conversation_history, run_conversation_turn, run_review, run_structured_harness_turn, select
+from .math_verifier import verify_equations
 
 
 CAUSE_CODES = {
@@ -48,6 +49,7 @@ class CodexNotebookModel:
         self.route_selector = route_selector
         self.max_active = max_active
         self._active: set[tuple[str, str, int]] = set()
+        self._grade_active: set[tuple[str, int]] = set()
         self._active_lock = Lock()
 
     def history(self, *, thread_id: str, cursor: str | None = None, limit: int = 50) -> dict[str, Any]:
@@ -164,17 +166,41 @@ class CodexNotebookModel:
         self,
         *,
         attempt: Any,
+        image_path: Path,
         thread_id: str | None = None,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        frozen = {
-            "attempt_id": attempt.attempt_id,
-            "input_version": attempt.input_version,
-            "question_text": attempt.question_text,
-            "answer_text": attempt.answer_text,
-            "evidence": {"source": "user_confirmed"},
-        }
-        value = self._run("math-grade-adjudication", frozen, [], thread_id, event_callback)
+        grade_key = (attempt.attempt_id, attempt.input_version)
+        with self._active_lock:
+            if grade_key in self._grade_active:
+                raise ModelUnavailableError("model candidate generation is already in progress")
+            self._grade_active.add(grade_key)
+        try:
+            difficulty = self._grade_difficulty(attempt.question_text)
+            suffix = "" if difficulty == "normal" else f"-{difficulty}"
+            solution = self._solve_independently(
+                attempt=attempt,
+                image_path=image_path,
+                task=f"math-grade-solution{suffix}",
+            )
+            frozen = {
+                "attempt_id": attempt.attempt_id,
+                "input_version": attempt.input_version,
+                "question_text": attempt.question_text,
+                "answer_text": attempt.answer_text,
+                "evidence": {
+                    "source": "user_confirmed_with_original_image",
+                    "independent_solution": solution,
+                    "verification_report": verify_equations(solution["verification_checks"]),
+                    "difficulty": difficulty,
+                },
+            }
+            value = self._run(
+                f"math-grade-adjudication{suffix}", frozen, [image_path], thread_id, event_callback,
+            )
+        finally:
+            with self._active_lock:
+                self._grade_active.discard(grade_key)
         result = value["result"]
         if result.get("attempt_id") != attempt.attempt_id or result.get("input_version") != attempt.input_version:
             raise ModelUnavailableError("model response does not match the frozen attempt")
@@ -203,6 +229,81 @@ class CodexNotebookModel:
             "thread_id": value["thread_id"],
             "route": self._route_metadata(value),
         }
+
+    def _solve_independently(self, *, attempt: Any, image_path: Path, task: str) -> dict[str, Any]:
+        frozen = {
+            "attempt_id": attempt.attempt_id,
+            "input_version": attempt.input_version,
+            "question_text": attempt.question_text,
+            "evidence": {"source": "original_image"},
+        }
+        output = self.output_root / f"{task}-{uuid.uuid4().hex}.json"
+        initial_output = output.with_suffix(output.suffix + ".initial.json")
+        try:
+            self.output_root.mkdir(parents=True, exist_ok=True)
+            value = self.review(
+                self.route_selector(task, []),
+                json.dumps(frozen, ensure_ascii=False, separators=(",", ":")),
+                output,
+                [image_path],
+            )
+            result = value.get("result") if isinstance(value, dict) else None
+            if not isinstance(result, dict) or result.get("attempt_id") != attempt.attempt_id or result.get("input_version") != attempt.input_version:
+                raise ModelUnavailableError("independent solution does not match the frozen attempt")
+            solution = self._text(result.get("solution"), "solution", required=True)
+            final_answer = self._text(result.get("final_answer"), "final_answer", required=True)
+            checks = self._verification_checks(result.get("verification_checks"))
+            confidence = result.get("confidence")
+            if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
+                raise ModelUnavailableError("independent solution returned invalid confidence")
+            return {
+                "solution": solution,
+                "final_answer": final_answer,
+                "verification_checks": checks,
+                "confidence": float(confidence),
+                "route": self._route_metadata(value),
+            }
+        except ModelUnavailableError:
+            raise
+        except Exception as exc:
+            raise ModelUnavailableError(
+                "independent math solution failed",
+                code=getattr(exc, "public_code", "model_unavailable"),
+            ) from exc
+        finally:
+            output.unlink(missing_ok=True)
+            initial_output.unlink(missing_ok=True)
+
+    @staticmethod
+    def _grade_difficulty(question_text: str) -> str:
+        compact = "".join(question_text.split()).casefold()
+        maximum = ("证明", "空间几何", "立体几何", "二面角", "存在性")
+        hard = ("如图", "图中", "解析几何", "圆锥曲线", "函数综合", "数列综合", "最值", "轨迹")
+        if any(keyword in compact for keyword in maximum):
+            return "max"
+        if any(keyword in compact for keyword in hard):
+            return "hard"
+        return "normal"
+
+    @staticmethod
+    def _verification_checks(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list) or len(value) > 8:
+            raise ModelUnavailableError("independent solution returned invalid verification checks")
+        checks = []
+        for check in value:
+            if not isinstance(check, dict) or set(check) != {"left", "right", "variables"}:
+                raise ModelUnavailableError("independent solution returned invalid verification checks")
+            left, right, variables = check["left"], check["right"], check["variables"]
+            if (
+                not isinstance(left, str) or not 1 <= len(left) <= 200
+                or not isinstance(right, str) or not 1 <= len(right) <= 200
+                or not isinstance(variables, list) or len(variables) > 3
+                or any(not isinstance(name, str) or len(name) != 1 or not "a" <= name <= "z" for name in variables)
+                or len(variables) != len(set(variables))
+            ):
+                raise ModelUnavailableError("independent solution returned invalid verification checks")
+            checks.append({"left": left, "right": right, "variables": list(variables)})
+        return checks
 
     def chat_turn(
         self,
