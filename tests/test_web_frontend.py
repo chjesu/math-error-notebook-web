@@ -78,6 +78,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("previewDialog.showModal()", script)
         self.assertIn('[data-preview-url]', script)
         self.assertIn(".image-preview-dialog::backdrop", css)
+        self.assertIn(".image-preview-dialog[open] { display: grid; place-items: center; }", css)
+        self.assertIn(".image-preview-dialog > img { display: block; width: auto;", css)
         self.assertIn("new XMLHttpRequest()", script)
         self.assertIn('xhr.upload.addEventListener("progress"', script)
         for state in ('"queued"', '"uploading"', '"processing"', '"done"', '"failed"'):
