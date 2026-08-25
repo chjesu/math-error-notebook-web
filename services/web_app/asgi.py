@@ -112,6 +112,17 @@ class NotebookAsgiApp:
             if path == "/v1/intakes" and method == "GET":
                 intakes = await self._sync(self.notebook.store.list_pending_intakes, user_id=user.user_id)
                 await self._json(send, 200, {"items": [self._intake(item) for item in intakes]})
+            elif path == "/v1/conversations/latest/messages" and method == "GET":
+                if self.model_runner is None:
+                    raise ModelUnavailableError("local model processing is disabled")
+                mappings = await self._sync(self.notebook.store.list_recent_codex_threads, user_id=user.user_id, limit=5)
+                history = {"items": []}
+                for _, thread_id in mappings:
+                    items = await self._sync(self.model_runner.history, thread_id=thread_id)
+                    history = {"items": items}
+                    if items:
+                        break
+                await self._json(send, 200, history)
             elif path == "/v1/workbench" and method == "GET":
                 items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
                 pending = await self._sync(self.notebook.store.pending_job_count, user_id=user.user_id)

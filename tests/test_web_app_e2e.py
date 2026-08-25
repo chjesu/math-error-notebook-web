@@ -328,6 +328,27 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual((graded[0], graded[2]["candidate"]["verdict"], graded[2]["candidate"]["diagnosis"]["final_answer"]), (200, "incorrect", "x=1"))
         self.assertEqual(self.call("/v1/errors", cookie=cookie)[2]["items"], [])
 
+    def test_latest_conversation_history_is_user_scoped_and_hides_thread_id(self) -> None:
+        class FakeHistoryModel:
+            def history(_, *, thread_id):
+                if thread_id == "thread-empty-test":
+                    return []
+                self.assertEqual(thread_id, "thread-history-test")
+                return [{"role": "user", "text": "请再检查"}, {"role": "assistant", "text": "可以，我们继续核对。"}]
+
+        self.app.model_runner = FakeHistoryModel()
+        cookie = self.login("13000130002")
+        other_cookie = self.login("13000130003")
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        self.domain_store.save_codex_thread(user_id=user.user_id, conversation_id="a" * 32, thread_id="thread-history-test")
+        self.domain_store.save_codex_thread(user_id=user.user_id, conversation_id="b" * 32, thread_id="thread-empty-test")
+        response = self.call("/v1/conversations/latest/messages", cookie=cookie)
+        self.assertEqual(response[0], 200)
+        self.assertEqual(response[2]["items"][0], {"role": "user", "text": "请再检查"})
+        self.assertNotIn("thread_id", response[2])
+        self.assertNotIn("conversation_id", response[2])
+        self.assertEqual(self.call("/v1/conversations/latest/messages", cookie=other_cookie)[2], {"items": []})
+
     def test_manual_grade_requires_first_error_and_large_body_is_413(self) -> None:
         cookie = self.login("13700137000")
         content_type, body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nimage")

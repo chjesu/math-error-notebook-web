@@ -539,6 +539,23 @@ function bindWorkbench() {
     } catch (_) {}
   }
 
+  async function restoreConversationHistory() {
+    try {
+      const result = await api("/v1/conversations/latest/messages");
+      if (!Array.isArray(result.items)) return;
+      for (const item of result.items) {
+        if (!item || typeof item.text !== "string" || !item.text.trim()) continue;
+        if (item.role === "user") userTurn(item.text);
+        else if (item.role === "assistant") assistantTurn(item.text);
+      }
+    } catch (_) {}
+  }
+
+  async function restoreWorkbench() {
+    await restoreConversationHistory();
+    await restorePendingIntakes();
+  }
+
   async function confirmAndGrade() {
     if (!activeIntake?.questionText || activeIntake.status !== "waiting_confirmation") {
       assistantTurn("当前还没有可确认的完整题干。请直接告诉我题干、作答或需要修正的内容。", true);
@@ -715,7 +732,7 @@ function bindWorkbench() {
   $("#upload-form").addEventListener("submit", event => { event.preventDefault(); uploadFiles.some(item => !item.submitted && ["queued", "failed"].includes(item.state)) ? uploadQueued() : sendMessage(); });
   window.addEventListener("beforeunload", () => uploadFiles.forEach(item => item.previewUrl && URL.revokeObjectURL(item.previewUrl)));
   setComposerState();
-  restorePendingIntakes();
+  restoreWorkbench();
 }
 
 function bindErrors() {

@@ -139,6 +139,23 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def list_recent_codex_threads(self, *, user_id: str, limit: int = 5) -> list[tuple[str, str]]:
+        user = _required(user_id, "user_id", 32)
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
+            raise ValueError("invalid conversation limit")
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT conversation_id,thread_id FROM codex_conversations "
+                "WHERE user_id=%s ORDER BY updated_at DESC LIMIT %s",
+                (user, limit),
+            )
+            return [(str(row[0]), str(row[1])) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            connection.close()
+
     def save_codex_thread(self, *, user_id: str, conversation_id: str, thread_id: str) -> str:
         user = _required(user_id, "user_id", 32)
         conversation = _required(conversation_id, "conversation_id", 32)

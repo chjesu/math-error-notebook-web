@@ -83,6 +83,14 @@ class WebOpenApiContractTests(unittest.TestCase):
         codes = set(self.document["components"]["schemas"]["ErrorEnvelope"]["properties"]["error"]["properties"]["code"]["enum"])
         self.assertTrue({"model_network_error", "model_rate_limited", "model_authentication_error"} <= codes)
 
+    def test_conversation_history_hides_internal_thread_and_prompt_fields(self) -> None:
+        operation = self.operation("/v1/conversations/latest/messages", "get")
+        self.assertEqual(operation["responses"]["200"]["$ref"], "#/components/responses/ConversationHistory")
+        schema = self.document["components"]["schemas"]["ConversationHistory"]
+        self.assertEqual(set(schema["properties"]), {"items"})
+        message = self.document["components"]["schemas"]["ConversationMessage"]
+        self.assertEqual(set(message["properties"]), {"role", "text"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -146,6 +146,23 @@ class CodexNotebookModelTests(unittest.TestCase):
             self.assertEqual(second["action"], "ready")
             self.assertEqual(sessions, [None, "thread-abc"])
 
+    def test_history_exposes_only_product_messages_from_structured_thread_items(self) -> None:
+        packet = {"user_message": "第二行才是题干"}
+        answer = {"assistant_message": "已按你的说明修正。"}
+        entries = [
+            {"turnId": "4", "item": {"type": "agentMessage", "text": json.dumps(answer, ensure_ascii=False)}},
+            {"turnId": "3", "item": {"type": "userMessage", "content": [{"type": "text", "text": "Private prompt\nReview input:\n" + json.dumps(packet, ensure_ascii=False)}]}},
+            {"turnId": "2", "item": {"type": "agentMessage", "text": json.dumps({"status": "complete"})}},
+            {"turnId": "1", "item": {"type": "userMessage", "content": [{"type": "text", "text": "Private extraction prompt\nReview input:\n{}"}]}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            model = CodexNotebookModel(Path(directory), history_reader=lambda _: {"items": entries})
+            messages = model.history(thread_id="thread-abc")
+        self.assertEqual(messages, [
+            {"role": "user", "text": "第二行才是题干"},
+            {"role": "assistant", "text": "已按你的说明修正。"},
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

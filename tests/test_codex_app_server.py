@@ -69,6 +69,21 @@ class CodexAppServerTests(unittest.TestCase):
         ])
         self.assertEqual([event["type"] for event in events], ["turn_started", "agent_message_delta", "item_completed", "turn_completed"])
 
+    def test_history_uses_official_thread_read_protocol(self) -> None:
+        entries = [{"turnId": "turn-1", "item": {"id": "item-1", "type": "agentMessage", "text": "{}"}}]
+        process = _Process([
+            {"id": 0, "result": {"userAgent": "test"}},
+            {"id": 1, "result": {"thread": {"id": "thread-123", "turns": [{"id": "turn-1", "items": [entries[0]["item"]]}]}}},
+        ])
+        with mock.patch.object(codex_app_server.shutil, "which", return_value="codex"), mock.patch.object(
+            codex_app_server.subprocess, "Popen", return_value=process,
+        ), mock.patch.object(codex_app_server, "_codex_environment", return_value={}):
+            value = codex_app_server.list_thread_items(thread_id="thread-123")
+        sent = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        self.assertEqual(value, {"items": entries, "next_cursor": None})
+        self.assertEqual([item["method"] for item in sent], ["initialize", "initialized", "thread/read"])
+        self.assertEqual(sent[2]["params"], {"threadId": "thread-123", "includeTurns": True})
+
 
 if __name__ == "__main__":
     unittest.main()

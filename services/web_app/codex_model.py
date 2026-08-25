@@ -8,7 +8,7 @@ from threading import Lock
 from typing import Any, Callable
 import uuid
 
-from scripts.codex_task_router import run_conversation_turn, run_review, run_structured_harness_turn, select
+from scripts.codex_task_router import read_conversation_history, run_conversation_turn, run_review, run_structured_harness_turn, select
 
 
 CAUSE_CODES = {
@@ -34,6 +34,7 @@ class CodexNotebookModel:
         review: Callable[..., dict[str, Any]] = run_review,
         harness_review: Callable[..., dict[str, Any]] = run_structured_harness_turn,
         conversation_review: Callable[..., dict[str, Any]] = run_conversation_turn,
+        history_reader: Callable[[str], dict[str, Any]] = read_conversation_history,
         route_selector: Callable[[str, list[str]], dict[str, Any]] = select,
         max_active: int = 2,
     ) -> None:
@@ -41,10 +42,51 @@ class CodexNotebookModel:
         self.review = review
         self.harness_review = harness_review
         self.conversation_review = conversation_review
+        self.history_reader = history_reader
         self.route_selector = route_selector
         self.max_active = max_active
         self._active: set[tuple[str, str, int]] = set()
         self._active_lock = Lock()
+
+    def history(self, *, thread_id: str) -> list[dict[str, str]]:
+        """Translate persisted structured app-server items into product chat messages."""
+        try:
+            value = self.history_reader(thread_id)
+        except Exception as exc:
+            raise ModelUnavailableError(
+                "Codex app-server history read failed",
+                code=getattr(exc, "public_code", "model_unavailable"),
+            ) from exc
+        entries = value.get("items") if isinstance(value, dict) else None
+        if not isinstance(entries, list):
+            raise ModelUnavailableError("Codex app-server returned invalid history")
+        messages: list[dict[str, str]] = []
+        for entry in reversed(entries):
+            item = entry.get("item") if isinstance(entry, dict) and isinstance(entry.get("item"), dict) else {}
+            item_type = item.get("type")
+            text = ""
+            if item_type == "userMessage":
+                content = item.get("content") if isinstance(item.get("content"), list) else []
+                text = next((part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"), "")
+            elif item_type == "agentMessage" and isinstance(item.get("text"), str):
+                text = item["text"]
+            else:
+                continue
+            packet = self._history_packet(text)
+            field = "user_message" if item_type == "userMessage" else "assistant_message"
+            message = packet.get(field) if isinstance(packet, dict) else None
+            if isinstance(message, str) and message.strip():
+                messages.append({"role": "user" if item_type == "userMessage" else "assistant", "text": message.strip()[:12_000]})
+        return messages
+
+    @staticmethod
+    def _history_packet(text: str) -> dict[str, Any]:
+        candidate = text.rsplit("Review input:\n", 1)[-1].strip()
+        try:
+            value = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
     def extract(
         self,

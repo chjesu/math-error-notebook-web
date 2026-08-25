@@ -37,7 +37,7 @@ python -X utf8 -B scripts/codex_task_router.py route --task web-security-review 
 
 ## 后续生产部署（当前不执行）
 
-当前 localhost + MySQL 8 的个人错题本支持：上传→Codex CLI 识别候选→官方 app-server 同一线程自然语言修正→确认判题→Codex CLI 判题候选→继续追问/修正→确认入本→仅已验证推荐→复习→PDF；工作台接收真实 Harness 事件，线程映射可跨 Web 服务重启恢复，模型不可用时安全停止。导出为业务 JSON+文件元数据（不含上传原始二进制，最多下载 3 次并审计），注销执行停用、业务失效和对象文件删除，认证/协议/审计按策略留存。跨刷新消息历史恢复、服务端历史分页、运行中追加/停止/分叉控制、生产异步 Worker、PDF/DOCX 自动解析、真实短信/CAPTCHA/KMS/OSS、PWA、运营后台、压测/灾备/观测、正式部署和生产恢复均延期，不得写成完成。
+当前 localhost + MySQL 8 的个人错题本支持：上传→Codex CLI 识别候选→官方 app-server 同一线程自然语言修正→确认判题→Codex CLI 判题候选→继续追问/修正→确认入本→仅已验证推荐→复习→PDF；工作台接收真实 Harness 事件，线程映射可跨 Web 服务重启恢复，刷新后会恢复最近一次会话的产品消息，模型不可用时安全停止。导出为业务 JSON+文件元数据（不含上传原始二进制，最多下载 3 次并审计），注销执行停用、业务失效和对象文件删除，认证/协议/审计按策略留存。更深历史的服务端游标分页、运行中追加/停止/分叉控制、生产异步 Worker、PDF/DOCX 自动解析、真实短信/CAPTCHA/KMS/OSS、PWA、运营后台、压测/灾备/观测、正式部署和生产恢复均延期，不得写成完成。
 
 1. 在 MySQL 8 执行 `services/web_auth/migrations/0001_phone_registration.sql`。
 2. 从密钥管理服务注入 `services/web_auth/README.md` 列出的环境变量。

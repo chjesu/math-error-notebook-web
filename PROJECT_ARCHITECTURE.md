@@ -60,7 +60,7 @@ flowchart TB
 | Web 题库、错题、作答和复习数据 | MySQL 个人 `user_id` 模型 | 权威桌面题库已同步到本地 MySQL：10,569 题，其中 10,278 题保持已验证、291 题按授权/质量门降级为候选；生产回滚未完成 |
 | 文件上传、解析、审核、判题 | API + Codex CLI 候选 + Codex app-server 会话适配器 | PNG/JPEG 可从一张图片按阅读顺序拆出至多 20 道题及其对应作答，每题建立独立待确认候选→app-server 自然语言追问/修正→确认判题→继续追问/修正→确认入本；模型不可用时安全停止且不显示大表单，PDF/DOCX 自动解析与生产异步 Worker 仍延期 |
 | 推荐、复习计划和 PDF | `services/web_domain/` | 仅已验证且授权题可推荐；推荐、复习和 PDF 本地链路已验收，题库为空时展示缺口 |
-| 前端/PWA、运营后台和运维恢复 | `web/`、后续运维模块 | 六个侧边栏入口保持独立 URL/HTML；工作台消费 app-server 的真实 NDJSON 事件；线程映射已进 MySQL 并可跨服务重启恢复，消息历史跨刷新/服务端分页、运行中追加/停止/分叉、PWA、运营后台和生产恢复仍延期 |
+| 前端/PWA、运营后台和运维恢复 | `web/`、后续运维模块 | 六个侧边栏入口保持独立 URL/HTML；工作台消费 app-server 的真实 NDJSON 事件，并从最近持久线程恢复产品消息、按 10 条分页显示；更深历史的服务端游标分页、运行中追加/停止/分叉、PWA、运营后台和生产恢复仍延期 |
 | 阿里云部署 | WAF/SLB、RDS、OSS、运行环境 | 已后置；本地全链路通过后人工批准 |
 
 ## 4. 目录
@@ -127,11 +127,11 @@ flowchart LR
 
 本地 Web 启动的 CLI 复用桌面用户的 Codex 登录目录，并只继承标准代理、上游代理和 CA 证书环境，不复制短信、数据库等业务秘密；调用仍带 `--ignore-user-config`，避免加载用户配置中的任意 MCP、工具或提示。瞬时连接、超时和限流错误总计最多尝试两次；证书、认证和非网络 CLI 错误不做盲目重试。每次尝试写入 `data/audits/codex-routing/codex-cli-events.jsonl`，仅记录调用标识、任务、模型、阶段、耗时、尝试次数、结果和错误分类，不记录题目、图片路径、提示词、stdout、stderr、账号或密钥。
 
-错题会话使用 `math-notebook-loop` 路由和官方 `codex app-server`：首轮通过 `thread/start` 建立持久线程，后续轮次只按 MySQL 中当前用户与 intake 绑定的不透明 thread id 调用 `thread/resume`；浏览器不能读取或提交 thread id。运行时固定只读 sandbox、拒绝审批、关闭 shell 与 MCP，最终消息必须通过 `math-loop-turn.schema.json`。真实 turn/item/delta/压缩/完成事件经 NDJSON 推送；详细能力边界见 `docs/16-CODEX-APP-SERVER-HARNESS.md`。
+错题会话使用 `math-notebook-loop` 路由和官方 `codex app-server`：首轮通过 `thread/start` 建立持久线程，后续轮次只按 MySQL 中当前用户与 intake 绑定的不透明 thread id 调用 `thread/resume`；刷新时服务端通过 `thread/read(includeTurns=true)` 读取最近线程，只将结构化封包中的真实 `user_message` 与 `assistant_message` 转为产品消息。浏览器不能读取或提交 thread id，也不能看到内部提示。运行时固定只读 sandbox、拒绝审批、关闭 shell 与 MCP，最终消息必须通过 `math-loop-turn.schema.json`。真实 turn/item/delta/压缩/完成事件经 NDJSON 推送；详细能力边界见 `docs/16-CODEX-APP-SERVER-HARNESS.md`。
 
 ## 7. 完成门
 
-“本地完整测试版”当前指：登录/注册→个人空工作台→上传 PNG/JPEG→Codex 识别候选→在同一会话中修正并确认题干与作答→Codex 判题候选→继续追问/修正→用户确认入本→仅已验证推荐→复习→PDF；模型失败时安全停止，不自动写入且不回退到页面大表单。导出/注销的敏感 OTP 二次验证、会话撤销、下载和任务/文件失效也必须通过本地 smoke 与独立安全复核。该闭环和权威题库本地同步不等于生产完成；真实短信/CAPTCHA/KMS/OSS、生产异步 Worker、PDF/DOCX 自动解析、跨刷新消息恢复、压测/灾备/观测和生产恢复仍是门禁。
+“本地完整测试版”当前指：登录/注册→个人空工作台→上传 PNG/JPEG→Codex 识别候选→在同一会话中修正并确认题干与作答→Codex 判题候选→继续追问/修正→用户确认入本→仅已验证推荐→复习→PDF；模型失败时安全停止，不自动写入且不回退到页面大表单。导出/注销的敏感 OTP 二次验证、会话撤销、下载和任务/文件失效也必须通过本地 smoke 与独立安全复核。该闭环和权威题库本地同步不等于生产完成；真实短信/CAPTCHA/KMS/OSS、生产异步 Worker、PDF/DOCX 自动解析、更深历史的服务端游标分页、压测/灾备/观测和生产恢复仍是门禁。
 
 阿里云部署只有在上述本地流程完全跑通、系统安全复核通过且用户人工批准后才能领取 `cloud_deploy_approval`。
 

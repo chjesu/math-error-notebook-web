@@ -16,7 +16,7 @@ from threading import Lock
 import time
 import uuid
 
-from scripts.codex_app_server import AppServerError, run_turn as run_app_server_turn
+from scripts.codex_app_server import AppServerError, list_thread_items as list_app_server_thread_items, run_turn as run_app_server_turn
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -526,6 +526,35 @@ def run_conversation_turn(
         "thread_id": str(resolved_session),
         "audit": str(audit_path.resolve()),
     }
+
+
+def read_conversation_history(thread_id: str) -> dict:
+    """Read the recent persisted app-server items with bounded retry logging."""
+    invocation_id = uuid.uuid4().hex[:16]
+    for attempt in range(1, CLI_MAX_ATTEMPTS + 1):
+        started = time.monotonic()
+        try:
+            value = list_app_server_thread_items(thread_id=thread_id)
+            _write_cli_event({
+                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "invocation_id": invocation_id, "task": "math-notebook-history", "model": None,
+                "phase": "app_server_history", "attempt": attempt, "max_attempts": CLI_MAX_ATTEMPTS,
+                "elapsed_seconds": round(time.monotonic() - started, 3), "outcome": "success", "exit_code": 0,
+            })
+            return value
+        except AppServerError as exc:
+            will_retry = exc.retryable and attempt < CLI_MAX_ATTEMPTS
+            _write_cli_event({
+                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "invocation_id": invocation_id, "task": "math-notebook-history", "model": None,
+                "phase": "app_server_history", "attempt": attempt, "max_attempts": CLI_MAX_ATTEMPTS,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "outcome": "retrying" if will_retry else "failed", "category": exc.category, "exit_code": None,
+            })
+            if not will_retry:
+                raise CodexCliInvocationError("app_server_history", exc.category, attempt) from exc
+            time.sleep(CLI_RETRY_DELAY_SECONDS * attempt)
+    raise AssertionError("unreachable")
 
 
 def run_review(route: dict, review_input: str, output_path: Path, images: list[Path] | None = None) -> dict:

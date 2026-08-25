@@ -240,6 +240,117 @@ def run_turn(
                         process.kill()
 
 
+def list_thread_items(
+    *,
+    thread_id: str,
+    limit: int = 200,
+    sort_direction: str = "desc",
+    timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
+    """Read persisted thread items without exposing the thread to the browser."""
+    if not isinstance(thread_id, str) or not thread_id.strip() or len(thread_id) > 128:
+        raise ValueError("invalid Codex thread id")
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+        raise ValueError("invalid Codex history limit")
+    if sort_direction not in {"asc", "desc"}:
+        raise ValueError("invalid Codex history sort direction")
+    executable = shutil.which("codex")
+    if not executable:
+        raise AppServerError("codex CLI is not installed or not on PATH")
+    with tempfile.TemporaryDirectory(prefix="web-codex-app-server-", ignore_cleanup_errors=True) as isolated:
+        process = subprocess.Popen(
+            [executable, "app-server", "-c", "mcp_servers={}", "-c", "features.shell_tool=false"],
+            cwd=isolated,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            env=_codex_environment(),
+            bufsize=1,
+        )
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            process.kill()
+            raise AppServerError("codex app-server did not expose stdio")
+        messages: Queue[str | None] = Queue()
+        stderr_tail: list[str] = []
+        Thread(target=_put_lines, args=(process.stdout, messages), daemon=True).start()
+        Thread(target=_drain_stderr, args=(process.stderr, stderr_tail), daemon=True).start()
+
+        def send(message: dict[str, Any]) -> None:
+            process.stdin.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
+            process.stdin.flush()
+
+        send({
+            "method": "initialize", "id": 0,
+            "params": {"clientInfo": {"name": "lzl_math_error_notebook", "title": "李兆霖数学错题本", "version": "0.5.0"}},
+        })
+        send({"method": "initialized", "params": {}})
+        send({"method": "thread/read", "id": 1, "params": {"threadId": thread_id, "includeTurns": True}})
+        deadline = time.monotonic() + timeout_seconds
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AppServerError("codex app-server history request timed out", category="timeout")
+                try:
+                    line = messages.get(timeout=min(remaining, 1.0))
+                except Empty:
+                    if process.poll() is not None:
+                        raise AppServerError(
+                            "codex app-server exited before returning history",
+                            category=_classify_error("".join(stderr_tail)),
+                        )
+                    continue
+                if line is None:
+                    raise AppServerError(
+                        "codex app-server closed its output",
+                        category=_classify_error("".join(stderr_tail)),
+                    )
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(message, dict):
+                    continue
+                if "id" in message and "method" in message:
+                    send({"id": message["id"], "result": {"decision": "decline"}})
+                    continue
+                if message.get("id") == 1:
+                    if message.get("error"):
+                        error = message.get("error") if isinstance(message.get("error"), dict) else {}
+                        raise AppServerError(
+                            "codex app-server rejected the history request",
+                            category=_classify_error(str(error.get("message", ""))),
+                        )
+                    result = message.get("result") if isinstance(message.get("result"), dict) else {}
+                    thread = result.get("thread") if isinstance(result.get("thread"), dict) else {}
+                    turns = thread.get("turns") if isinstance(thread.get("turns"), list) else []
+                    entries = [
+                        {"turnId": str(turn.get("id", "")), "item": item}
+                        for turn in turns if isinstance(turn, dict)
+                        for item in (turn.get("items") if isinstance(turn.get("items"), list) else [])
+                        if isinstance(item, dict)
+                    ]
+                    if sort_direction == "desc":
+                        entries.reverse()
+                    return {"items": entries[:limit], "next_cursor": None}
+        finally:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+
+
 def _codex_environment() -> dict[str, str]:
     from scripts.codex_task_router import codex_environment
 

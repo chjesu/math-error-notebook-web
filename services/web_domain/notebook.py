@@ -60,9 +60,21 @@ class InMemoryNotebookStore:
     def get_codex_thread(self, *, user_id: str, conversation_id: str) -> str | None:
         return self.codex_threads.get((user_id, conversation_id))
 
+    def list_recent_codex_threads(self, *, user_id: str, limit: int = 5) -> list[tuple[str, str]]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
+            raise ValueError("invalid conversation limit")
+        recent = []
+        for (owner_id, conversation_id), thread_id in reversed(self.codex_threads.items()):
+            if owner_id == user_id:
+                recent.append((conversation_id, thread_id))
+                if len(recent) == limit:
+                    break
+        return recent
+
     def save_codex_thread(self, *, user_id: str, conversation_id: str, thread_id: str) -> str:
         if not user_id or not conversation_id or not thread_id:
             raise ValueError("Codex thread mapping requires all identifiers")
+        self.codex_threads.pop((user_id, conversation_id), None)
         self.codex_threads[(user_id, conversation_id)] = thread_id
         return thread_id
 

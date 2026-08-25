@@ -15,6 +15,7 @@
 - `turn/started`、`item/started`、`item/agentMessage/delta`、`item/completed`、token 使用、上下文压缩和 `turn/completed` 真实通知；
 - `POST /v1/intakes/{intake_id}/chat-turn-stream` NDJSON 流，页面按真实事件更新“正在连接、理解、分析、组织回复、整理上下文”；
 - `codex_conversations` MySQL 映射，浏览器永远看不到或提交上游 thread id；
+- `thread/read(includeTurns=true)` 读取最近持久线程，只把真实用户输入和助手答复恢复为产品消息，刷新后仍可查看；
 - 最终回复继续通过 `math-loop-turn.schema.json`，题干确认、判题确认和入本仍由服务端资源归属、版本和幂等门决定。
 
 ## 3. 错题本安全配置
@@ -31,7 +32,7 @@
 | 真实增量事件 | 已接通；NDJSON 推送到工作台 |
 | 上下文压缩 | 使用 app-server 原生线程能力并接收压缩事件 |
 | 结构化业务候选 | 已接通；Schema + 确定性写入门 |
-| 历史消息跨页面恢复与服务端分页 | 待把 `thread/read` / `thread/items/list` 映射为产品消息接口 |
+| 历史消息跨页面恢复与分页 | 已接通最近 200 个上游条目的恢复，页面每次显示 10 条；更深历史的服务端游标分页待接入 |
 | 运行中追加指令、停止、重新生成、分叉 | app-server 原生支持；产品按钮和受控 API 待接入 |
 | Shell、文件修改、MCP、插件、任意技能 | 工作台明确禁用；不属于学生错题流程 |
 | 首次图片识别与判题预处理也并入同一线程 | 已接通；图片使用 `localImage`，识别与判题使用 Sol 高推理档 |
