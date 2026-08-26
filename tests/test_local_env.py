@@ -10,6 +10,13 @@ from scripts import local_env
 
 
 class LocalEnvironmentTests(unittest.TestCase):
+    def test_portable_bootstrap_reuses_the_authoritative_local_environment(self) -> None:
+        script = (local_env.ROOT / "scripts" / "bootstrap_local.ps1").read_text(encoding="utf-8")
+        self.assertIn("scripts\\local_env.py init", script)
+        self.assertIn("scripts\\local_env.py smoke", script)
+        self.assertIn('"--enable-codex-model"', script)
+        self.assertNotIn("Remove-Item", script)
+
     def test_server_cannot_bind_outside_loopback(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "localhost"):
             local_env.serve("0.0.0.0", 8000)

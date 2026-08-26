@@ -17,6 +17,14 @@ python -X utf8 -B scripts/codex_task_router.py route --task web-security-review 
 
 本地环境使用真实 MySQL 8，但短信和 CAPTCHA 均为模拟实现，不连接供应商、不产生费用：
 
+新电脑可直接执行以下命令完成依赖安装、空白数据初始化、smoke 和启动：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap_local.ps1
+```
+
+完整前置资源、空白数据范围和可选题库导入见 [新电脑本地初始化](docs/19-NEW-COMPUTER-BOOTSTRAP.md)。
+
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py init
 .\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py smoke
