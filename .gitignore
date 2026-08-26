@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+node_modules/
 .runtime/
 output/pdf/
 tmp/pdfs/
@@ -9,4 +10,7 @@ data/workflows/*.json
 data/audits/
 data/review-inputs/
 data/review-results/
+data/runtime/deepseek-harness/
+data/runtime/deepseek-harness-home/
+data/runtime/deepseek-harness-projection/
 !data/workflows/.gitkeep

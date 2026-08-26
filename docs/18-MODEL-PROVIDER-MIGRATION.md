@@ -1,10 +1,10 @@
 # 阿里云模型供应商迁移方案
 
-> 版本：v0.1
+> 版本：v0.2
 >
 > 日期：2026-08-26
 >
-> 状态：已记录，待离线评测和实施批准
+> 状态：本地可配置 Harness 适配层已实施；Qwen 生产切换仍待离线评测
 >
 > 适用范围：阿里云环境无法稳定使用 Codex/OpenAI 服务时的数学模型替代
 
@@ -123,15 +123,20 @@ Provider 的原始事件统一转换为当前产品事件，前端不感知供�
 
 ### 4.6 启动和模型路由
 
-`scripts/local_env.py` 从直接实例化 `CodexNotebookModel` 改为按受控配置装配 Provider。建议使用下列环境配置语义，实际变量名在实现评审时冻结：
+`scripts/local_env.py serve --enable-harness-model` 已通过统一 Harness 适配层装配 Provider。实际冻结的环境配置为：
 
 ```text
-MODEL_PROVIDER=bailian
-MODEL_API_BASE=<百炼兼容接口地址>
-MODEL_API_KEY=<仅来自环境或密钥服务>
+HARNESS_PROVIDER=<内部路由名，默认 notebook-provider>
+HARNESS_PROVIDER_NAME=<显示名>
+HARNESS_API_PROTOCOL=<默认 openai-completions>
+HARNESS_BASE_URL=<OpenAI 兼容网关根地址>
+HARNESS_API_KEY_ENV=<密钥所在环境变量的名称>
+HARNESS_MODEL=<模型 ID>
+HARNESS_INPUT_MODALITIES=text,image
+HARNESS_REASONING=<可选；只有模型明确支持时才设置>
 ```
 
-`config/model-routing.json` 从固定 Codex 型号改为按任务配置 `provider`、`model`、`capabilities`、超时和升级条件。具体模型名称不得散落在业务代码中。
+当前实现只在 `config/deepseek-harness/cordis.yml` 和 `HarnessRuntimeConfig` 提供安全默认值，运行时以上述环境变量覆盖。API、intake、判题、自动入本和历史恢复代码不按供应商分支。
 
 ## 5. 推荐模型路由原则
 

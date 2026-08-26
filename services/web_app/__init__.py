@@ -2,5 +2,9 @@
 
 from .asgi import NotebookAsgiApp
 from .codex_model import CodexNotebookModel, ModelUnavailableError
+from .harness_runtime import HarnessRuntimeAdapter, HarnessRuntimeConfig, HarnessRuntimeError
 
-__all__ = ["CodexNotebookModel", "ModelUnavailableError", "NotebookAsgiApp"]
+__all__ = [
+    "CodexNotebookModel", "HarnessRuntimeAdapter", "HarnessRuntimeConfig",
+    "HarnessRuntimeError", "ModelUnavailableError", "NotebookAsgiApp",
+]

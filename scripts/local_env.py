@@ -908,11 +908,17 @@ class LocalOtpDisclosureApp:
         await send({"type": "http.response.body", "body": encoded})
 
 
-def serve(host: str, port: int, *, enable_codex_model: bool = False) -> None:
+def serve(
+    host: str,
+    port: int,
+    *,
+    enable_codex_model: bool = False,
+    enable_harness_model: bool = False,
+) -> None:
     if host not in {"127.0.0.1", "localhost"}:
         raise RuntimeError("local simulation may only bind to localhost")
     start()
-    from services.web_app import CodexNotebookModel, NotebookAsgiApp
+    from services.web_app import CodexNotebookModel, HarnessRuntimeAdapter, NotebookAsgiApp
     from services.web_auth import (
         AuthConfig,
         InMemoryCaptchaVerifier,
@@ -931,7 +937,20 @@ def serve(host: str, port: int, *, enable_codex_model: bool = False) -> None:
         config=AuthConfig(captcha_after_phone_day=99, captcha_after_ip_hour=99),
     )
     notebook = NotebookService(MySqlDomainStore(_connection_factory()), RUNTIME / "quarantine")
-    model_runner = CodexNotebookModel(RUNTIME / "model-candidates") if enable_codex_model else None
+    if enable_codex_model and enable_harness_model:
+        raise RuntimeError("choose either the Harness model or the legacy Codex model")
+    if enable_harness_model:
+        harness = HarnessRuntimeAdapter.from_environment(ROOT)
+        model_runner = CodexNotebookModel(
+            RUNTIME / "model-candidates",
+            review=harness.run_structured_turn,
+            harness_review=harness.run_structured_turn,
+            conversation_review=harness.run_conversation_turn,
+            history_reader=harness.read_history,
+            compactor=harness.compact,
+        )
+    else:
+        model_runner = CodexNotebookModel(RUNTIME / "model-candidates") if enable_codex_model else None
     app = NotebookAsgiApp(
         service,
         notebook,
@@ -973,6 +992,7 @@ def main() -> int:
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=8000)
     serve_parser.add_argument("--enable-codex-model", action="store_true")
+    serve_parser.add_argument("--enable-harness-model", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "init":
@@ -993,7 +1013,12 @@ def main() -> int:
         elif args.command == "smoke":
             result = smoke()
         elif args.command == "serve":
-            serve(args.host, args.port, enable_codex_model=args.enable_codex_model)
+            serve(
+                args.host,
+                args.port,
+                enable_codex_model=args.enable_codex_model,
+                enable_harness_model=args.enable_harness_model,
+            )
             return 0
         else:
             result = doctor()

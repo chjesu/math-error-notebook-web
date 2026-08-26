@@ -471,9 +471,13 @@ class CodexNotebookModel:
     @staticmethod
     def _route_metadata(value: dict[str, Any]) -> dict[str, Any]:
         route = value["route"]
-        return {
+        metadata = {
             "task": route["task"],
             "model": route["model"],
             "reasoning_effort": route["reasoning_effort"],
             "escalated": "escalated_from" in value,
         }
+        for name in ("provider", "runtime", "version"):
+            if name in route:
+                metadata[name] = route[name]
+        return metadata
