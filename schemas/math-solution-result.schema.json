@@ -23,7 +23,6 @@
           "variables": {
             "type": "array",
             "maxItems": 3,
-            "uniqueItems": true,
             "items": {"type": "string", "pattern": "^[a-z]$"}
           }
         }

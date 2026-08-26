@@ -73,6 +73,10 @@ class CodexTaskRouterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only"):
             router.validate_grade_input(valid | {"user_id": "u" * 32})
 
+    def test_math_solution_schema_avoids_unsupported_unique_items_keyword(self) -> None:
+        schema_path = Path(router.select("math-grade-solution", [])["schema"])
+        self.assertNotIn('"uniqueItems"', schema_path.read_text(encoding="utf-8"))
+
     def test_math_intake_input_is_frozen_and_image_only(self) -> None:
         valid = {"intake_id": "b" * 32, "input_version": 1, "media_type": "image/png"}
         router.validate_intake_input(valid)
