@@ -10,15 +10,13 @@ window.__ModuleLoader__.load({
       {path: "/errors", label: "错题本", icon: "errors"},
       {path: "/reviews", label: "今日复习", icon: "reviews"},
       {path: "/practice", label: "练习 PDF", icon: "practice"},
-      {path: "/progress", label: "学习进度", icon: "progress"},
-      {path: "/settings", label: "设置与隐私", icon: "settings"}
+      {path: "/progress", label: "学习进度", icon: "progress"}
     ];
     const navigationIcons = {
       errors: [["path", {d: "M5 4.5A2.5 2.5 0 0 1 7.5 2H19v18H7.5A2.5 2.5 0 0 0 5 22Z"}], ["path", {d: "M5 4.5v15M9 7h6M9 11h6M9 15h4"}]],
       reviews: [["circle", {cx: 12, cy: 12, r: 9}], ["path", {d: "M12 7v5l3 2M8 12l2 2 4-4"}]],
       practice: [["path", {d: "M6 2h8l4 4v16H6Z"}], ["path", {d: "M14 2v5h5M9 12h6M9 16h6"}]],
-      progress: [["path", {d: "M4 20V10M10 20V4M16 20v-7M22 20H2"}]],
-      settings: [["circle", {cx: 12, cy: 12, r: 3}], ["path", {d: "M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"}]]
+      progress: [["path", {d: "M4 20V10M10 20V4M16 20v-7M22 20H2"}]]
     };
 
     function installStudentSurface(ctx) {
@@ -62,6 +60,32 @@ window.__ModuleLoader__.load({
             stroke-width: 1.6;
             stroke-linecap: round;
             stroke-linejoin: round;
+          }
+          [data-lzlm-account-privacy] {
+            max-width: 640px;
+            padding: 8px 4px;
+          }
+          [data-lzlm-account-privacy] h2 {
+            margin: 0 0 10px;
+            font-size: 20px;
+          }
+          [data-lzlm-account-privacy] p {
+            margin: 0 0 18px;
+            color: var(--dsw-alias-label-secondary);
+            line-height: 1.7;
+          }
+          [data-lzlm-account-privacy] a {
+            display: inline-flex;
+            min-height: 36px;
+            align-items: center;
+            padding: 0 14px;
+            border: 1px solid var(--dsw-alias-border-l2);
+            border-radius: 8px;
+            color: inherit;
+            text-decoration: none;
+          }
+          [data-lzlm-account-privacy] a:hover {
+            background: var(--dsw-alias-interactive-bg-hover);
           }
         `;
         document.head.appendChild(style);
@@ -130,6 +154,17 @@ window.__ModuleLoader__.load({
       });
     }
 
+    function AccountPrivacySettings() {
+      return jsx("section", {
+        "data-lzlm-account-privacy": "",
+        children: [
+          jsx("h2", {children: "账号与隐私"}, "title"),
+          jsx("p", {children: "管理当前账号会话、退出所有设备、导出个人数据或注销账号。敏感操作仍需要手机号验证码确认。"}, "description"),
+          jsx("a", {href: `${productOrigin}/settings`, target: "_top", children: "管理账号与隐私"}, "action")
+        ]
+      });
+    }
+
     const inject = ["slots", "sessions", "workspaces"];
     function apply(ctx) {
       installStudentSurface(ctx);
@@ -148,6 +183,12 @@ window.__ModuleLoader__.load({
                 label: "错题本功能导航"
               }, ProductNavigation);
             }))));
+      ctx.slots.inject("settings.section", () => ctx.slots.register({
+        name: "settings.section",
+        id: "account-privacy",
+        order: 20,
+        label: "账号与隐私"
+      }, AccountPrivacySettings));
     }
 
     exports.apply = apply;

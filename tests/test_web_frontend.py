@@ -56,9 +56,14 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('李兆霖数学错题本', plugin)
         self.assertIn('id: "math-notebook-navigation"', plugin)
         self.assertIn('sidebar.footer.action', plugin)
-        for label, route in (("错题本", "/errors"), ("今日复习", "/reviews"), ("练习 PDF", "/practice"), ("学习进度", "/progress"), ("设置与隐私", "/settings")):
+        for label, route in (("错题本", "/errors"), ("今日复习", "/reviews"), ("练习 PDF", "/practice"), ("学习进度", "/progress")):
             self.assertIn(f'path: "{route}", label: "{label}"', plugin)
         self.assertNotIn('path: "/", label: "工作台"', plugin)
+        self.assertNotIn('path: "/settings", label: "设置与隐私"', plugin)
+        self.assertIn('id: "account-privacy"', plugin)
+        self.assertIn('name: "settings.section"', plugin)
+        self.assertIn('label: "账号与隐私"', plugin)
+        self.assertIn('href: `${productOrigin}/settings`', plugin)
         self.assertIn('aria-label": "错题本功能导航"', plugin)
         self.assertIn('button[aria-label="选择工作区"]', plugin)
         self.assertIn('button[aria-label="添加工作区"]', plugin)
