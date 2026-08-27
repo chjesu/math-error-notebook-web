@@ -6,7 +6,7 @@
     "conversation_id", "stage", "resource_id", "input_version", "action",
     "assistant_message", "question_text", "answer_text", "verdict",
     "first_error", "cause_code", "cause_evidence", "correct_solution",
-    "final_answer", "prevention_cue", "confidence"
+    "knowledge_points", "final_answer", "prevention_cue", "confidence"
   ],
   "properties": {
     "conversation_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
@@ -21,6 +21,7 @@
     "first_error": {"type": ["string", "null"], "maxLength": 12000},
     "cause_code": {"type": ["string", "null"], "enum": ["knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear", null]},
     "cause_evidence": {"type": ["string", "null"], "maxLength": 12000},
+    "knowledge_points": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
     "correct_solution": {"type": ["string", "null"], "maxLength": 12000},
     "final_answer": {"type": ["string", "null"], "maxLength": 12000},
     "prevention_cue": {"type": ["string", "null"], "maxLength": 12000},

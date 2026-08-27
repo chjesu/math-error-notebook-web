@@ -68,7 +68,8 @@ class WebOpenApiContractTests(unittest.TestCase):
     def test_full_diagnosis_and_local_bank_status_are_documented(self) -> None:
         manual = self.document["components"]["schemas"]["ManualGradeCandidate"]
         required = set(manual["allOf"][0]["then"]["required"])
-        self.assertEqual(required, {"first_error", "cause_code", "evidence", "correct_solution", "final_answer"})
+        self.assertEqual(required, {"first_error", "cause_code", "evidence", "knowledge_points", "correct_solution", "final_answer"})
+        self.assertIn("knowledge_points", self.document["components"]["schemas"]["Diagnosis"]["properties"])
         self.assertIn("200", self.operation("/v1/bank/status", "get")["responses"])
 
     def test_model_extraction_returns_all_questions_in_one_file(self) -> None:

@@ -662,6 +662,7 @@ def _domain_smoke(service: Any, sender: Any, session_cookie: str, phone: str) ->
             "first_error": "移项符号错误",
             "cause_code": "algebra_transform",
             "evidence": "把常数项移到等号右侧时没有变号",
+            "knowledge_points": ["一元一次方程", "等式性质与移项"],
             "correct_solution": "x+1=2，所以 x=1",
             "final_answer": "x=1",
             "prevention_cue": "移项后立即检查符号",

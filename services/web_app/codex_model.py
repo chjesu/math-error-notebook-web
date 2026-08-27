@@ -211,6 +211,7 @@ class CodexNotebookModel:
         first_error = self._text(result.get("first_error"), "first_error", required=required) or None
         cause_code = result.get("cause_code")
         cause_evidence = self._text(result.get("cause_evidence"), "cause_evidence", required=required) or None
+        knowledge_points = self._knowledge_points(result.get("knowledge_points"), required=required)
         correct_solution = self._text(result.get("correct_solution"), "correct_solution", required=required) or None
         final_answer = self._text(result.get("final_answer"), "final_answer", required=required) or None
         prevention_cue = self._text(result.get("prevention_cue"), "prevention_cue") or None
@@ -223,6 +224,7 @@ class CodexNotebookModel:
             "first_error": first_error,
             "cause_code": cause_code if cause_code in CAUSE_CODES else None,
             "cause_evidence": cause_evidence,
+            "knowledge_points": knowledge_points,
             "correct_solution": correct_solution,
             "final_answer": final_answer,
             "prevention_cue": prevention_cue,
@@ -389,6 +391,7 @@ class CodexNotebookModel:
         parsed["confidence"] = float(confidence)
         for name in ("question_text", "answer_text", "first_error", "cause_evidence", "correct_solution", "final_answer", "prevention_cue"):
             parsed[name] = self._text(result.get(name), name) or None
+        parsed["knowledge_points"] = self._knowledge_points(result.get("knowledge_points"), required=False)
         if action == "revise_intake" and not parsed["question_text"]:
             raise ModelUnavailableError("model omitted required question_text")
         if action == "revise_grade":
@@ -400,11 +403,25 @@ class CodexNotebookModel:
                 not parsed["first_error"]
                 or result.get("cause_code") not in CAUSE_CODES
                 or not parsed["cause_evidence"]
+                or not parsed["knowledge_points"]
                 or not parsed["correct_solution"]
                 or not parsed["final_answer"]
             ):
                 raise ModelUnavailableError("model omitted a complete grading diagnosis")
         return parsed
+
+    @staticmethod
+    def _knowledge_points(value: Any, *, required: bool) -> list[str]:
+        if not isinstance(value, list) or len(value) > 8:
+            raise ModelUnavailableError("model returned invalid knowledge points")
+        points = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip() or len(item.strip()) > 200:
+                raise ModelUnavailableError("model returned invalid knowledge points")
+            points.append(item.strip())
+        if required and not points:
+            raise ModelUnavailableError("model omitted required knowledge points")
+        return points
 
     def _run(
         self,

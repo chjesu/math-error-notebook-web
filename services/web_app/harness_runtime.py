@@ -200,7 +200,7 @@ class HarnessRuntimeAdapter:
         elif task.startswith("math-grade-solution"):
             purpose = "Solve the frozen question independently; use images for diagrams and return a complete reference solution."
         elif task.startswith("math-grade"):
-            purpose = "Recheck the frozen attempt, find the first substantive error, and return a complete grading candidate."
+            purpose = "Recheck the frozen attempt, find the first substantive error, and return a complete grading candidate including concrete knowledge points for review and notebook indexing."
         else:
             purpose = "Perform the requested read-only review."
         prompt = (

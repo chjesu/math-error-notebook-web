@@ -334,8 +334,21 @@ function bindWorkbench() {
     avatar.src = "/assets/branding/logo-symbol-color-64-v1.png";
     avatar.alt = "";
     response.className = "chat-response chat-candidate";
-    heading.textContent = `判题候选 · ${verdict}`;
-    for (const [label, value] of [["第一处错误", candidate.first_error], ["主要错因", causeLabels[diagnosis.cause_code] || diagnosis.cause_code], ["判断依据", diagnosis.cause_evidence], ["正确过程", diagnosis.correct_solution], ["最终答案", diagnosis.final_answer], ["防错提示", diagnosis.prevention_cue]]) {
+    heading.textContent = `错题解析 · ${verdict}`;
+    const cause = [
+      candidate.first_error && `第一处实质错误：${candidate.first_error}`,
+      diagnosis.cause_code && `主要错因：${causeLabels[diagnosis.cause_code] || diagnosis.cause_code}`,
+      diagnosis.cause_evidence && `分析与点评：${diagnosis.cause_evidence}`,
+    ].filter(Boolean).join("\n");
+    const final = [diagnosis.final_answer, diagnosis.prevention_cue && `小建议：${diagnosis.prevention_cue}`].filter(Boolean).join("\n");
+    for (const [label, value] of [
+      ["1. 题目整理", activeIntake?.questionText],
+      ["2. 学生作答还原", activeIntake?.answerText || "未识别或未作答"],
+      ["3. 错因分析与点评", cause],
+      ["4. 知识点梳理", diagnosis.knowledge_points?.join("\n")],
+      ["5. 详细解析", diagnosis.correct_solution],
+      ["6. 最终答案及小建议", final],
+    ]) {
       if (!value) continue;
       const term = document.createElement("dt");
       const detail = document.createElement("dd");
@@ -758,7 +771,7 @@ function bindWorkbench() {
       activeIntake.uiState = "correct";
       renderIntakeBatch();
       setProgress(progress, "判题候选已生成", "本题正确，无需入本，正在继续下一题。", "complete");
-      activateNextIntake("本题判定正确，无需写入错题本。" );
+      activateNextIntake("错题本记录检查：本题判定正确，未计入错题本。" );
       return;
     }
     if (["incorrect", "partial"].includes(activeCandidate.verdict)) {
@@ -805,10 +818,11 @@ function bindWorkbench() {
       return;
     }
     const entry = await api(`/v1/grade-results/${activeCandidate.result_id}/commit`, {method: "POST", body: JSON.stringify({input_version: activeCandidate.input_version}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-    let message = "已写入错题本并安排首次复习。";
+    const knowledgeCount = entry.diagnosis?.knowledge_points?.length || 0;
+    let message = `错题本记录检查：已计入错题本，错因分析和 ${knowledgeCount} 个知识点已保存，并已安排首次复习。`;
     try {
       const recommendations = await api(`/v1/errors/${entry.error_id}/recommendations`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}});
-      message = `已写入错题本并安排首次复习，已匹配 ${recommendations.items.length} 道已验证练习。`;
+      message = `错题本记录检查：已计入错题本，错因分析和 ${knowledgeCount} 个知识点已保存；已安排首次复习，并匹配 ${recommendations.items.length} 道已验证练习。`;
     } catch (_) {}
     activeIntake.uiState = "saved";
     renderIntakeBatch();
@@ -1091,7 +1105,7 @@ function bindErrors() {
     const diagnosis = item.diagnosis || {};
     const recommendationHtml = recommendations.items.length ? recommendations.items.map((recommendation, index) => `<li><strong>练习 ${index + 1}</strong><p>${escapeHtml(recommendation.stem_text)}</p><small>${escapeHtml(recommendation.source)} · ${escapeHtml(recommendation.reason)}</small></li>`).join("") : '<li class="empty">还没有匹配练习。</li>';
     $("#error-detail").hidden = false;
-    $("#error-detail").innerHTML = `<h2>错题详情</h2><dl class="diagnosis-list"><dt>原题</dt><dd>${escapeHtml(item.question_text)}</dd><dt>你的作答</dt><dd>${escapeHtml(item.answer_text || "未填写")}</dd><dt>第一处实质错误</dt><dd>${escapeHtml(item.first_error || "待整理")}</dd><dt>主要错因</dt><dd>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</dd><dt>判断依据</dt><dd>${escapeHtml(diagnosis.cause_evidence || "待整理")}</dd><dt>完整正确过程</dt><dd>${escapeHtml(diagnosis.correct_solution || "待整理")}</dd><dt>最终答案</dt><dd>${escapeHtml(diagnosis.final_answer || "待整理")}</dd><dt>防错提示</dt><dd>${escapeHtml(diagnosis.prevention_cue || "待整理")}</dd></dl><h3>已验证练习</h3><ol class="recommendation-list">${recommendationHtml}</ol><div class="actions"><button type="button" data-error-action="recommend" class="ghost">匹配练习</button><button type="button" data-error-action="master" class="ghost">标记已掌握</button><button type="button" data-error-action="remove" class="danger">移除错题</button></div>`;
+    $("#error-detail").innerHTML = `<h2>错题详情</h2><dl class="diagnosis-list"><dt>原题</dt><dd>${escapeHtml(item.question_text)}</dd><dt>你的作答</dt><dd>${escapeHtml(item.answer_text || "未填写")}</dd><dt>第一处实质错误</dt><dd>${escapeHtml(item.first_error || "待整理")}</dd><dt>主要错因</dt><dd>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</dd><dt>判断依据</dt><dd>${escapeHtml(diagnosis.cause_evidence || "待整理")}</dd><dt>知识点梳理</dt><dd>${escapeHtml(diagnosis.knowledge_points?.join("\n") || "待整理")}</dd><dt>完整正确过程</dt><dd>${escapeHtml(diagnosis.correct_solution || "待整理")}</dd><dt>最终答案</dt><dd>${escapeHtml(diagnosis.final_answer || "待整理")}</dd><dt>防错提示</dt><dd>${escapeHtml(diagnosis.prevention_cue || "待整理")}</dd></dl><h3>已验证练习</h3><ol class="recommendation-list">${recommendationHtml}</ol><div class="actions"><button type="button" data-error-action="recommend" class="ghost">匹配练习</button><button type="button" data-error-action="master" class="ghost">标记已掌握</button><button type="button" data-error-action="remove" class="danger">移除错题</button></div>`;
     renderMath($("#error-detail"));
   }
   async function loadErrors() {

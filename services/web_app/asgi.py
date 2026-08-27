@@ -817,17 +817,25 @@ class NotebookAsgiApp:
             first_error = None
         cause_code = str(payload.get("cause_code") or "").strip()
         cause_evidence = str(payload.get(evidence_key) or "").strip()
+        raw_knowledge_points = payload.get("knowledge_points", [])
+        if not isinstance(raw_knowledge_points, list) or len(raw_knowledge_points) > 8:
+            raise ValueError("invalid knowledge points")
+        knowledge_points = []
+        for item in raw_knowledge_points:
+            if not isinstance(item, str) or not item.strip() or len(item.strip()) > 200:
+                raise ValueError("invalid knowledge points")
+            knowledge_points.append(item.strip())
         correct_solution = str(payload.get("correct_solution") or "").strip()
         final_answer = str(payload.get("final_answer") or "").strip()
         prevention_cue = str(payload.get("prevention_cue") or "").strip()
         allowed_causes = {"knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear"}
         if any(len(value) > 12000 for value in (first_error or "", cause_evidence, correct_solution, final_answer, prevention_cue)):
             raise ValueError("grade field is too long")
-        if verdict in {"partial", "incorrect"} and (not first_error or cause_code not in allowed_causes or not cause_evidence or not correct_solution or not final_answer):
+        if verdict in {"partial", "incorrect"} and (not first_error or cause_code not in allowed_causes or not cause_evidence or not knowledge_points or not correct_solution or not final_answer):
             raise ValueError("complete diagnosis is required")
         if cause_code == "careless" and not cause_evidence:
             raise ValueError("careless requires direct evidence")
-        evidence = json.dumps({"schema": "math-error-diagnosis/v1", "cause_code": cause_code or None, "cause_evidence": cause_evidence or None, "correct_solution": correct_solution or None, "final_answer": final_answer or None, "prevention_cue": prevention_cue or None}, ensure_ascii=False, separators=(",", ":"))
+        evidence = json.dumps({"schema": "math-error-diagnosis/v1", "cause_code": cause_code or None, "cause_evidence": cause_evidence or None, "knowledge_points": knowledge_points, "correct_solution": correct_solution or None, "final_answer": final_answer or None, "prevention_cue": prevention_cue or None}, ensure_ascii=False, separators=(",", ":"))
         return verdict, first_error, evidence
 
     @staticmethod

@@ -125,6 +125,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("await commitCurrent()", script)
         self.assertIn('localStorage.getItem("lzlm-device-id")', script)
         self.assertIn('"X-Device-ID": deviceId', script)
+        for heading in ("题目整理", "学生作答还原", "错因分析与点评", "知识点梳理", "详细解析", "最终答案及小建议", "错题本记录检查"):
+            self.assertIn(heading, script)
 
     def test_mobile_layout_and_keyboard_focus_are_defined_for_product_pages(self) -> None:
         css = (WEB / "app.css").read_text(encoding="utf-8")

@@ -4,7 +4,7 @@
   "title": "Math grade candidate with complete diagnosis",
   "type": "object",
   "additionalProperties": false,
-  "required": ["attempt_id", "input_version", "verdict", "first_error", "cause_code", "cause_evidence", "correct_solution", "final_answer", "prevention_cue", "confidence"],
+  "required": ["attempt_id", "input_version", "verdict", "first_error", "cause_code", "cause_evidence", "knowledge_points", "correct_solution", "final_answer", "prevention_cue", "confidence"],
   "properties": {
     "attempt_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
     "input_version": {"type": "integer", "minimum": 1},
@@ -12,9 +12,11 @@
     "first_error": {"type": ["string", "null"]},
     "cause_code": {"enum": ["knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear", null]},
     "cause_evidence": {"type": ["string", "null"]},
+    "knowledge_points": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
     "correct_solution": {"type": ["string", "null"]},
     "final_answer": {"type": ["string", "null"]},
     "prevention_cue": {"type": ["string", "null"]},
     "confidence": {"type": "number", "minimum": 0, "maximum": 1}
-  }
+  },
+  "allOf": [{"if": {"properties": {"verdict": {"enum": ["partial", "incorrect"]}}, "required": ["verdict"]}, "then": {"properties": {"knowledge_points": {"minItems": 1}}}}]
 }

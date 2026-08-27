@@ -37,7 +37,7 @@ class CodexNotebookModelTests(unittest.TestCase):
                     result = {"attempt_id": frozen["attempt_id"], "input_version": 1, "solution": "1+1=2", "final_answer": "2", "verification_checks": [{"left": "1+1", "right": "2", "variables": []}], "confidence": 0.99}
                 else:
                     self.assertEqual(frozen["evidence"]["verification_report"][0]["status"], "verified")
-                    result = {"attempt_id": frozen["attempt_id"], "input_version": 1, "verdict": "incorrect", "first_error": "首错", "cause_code": "calculation", "cause_evidence": "证据", "correct_solution": "过程", "final_answer": "答案", "prevention_cue": "验算", "confidence": 0.98}
+                    result = {"attempt_id": frozen["attempt_id"], "input_version": 1, "verdict": "incorrect", "first_error": "首错", "cause_code": "calculation", "cause_evidence": "证据", "knowledge_points": ["代数运算", "结果验算"], "correct_solution": "过程", "final_answer": "答案", "prevention_cue": "验算", "confidence": 0.98}
                 return {"route": route, "thread_id": thread_id or "thread-test", "result": result}
 
             def route(task, risks):
@@ -51,12 +51,13 @@ class CodexNotebookModelTests(unittest.TestCase):
             attempt = SimpleNamespace(attempt_id="b" * 32, input_version=1, question_text="题目", answer_text="作答")
             graded = model.grade(attempt=attempt, image_path=image)
             self.assertEqual((graded["verdict"], graded["cause_code"]), ("incorrect", "calculation"))
+            self.assertEqual(graded["knowledge_points"], ["代数运算", "结果验算"])
             self.assertEqual(list((root / "results").iterdir()), [])
 
     def test_rejects_a_response_for_another_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             def review(route, review_input, output, images, thread_id=None, event_callback=None):
-                return {"route": route, "thread_id": thread_id or "thread-test", "result": {"attempt_id": "c" * 32, "input_version": 1, "verdict": "unclear", "first_error": None, "cause_code": "unclear", "cause_evidence": None, "correct_solution": None, "final_answer": None, "prevention_cue": None, "confidence": 0.9}}
+                return {"route": route, "thread_id": thread_id or "thread-test", "result": {"attempt_id": "c" * 32, "input_version": 1, "verdict": "unclear", "first_error": None, "cause_code": "unclear", "cause_evidence": None, "knowledge_points": [], "correct_solution": None, "final_answer": None, "prevention_cue": None, "confidence": 0.9}}
 
             model = CodexNotebookModel(Path(directory), review=solution_review, harness_review=review, route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"})
             attempt = SimpleNamespace(attempt_id="b" * 32, input_version=1, question_text="题目", answer_text="作答")
@@ -110,7 +111,7 @@ class CodexNotebookModelTests(unittest.TestCase):
             frozen = json.loads(review_input)
             started.set()
             release.wait(2)
-            return {"route": route, "thread_id": thread_id or "thread-test", "result": {"attempt_id": frozen["attempt_id"], "input_version": 1, "verdict": "unclear", "first_error": None, "cause_code": "unclear", "cause_evidence": None, "correct_solution": None, "final_answer": None, "prevention_cue": None, "confidence": 0.9}}
+            return {"route": route, "thread_id": thread_id or "thread-test", "result": {"attempt_id": frozen["attempt_id"], "input_version": 1, "verdict": "unclear", "first_error": None, "cause_code": "unclear", "cause_evidence": None, "knowledge_points": [], "correct_solution": None, "final_answer": None, "prevention_cue": None, "confidence": 0.9}}
 
         with tempfile.TemporaryDirectory() as directory:
             model = CodexNotebookModel(Path(directory), review=solution_review, harness_review=review, route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"})
@@ -161,7 +162,7 @@ class CodexNotebookModelTests(unittest.TestCase):
             return {"route": route_value, "thread_id": thread_id or "thread-grade", "result": {
                 "attempt_id": frozen["attempt_id"], "input_version": frozen["input_version"],
                 "verdict": "correct", "first_error": None, "cause_code": None,
-                "cause_evidence": None, "correct_solution": "过程", "final_answer": "答案",
+                "cause_evidence": None, "knowledge_points": [], "correct_solution": "过程", "final_answer": "答案",
                 "prevention_cue": None, "confidence": 0.99,
             }}
 
@@ -214,7 +215,7 @@ class CodexNotebookModelTests(unittest.TestCase):
                 "assistant_message": "已修正" if session_id is None else "可以确认",
                 "question_text": "修正后的题目", "answer_text": "作答", "verdict": None,
                 "first_error": None, "cause_code": None, "cause_evidence": None,
-                "correct_solution": None, "final_answer": None, "prevention_cue": None,
+                "knowledge_points": [], "correct_solution": None, "final_answer": None, "prevention_cue": None,
                 "confidence": 0.98,
             }}
 

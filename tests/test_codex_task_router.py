@@ -213,7 +213,7 @@ class CodexTaskRouterTests(unittest.TestCase):
                     "resource_id": packet["resource_id"], "input_version": packet["input_version"],
                     "action": "respond", "assistant_message": "继续", "question_text": None,
                     "answer_text": None, "verdict": None, "first_error": None, "cause_code": None,
-                    "cause_evidence": None, "correct_solution": None, "final_answer": None,
+                    "cause_evidence": None, "knowledge_points": [], "correct_solution": None, "final_answer": None,
                     "prevention_cue": None, "confidence": 0.99,
                 }
                 output_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
