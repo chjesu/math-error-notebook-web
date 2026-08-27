@@ -27,8 +27,12 @@ class FrontendContractTests(unittest.TestCase):
             self.assertIn('李兆霖数学错题本', html)
             for route in ('href="/"', 'href="/errors"', 'href="/reviews"', 'href="/practice"', 'href="/progress"', 'href="/settings"'):
                 self.assertIn(route, html)
-            for icon in ("workbench", "errors", "reviews", "practice", "progress", "settings"):
+            for icon in ("errors", "reviews", "practice", "progress", "settings"):
                 self.assertIn(f'/web/nav-icons.svg#{icon}', html)
+            self.assertNotIn('/web/nav-icons.svg#workbench', html)
+            self.assertIn('aria-label="返回工作台"', html)
+            self.assertIn('<span>设置</span>', html)
+            self.assertNotIn('<span>设置与隐私</span>', html)
             self.assertNotIn('href="#', html)
             for other_marker in unique_markers:
                 if other_marker != own_marker:
