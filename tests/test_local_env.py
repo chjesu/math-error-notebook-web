@@ -21,6 +21,22 @@ class LocalEnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "localhost"):
             local_env.serve("0.0.0.0", 8000)
 
+    def test_harness_web_command_uses_fixed_local_surface(self) -> None:
+        command = local_env._harness_web_command()
+        self.assertTrue(command[0].lower().endswith(("node", "node.exe")))
+        self.assertEqual(Path(command[1]), local_env.ROOT / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js")
+        self.assertEqual(command[2:4], ["--profile", "web"])
+        self.assertEqual(command[4], "--patch")
+        self.assertEqual(Path(command[5]), local_env.HARNESS_WEB_PATCH)
+        self.assertEqual(command[6:], ["--host", "127.0.0.1", "--port", "3080", "--no-open"])
+
+    def test_harness_web_process_is_stopped_with_parent(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = None
+        local_env._stop_harness_web(process)
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=5)
+
     def test_mysql_password_is_not_put_on_process_command_line(self) -> None:
         args = local_env._client_args(root=True)
         self.assertTrue(any(item.startswith("--defaults-extra-file=") for item in args))

@@ -1,0 +1,100 @@
+# Product overlay for the official DeepSeek Harness Web surface.
+# Keep the original client shell and session protocol, but remove coding-only
+# capabilities that do not belong in a student-facing math notebook.
+
+- id: system-prompt
+  config:
+    persona: >-
+      你是李兆霖数学错题本的错题助手。用户会提供未判或已判的数学题目、试卷图片和补充说明。
+      你需要整理题干与作答、分析错误原因、梳理知识点并给出清晰解析；信息不足时明确说明，不得猜测。
+
+- id: sandbox-policy
+  config:
+    mode: read-only
+    workspaceRoot: !!js process.cwd()
+
+- id: approval
+  config:
+    policy: never
+
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: never
+
+- id: session-telemetry-otel
+  disabled: true
+
+# Coding and orchestration tools are intentionally absent from the product UI.
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: skill
+  disabled: true
+- id: skill-filesystem
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: goal
+  disabled: true
+- id: goal-round-driver
+  disabled: true
+- id: command-goal
+  disabled: true
+- id: plan-mode
+  disabled: true
+- id: subagent-spawn-in-process
+  disabled: true
+- id: subagent-fork-in-process
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-report
+  disabled: true
+- id: workflow-worker-thread
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-str-replace-editor
+  disabled: true
+- id: ui-brand-official
+  disabled: true
+- id: ui-permission
+  disabled: true
+- id: ui-agent-preset
+  disabled: true
+- id: ui-plan
+  disabled: true
+- id: ui-subagent
+  disabled: true
+- id: ui-jobs
+  disabled: true
+- id: ui-goal
+  disabled: true
+- id: ui-workflow-run
+  disabled: true
+- id: ui-cordis
+  disabled: true
+
+- insert:
+    - id: ui-math-notebook
+      name: '@lizhaolin/dsh-math-notebook-ui'

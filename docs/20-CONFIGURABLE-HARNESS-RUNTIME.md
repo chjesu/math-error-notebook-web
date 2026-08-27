@@ -12,7 +12,7 @@
 
 ```powershell
 npm ci --ignore-scripts --no-audit --no-fund
-python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enable-harness-model
+python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enable-harness-model --enable-harness-ui
 ```
 
 默认通道读取 `DEEPSEEK_API_KEY`，默认模型为当前账号可用的 `deepseek-v4-flash-vision-exp`。DeepSeek 官方于 2026-08-21 将其作为实验性多模态模型发布；官方 Vision 指南确认它支持 JPEG、PNG、GIF 和 WebP，并通过 OpenAI 兼容 Chat Completions 的 `content` 数组与 `image_url` 接收 Base64 或 URL 图片。图片只能出现在 `user` 消息中，其他 DeepSeek 模型收到图片会返回 400。密钥只能通过环境或密钥服务提供，禁止写入仓库、日志或文档。
@@ -47,7 +47,7 @@ $env:HARNESS_API_PROTOCOL = "openai-completions"
 $env:HARNESS_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 $env:HARNESS_MODEL = "<经离线评测的多模态模型 ID>"
 $env:HARNESS_INPUT_MODALITIES = "text,image"
-python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enable-harness-model
+python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enable-harness-model --enable-harness-ui
 ```
 
 模型 ID 和能力以切换当日的供应商文档、账号模型列表和离线题目集验证为准。无需修改前端、API、Schema 或错题本流程。

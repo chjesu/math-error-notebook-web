@@ -63,7 +63,7 @@ flowchart TB
 | Web 题库、错题、作答和复习数据 | MySQL 个人 `user_id` 模型 | 权威桌面题库已同步到本地 MySQL：10,569 题，其中 10,278 题保持已验证、291 题按授权/质量门降级为候选；生产回滚未完成 |
 | 文件上传、解析、审核、判题 | API + Codex CLI 候选 + Codex app-server 会话适配器 | PNG/JPEG 可从一张图片按阅读顺序拆出至多 20 道题及其对应作答；同图题目共享父 Harness 线程。上传批次即授权按顺序自动冻结候选、判题和整理：正确题自动跳过，错误或部分正确自动入本，只有无法识别或证据冲突才等待补充。判题重新附原图，执行“独立解题→受限验算→线程内复核”，并仅对困难/几何题升级 xhigh/max。模型不可用时安全停止，PDF/DOCX 自动解析与生产异步 Worker 仍延期 |
 | 推荐、复习计划和 PDF | `services/web_domain/` | 仅已验证且授权题可推荐；推荐、复习和 PDF 本地链路已验收，题库为空时展示缺口 |
-| 前端/PWA、运营后台和运维恢复 | `web/`、后续运维模块 | 六个侧边栏入口保持独立 URL/HTML；工作台消费 app-server 的真实 NDJSON 事件，通过 `thread/items/list` 官方游标加载更早产品消息，并以 `turn/interrupt` 停止回合、以 `thread/compact/start` 主动整理上下文；运行中追加、重新生成、分叉、PWA、运营后台和生产恢复仍延期 |
+| 前端/PWA、运营后台和运维恢复 | `@deepseek-ai/dsh-web-frontend`、`extensions/dsh-math-notebook-ui/`、`web/` | 工作台已直接复用固定版 DeepSeek Harness 官方 Web 前端和 Host，会话树、历史分页、附件、输入、上下文计量、压缩、工作区及设置不再由项目仿写；本地登录外壳在 8000 端口校验会话后嵌入隔离运行于 3080 的官方界面。错题本、复习、练习、进度和设置仍保留独立产品页面；PWA、运营后台和生产恢复仍延期 |
 | 阿里云部署 | WAF/SLB、RDS、OSS、运行环境 | 已后置；本地全链路通过后人工批准 |
 
 ## 4. 目录
@@ -81,6 +81,8 @@ flowchart TB
 | `scripts/project_workflow.py` | 注册/全项目任务模板、依赖、领取、租约和证据 |
 | `scripts/codex_task_router.py` | Luna/Terra/Sol 分层只读审查 |
 | `scripts/local_env.py` | localhost MySQL、模拟短信/CAPTCHA 与端到端验收 |
+| `extensions/dsh-math-notebook-ui/` | 官方 Harness Web 的产品品牌和错题本入口扩展，不复制官方会话组件 |
+| `config/deepseek-harness/web-product.patch.yml` | 学生工作台的 Harness Web 组合与编程能力禁用边界 |
 | `config/model-routing.json` | 模型路由策略 |
 | `docs/18-MODEL-PROVIDER-MIGRATION.md` | 阿里云模型供应商迁移、Provider 边界、自有 Harness、评测和灰度基线 |
 | `schemas/engineering-review-result.schema.json` | 结构化审查输出 |
@@ -141,4 +143,4 @@ flowchart LR
 
 ## 本地模拟边界
 
-本地模拟复用同一注册状态机、MySQL 适配器、迁移和 ASGI 边界，仅替换短信与 CAPTCHA 外部适配器。localhost 启动器会在验证码申请成功的响应中附加本地测试码，页面明确标记并自动填入；生产装配不会返回该字段。使用 `python -X utf8 -B scripts/local_env.py serve --enable-codex-model` 时，才启用官方 Codex app-server 数学候选与连续会话；不带该参数时模型接口稳定返回 `model_unavailable`，前端安全停止。同步 MySQL、文件、PDF 和 app-server 调用通过标准库线程执行，避免阻塞 ASGI 事件循环；上传仍使用有大小上限的本地缓冲，生产必须改为流式 OSS。MySQL 固定绑定 `127.0.0.1:3307`；模拟服务固定绑定 localhost，不能作为生产启动入口。
+本地模拟复用同一注册状态机、MySQL 适配器、迁移和 ASGI 边界，仅替换短信与 CAPTCHA 外部适配器。localhost 启动器会在验证码申请成功的响应中附加本地测试码，页面明确标记并自动填入；生产装配不会返回该字段。使用 `python -X utf8 -B scripts/local_env.py serve --enable-harness-model --enable-harness-ui` 时，启用固定版 DeepSeek Harness 数学运行时及其原生 Web 界面；不带模型参数时既有产品模型接口稳定返回 `model_unavailable`。官方 Web Host 使用隔离的 `data/runtime/deepseek-harness-web-home`，固定绑定 `127.0.0.1:3080`，由本地启动器随主服务启停；8000 端口的登录外壳不把未登录用户带入工作台。该双端口方案只用于本地测试，不能作为生产反向代理或认证边界。同步 MySQL、文件、PDF 和模型调用通过标准库线程执行，避免阻塞 ASGI 事件循环；上传仍使用有大小上限的本地缓冲，生产必须改为流式 OSS。MySQL 固定绑定 `127.0.0.1:3307`；模拟服务固定绑定 localhost，不能作为生产启动入口。

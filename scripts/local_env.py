@@ -12,6 +12,7 @@ import hashlib
 import os
 from pathlib import Path
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -48,6 +49,11 @@ MIGRATIONS = (
     ROOT / "services" / "web_domain" / "migrations" / "0009_file_upload_idempotency.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0010_codex_harness.sql",
 )
+HARNESS_WEB_HOME = ROOT / "data" / "runtime" / "deepseek-harness-web-home"
+HARNESS_WEB_PATCH = ROOT / "config" / "deepseek-harness" / "web-product.patch.yml"
+HARNESS_WEB_STDOUT = ROOT / "data" / "runtime" / "deepseek-harness-web.stdout.log"
+HARNESS_WEB_STDERR = ROOT / "data" / "runtime" / "deepseek-harness-web.stderr.log"
+HARNESS_WEB_PORT = 3080
 
 
 def _basedir() -> Path:
@@ -908,12 +914,75 @@ class LocalOtpDisclosureApp:
         await send({"type": "http.response.body", "body": encoded})
 
 
+def _harness_web_command() -> list[str]:
+    executable = shutil.which("node")
+    entry = ROOT / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js"
+    if not executable or not entry.is_file():
+        raise RuntimeError("DeepSeek Harness Web is not installed; run npm ci")
+    if not HARNESS_WEB_PATCH.is_file():
+        raise RuntimeError(f"DeepSeek Harness Web patch is missing: {HARNESS_WEB_PATCH}")
+    return [
+        executable,
+        str(entry),
+        "--profile", "web",
+        "--patch", str(HARNESS_WEB_PATCH),
+        "--host", "127.0.0.1",
+        "--port", str(HARNESS_WEB_PORT),
+        "--no-open",
+    ]
+
+
+def _start_harness_web() -> subprocess.Popen[Any]:
+    HARNESS_WEB_HOME.mkdir(parents=True, exist_ok=True)
+    HARNESS_WEB_STDOUT.parent.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    environment.update({
+        "DSH_HOME": str(HARNESS_WEB_HOME),
+        "DSH_PERMISSION_MODE": "read-only",
+        "DSH_TELEMETRY_DISABLED": "1",
+    })
+    creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    with HARNESS_WEB_STDOUT.open("a", encoding="utf-8") as stdout, HARNESS_WEB_STDERR.open("a", encoding="utf-8") as stderr:
+        process = subprocess.Popen(
+            _harness_web_command(),
+            cwd=str(ROOT),
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            creationflags=creationflags,
+        )
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"DeepSeek Harness Web exited during startup; see {HARNESS_WEB_STDERR}")
+        try:
+            with socket.create_connection(("127.0.0.1", HARNESS_WEB_PORT), timeout=0.2):
+                return process
+        except OSError:
+            time.sleep(0.1)
+    process.terminate()
+    raise RuntimeError(f"DeepSeek Harness Web did not become ready; see {HARNESS_WEB_STDERR}")
+
+
+def _stop_harness_web(process: subprocess.Popen[Any] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
 def serve(
     host: str,
     port: int,
     *,
     enable_codex_model: bool = False,
     enable_harness_model: bool = False,
+    enable_harness_ui: bool = False,
 ) -> None:
     if host not in {"127.0.0.1", "localhost"}:
         raise RuntimeError("local simulation may only bind to localhost")
@@ -959,7 +1028,11 @@ def serve(
         model_runner=model_runner,
     )
     app.resume_pending_deletions()
-    uvicorn.run(LocalOtpDisclosureApp(app, sender), host=host, port=port, access_log=False)
+    harness_web = _start_harness_web() if enable_harness_ui else None
+    try:
+        uvicorn.run(LocalOtpDisclosureApp(app, sender), host=host, port=port, access_log=False)
+    finally:
+        _stop_harness_web(harness_web)
 
 
 def doctor() -> dict[str, Any]:
@@ -993,6 +1066,7 @@ def main() -> int:
     serve_parser.add_argument("--port", type=int, default=8000)
     serve_parser.add_argument("--enable-codex-model", action="store_true")
     serve_parser.add_argument("--enable-harness-model", action="store_true")
+    serve_parser.add_argument("--enable-harness-ui", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "init":
@@ -1018,6 +1092,7 @@ def main() -> int:
                 args.port,
                 enable_codex_model=args.enable_codex_model,
                 enable_harness_model=args.enable_harness_model,
+                enable_harness_ui=args.enable_harness_ui,
             )
             return 0
         else:

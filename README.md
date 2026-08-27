@@ -28,12 +28,12 @@ powershell -ExecutionPolicy Bypass -File scripts\bootstrap_local.ps1
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py init
 .\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py smoke
-.\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py serve
+.\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py serve --enable-harness-model --enable-harness-ui
 ```
 
 服务仅监听 `127.0.0.1:8000`。请求验证码后，页面会明确标记“仅限本地测试”并自动填入模拟验证码；正式服务响应不会返回验证码。测试 CAPTCHA token 为 `local-captcha`。停止数据库使用：
 
-默认不向外部模型发送材料。当前用户明确授权本地测试时，可使用 `python -X utf8 -B scripts/local_env.py serve --enable-harness-model` 启用固定版 DeepSeek Harness 核心。供应商、网关、协议、模型、密钥环境变量名和文本/图片能力均可配置；切换到 Qwen 等 OpenAI 兼容通道不复制错题流程。旧的 `--enable-codex-model` 仅保留作对照。PNG/JPEG 先生成识别候选，上传后系统按顺序自动冻结版本并判题；正确题自动跳过，错误或部分正确在确定性版本门和写库门校验后自动入本，无法识别或证据冲突时停留等待补充。外发前复验上传哈希，并仅发送去元数据、限尺寸的重编码预览图。
+默认不向外部模型发送材料。当前用户明确授权本地测试时，可使用 `python -X utf8 -B scripts/local_env.py serve --enable-harness-model --enable-harness-ui` 同时启用固定版 DeepSeek Harness 核心和官方 Web 前端。工作台直接装载 `@deepseek-ai/dsh-web-frontend@0.1.1-rc.2`，不是仿写页面；会话、历史分页、附件、上下文计量、自动压缩、工作区、设置和输入交互均由官方 Host 提供。供应商、网关、协议、模型、密钥环境变量名和文本/图片能力均可配置；切换到 Qwen 等 OpenAI 兼容通道不复制错题流程。旧的 `--enable-codex-model` 仅保留作对照。PNG/JPEG 先生成识别候选，上传后系统按顺序自动冻结版本并判题；正确题自动跳过，错误或部分正确在确定性版本门和写库门校验后自动入本，无法识别或证据冲突时停留等待补充。外发前复验上传哈希，并仅发送去元数据、限尺寸的重编码预览图。
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -B scripts\local_env.py stop

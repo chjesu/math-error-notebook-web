@@ -5,31 +5,45 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>工作台｜李兆霖数学错题本</title>
   <link rel="icon" href="/assets/branding/favicon-v1.ico">
-  <link rel="stylesheet" href="/web/app.css">
+  <style>
+    * { box-sizing: border-box; }
+    html, body, main, iframe { width: 100%; height: 100%; margin: 0; }
+    body { overflow: hidden; background: #f7f7f5; color: #182230; font: 16px/1.5 system-ui, sans-serif; }
+    iframe { display: block; border: 0; background: #fff; }
+    .harness-status { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; }
+    .harness-status[hidden] { display: none; }
+    .harness-status strong { display: block; margin-bottom: 8px; }
+    .harness-status p { margin: 0; color: #586474; }
+  </style>
 </head>
-<body class="is-authenticated" data-page="workbench">
-  <div class="app-shell">
-    <aside class="sidebar" aria-label="主导航">
-      <a class="brand" href="/" aria-label="李兆霖数学错题本首页"><img src="/assets/branding/logo-symbol-color-64-v1.png" alt=""><span>李兆霖数学错题本</span></a>
-      <nav><a class="active" aria-current="page" href="/"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#workbench"></use></svg><span>工作台</span></a><a href="/errors"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#errors"></use></svg><span>错题本</span></a><a href="/reviews"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#reviews"></use></svg><span>今日复习</span></a><a href="/practice"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#practice"></use></svg><span>练习 PDF</span></a><a href="/progress"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#progress"></use></svg><span>学习进度</span></a><a href="/settings"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#settings"></use></svg><span>设置与隐私</span></a></nav>
-    </aside>
-    <main id="main" class="chat-main" tabindex="-1">
-      <header class="page-header chat-header"><div><p class="eyebrow">个人错题本</p><h1>错题助手</h1></div><button id="clear-conversation" class="clear-conversation-button" type="button">清空会话</button></header>
-      <section class="chat-workspace" aria-label="错题助手对话">
-        <div id="chat-thread" class="chat-thread">
-          <div class="chat-welcome"><img src="/assets/branding/logo-symbol-color-64-v1.png" alt=""><h2>今天要整理哪道错题？</h2><p>添加未判或已判的题目，我会陪您整理错题、分析错误原因、梳理相关知识点，并完成题目解析。</p></div>
-          <p id="upload-status" class="status chat-status" role="status" aria-live="polite"></p>
-          <div id="history-pagination" class="history-pagination" hidden><button id="load-older" class="history-loader" type="button">加载更早</button></div>
-          <div id="chat-stream" class="chat-stream" aria-live="polite"></div>
-        </div>
-        <div id="conversation-dock" class="conversation-dock">
-          <form id="upload-form" class="chat-composer"><div id="drop-zone" class="composer-surface"><ul id="upload-file-list" class="upload-file-list" aria-label="待上传文件"></ul><textarea id="chat-input" rows="1" maxlength="12000" placeholder="输入消息，或添加图片、PDF、DOCX" aria-label="给错题助手发消息"></textarea><div class="composer-row"><div class="composer-tools"><label id="file-picker" class="attach-button" for="file" title="添加图片或文件"><span class="attach-icon" aria-hidden="true">＋</span><span>添加图片/文件</span></label><div id="composer-actions" class="composer-actions" aria-label="当前题操作"></div><button id="compact-conversation" class="compact-button" type="button" hidden>整理上下文</button></div><button id="upload-button" class="send-button" type="submit" aria-label="发送" disabled>↑</button></div></div><input id="file" name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" multiple></form>
-          <p id="composer-note" class="composer-note">可点击选择，也可将多个文件拖到页面任意位置，或直接粘贴截图；单个文件不超过 25 MB。</p>
-        </div>
-      </section>
-    </main>
-    <nav class="bottom-nav" aria-label="移动端主导航"><a class="active" aria-current="page" href="/">工作台</a><a href="/errors">错题本</a><a href="/reviews">复习</a><a href="/practice">练习</a><a href="/settings">更多</a></nav>
-  </div>
-  <dialog id="image-preview-dialog" class="image-preview-dialog" aria-label="查看原图"><form method="dialog"><button type="submit" aria-label="关闭原图">×</button></form><img id="image-preview-content" alt=""></dialog>
-  <script src="/web/vendor/katex/katex.min.js" defer></script><script src="/web/vendor/katex/auto-render.min.js" defer></script><script src="/web/app.js" defer></script>
-</body></html>
+<body data-page="harness-workbench">
+  <main>
+    <div id="harness-status" class="harness-status" role="status" aria-live="polite">
+      <div><strong>正在打开错题助手</strong><p>正在连接本地 DeepSeek Harness 工作台…</p></div>
+    </div>
+    <iframe id="harness-frame" title="李兆霖数学错题本工作台" allow="clipboard-read; clipboard-write" hidden></iframe>
+  </main>
+  <script>
+    (() => {
+      const frame = document.querySelector("#harness-frame");
+      const status = document.querySelector("#harness-status");
+      const showError = () => {
+        status.hidden = false;
+        status.innerHTML = "<div><strong>本地工作台暂时不可用</strong><p>请确认本地服务已使用 --enable-harness-ui 启动，然后刷新页面。</p></div>";
+      };
+      fetch("/v1/session", {credentials: "same-origin", headers: {Accept: "application/json"}})
+        .then((response) => {
+          if (response.status === 401) {
+            location.replace("/login");
+            return;
+          }
+          if (!response.ok) throw new Error("session unavailable");
+          frame.addEventListener("load", () => { status.hidden = true; frame.hidden = false; }, {once: true});
+          frame.src = "http://127.0.0.1:3080/";
+          setTimeout(() => { if (frame.hidden) showError(); }, 10000);
+        })
+        .catch(showError);
+    })();
+  </script>
+</body>
+</html>
