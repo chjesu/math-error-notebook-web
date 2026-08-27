@@ -18,6 +18,51 @@ window.__ModuleLoader__.load({
       practice: [["path", {d: "M6 2h8l4 4v16H6Z"}], ["path", {d: "M14 2v5h5M9 12h6M9 16h6"}]],
       progress: [["path", {d: "M4 20V10M10 20V4M16 20v-7M22 20H2"}]]
     };
+    let activeProductPath = null;
+    let disposeProductSurface = null;
+
+    function updateProductNavigation() {
+      document.querySelectorAll("[data-lzlm-product-path]").forEach((element) => {
+        const active = element.dataset.lzlmProductPath === activeProductPath;
+        if (active) element.setAttribute("aria-current", "page");
+        else element.removeAttribute("aria-current");
+      });
+    }
+
+    function closeProductSurface() {
+      if (disposeProductSurface === null) return;
+      const dispose = disposeProductSurface;
+      disposeProductSurface = null;
+      activeProductPath = null;
+      dispose();
+      updateProductNavigation();
+    }
+
+    function ProductSurface() {
+      const item = navigationItems.find(({path}) => path === activeProductPath);
+      if (item === undefined) return null;
+      return jsx("div", {
+        "data-lzlm-product-surface": "",
+        children: jsx("iframe", {
+          src: `${productOrigin}${item.path}?embedded=1`,
+          title: item.label
+        })
+      });
+    }
+
+    function openProductSurface(ctx, path) {
+      if (activeProductPath === path && disposeProductSurface !== null) return;
+      closeProductSurface();
+      activeProductPath = path;
+      try {
+        disposeProductSurface = ctx.slots.register({name: "conversation", priority: -1}, ProductSurface);
+      } catch (error) {
+        activeProductPath = null;
+        updateProductNavigation();
+        throw error;
+      }
+      updateProductNavigation();
+    }
 
     function installStudentSurface(ctx) {
       ctx.effect(() => {
@@ -38,17 +83,24 @@ window.__ModuleLoader__.load({
             padding: 8px 0;
             border-top: 1px solid var(--dsw-alias-border-l3);
           }
-          [data-lzlm-product-nav] a {
+          [data-lzlm-product-nav] button {
             display: flex;
+            width: 100%;
             min-height: 36px;
             align-items: center;
             gap: 10px;
             padding: 0 10px;
+            border: 0;
             border-radius: 8px;
+            background: transparent;
             color: inherit;
+            font: inherit;
             text-decoration: none;
+            cursor: pointer;
+            text-align: left;
           }
-          [data-lzlm-product-nav] a:hover {
+          [data-lzlm-product-nav] button:hover,
+          [data-lzlm-product-nav] button[aria-current="page"] {
             background: var(--dsw-alias-interactive-bg-hover);
           }
           [data-lzlm-product-nav] svg {
@@ -60,6 +112,19 @@ window.__ModuleLoader__.load({
             stroke-width: 1.6;
             stroke-linecap: round;
             stroke-linejoin: round;
+          }
+          [data-lzlm-product-surface] {
+            width: 100%;
+            height: 100%;
+            min-width: 0;
+            min-height: 0;
+            background: #f6f5f1;
+          }
+          [data-lzlm-product-surface] iframe {
+            display: block;
+            width: 100%;
+            height: 100%;
+            border: 0;
           }
           [data-lzlm-account-privacy] {
             max-width: 640px;
@@ -121,13 +186,15 @@ window.__ModuleLoader__.load({
         width: size,
         height: size,
         className,
-        alt: ""
+        alt: "",
+        onClick: closeProductSurface
       });
     }
 
     function BrandName() {
       return jsx("span", {
-        style: {fontSize: "14px", fontWeight: 700, whiteSpace: "nowrap"},
+        style: {fontSize: "14px", fontWeight: 700, whiteSpace: "nowrap", cursor: "pointer"},
+        onClick: closeProductSurface,
         children: "李兆霖数学错题本"
       });
     }
@@ -144,9 +211,11 @@ window.__ModuleLoader__.load({
       return jsx("nav", {
         "aria-label": "错题本功能导航",
         "data-lzlm-product-nav": "",
-        children: navigationItems.map((item) => jsx("a", {
-          href: `${productOrigin}${item.path}`,
-          target: "_top",
+        children: navigationItems.map((item) => jsx("button", {
+          type: "button",
+          "data-lzlm-product-path": item.path,
+          "aria-current": activeProductPath === item.path ? "page" : undefined,
+          onClick: () => openProductSurface(pluginContext, item.path),
           title: item.label,
           style: wide ? undefined : {justifyContent: "center", padding: 0},
           children: [jsx(NavIcon, {name: item.icon}, "icon"), wide ? jsx("span", {children: item.label}, "label") : null]
@@ -165,10 +234,20 @@ window.__ModuleLoader__.load({
       });
     }
 
+    let pluginContext;
     const inject = ["slots", "sessions", "workspaces"];
     function apply(ctx) {
+      pluginContext = ctx;
       installStudentSurface(ctx);
       openProductWorkspace(ctx);
+      ctx.effect(() => {
+        let current = ctx.sessions.list.getSnapshot().current;
+        return ctx.sessions.list.subscribe(() => {
+          const next = ctx.sessions.list.getSnapshot().current;
+          if (next !== current) closeProductSurface();
+          current = next;
+        });
+      }, "math-notebook: close product page on session navigation");
       ctx.slots.inject("sidebar.brand.mark", () =>
         ctx.slots.inject("sidebar.brand.name", () =>
           ctx.slots.inject("conversation.hero.brand.mark", () =>

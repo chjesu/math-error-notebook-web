@@ -1,4 +1,5 @@
 const $ = selector => document.querySelector(selector);
+if (new URLSearchParams(location.search).get("embedded") === "1") document.body.classList.add("is-embedded");
 const page = document.body.dataset.page;
 const deviceId = (() => {
   try {

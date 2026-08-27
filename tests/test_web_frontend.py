@@ -63,6 +63,11 @@ class FrontendContractTests(unittest.TestCase):
         for label, route in (("错题本", "/errors"), ("今日复习", "/reviews"), ("练习 PDF", "/practice"), ("学习进度", "/progress")):
             self.assertIn(f'path: "{route}", label: "{label}"', plugin)
         self.assertNotIn('path: "/", label: "工作台"', plugin)
+        self.assertIn('ctx.slots.register({name: "conversation", priority: -1}, ProductSurface)', plugin)
+        self.assertIn('data-lzlm-product-surface', plugin)
+        self.assertIn('?embedded=1', plugin)
+        self.assertIn('data-lzlm-product-path', plugin)
+        self.assertNotIn('target: "_top",\n          title: item.label', plugin)
         self.assertNotIn('path: "/settings", label: "设置与隐私"', plugin)
         self.assertIn('id: "account-privacy"', plugin)
         self.assertIn('name: "settings.section"', plugin)
@@ -84,6 +89,13 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("includeUserRoot: true", patch)
         self.assertIn("@deepseek-ai/dsh-persona", preset)
         self.assertNotIn("dsh-tool-", preset)
+
+    def test_harness_product_views_hide_the_legacy_sidebar(self) -> None:
+        script = (WEB / "app.js").read_text(encoding="utf-8")
+        css = (WEB / "app.css").read_text(encoding="utf-8")
+        self.assertIn('new URLSearchParams(location.search).get("embedded") === "1"', script)
+        self.assertIn("body.is-embedded .sidebar", css)
+        self.assertIn("body.is-embedded main { margin-left: 0; }", css)
 
     def test_brand_and_learning_contract_survive_harness_adoption(self) -> None:
         html = "".join(path.read_text(encoding="utf-8") for path in WEB.glob("*.html"))

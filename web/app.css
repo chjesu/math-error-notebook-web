@@ -287,6 +287,9 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .error-list li { padding: 14px 0; border-top: 1px solid var(--line); }
 .error-list .empty { color: var(--muted); }
 .bottom-nav { display: none; }
+body.is-embedded .sidebar,
+body.is-embedded .bottom-nav { display: none; }
+body.is-embedded main { margin-left: 0; }
 .review-panel,
 .practice-panel { display: grid; align-content: start; gap: 12px; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; }
