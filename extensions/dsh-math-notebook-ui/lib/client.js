@@ -127,30 +127,12 @@ window.__ModuleLoader__.load({
             border: 0;
           }
           [data-lzlm-account-privacy] {
-            max-width: 640px;
-            padding: 8px 4px;
-          }
-          [data-lzlm-account-privacy] h2 {
-            margin: 0 0 10px;
-            font-size: 20px;
-          }
-          [data-lzlm-account-privacy] p {
-            margin: 0 0 18px;
-            color: var(--dsw-alias-label-secondary);
-            line-height: 1.7;
-          }
-          [data-lzlm-account-privacy] a {
-            display: inline-flex;
-            min-height: 36px;
-            align-items: center;
-            padding: 0 14px;
-            border: 1px solid var(--dsw-alias-border-l2);
-            border-radius: 8px;
-            color: inherit;
-            text-decoration: none;
-          }
-          [data-lzlm-account-privacy] a:hover {
-            background: var(--dsw-alias-interactive-bg-hover);
+            display: block;
+            width: 100%;
+            height: calc(100vh - 128px);
+            min-height: 560px;
+            border: 0;
+            background: var(--dsw-alias-bg-base);
           }
         `;
         document.head.appendChild(style);
@@ -235,13 +217,10 @@ window.__ModuleLoader__.load({
     }
 
     function AccountPrivacySettings() {
-      return jsx("section", {
+      return jsx("iframe", {
         "data-lzlm-account-privacy": "",
-        children: [
-          jsx("h2", {children: "账号与隐私"}, "title"),
-          jsx("p", {children: "管理当前账号会话、退出所有设备、导出个人数据或注销账号。敏感操作仍需要手机号验证码确认。"}, "description"),
-          jsx("a", {href: `${productOrigin}/settings`, target: "_top", children: "管理账号与隐私"}, "action")
-        ]
+        src: `${productOrigin}/settings?embedded=1`,
+        title: "账号与隐私"
       });
     }
 

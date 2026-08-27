@@ -311,6 +311,10 @@ body.is-embedded .page-header,
 body.is-embedded .page-panel {
   width: min(100%, 920px);
 }
+body.is-embedded[data-page="settings"] .page-header,
+body.is-embedded[data-page="settings"] .settings-panel {
+  width: min(100%, 680px);
+}
 body.is-embedded .page-header { margin-bottom: 20px; }
 body.is-embedded .page-header h1 {
   margin-top: 2px;
