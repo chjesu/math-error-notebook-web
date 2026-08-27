@@ -81,7 +81,7 @@ flowchart TB
 | `scripts/project_workflow.py` | 注册/全项目任务模板、依赖、领取、租约和证据 |
 | `scripts/codex_task_router.py` | Luna/Terra/Sol 分层只读审查 |
 | `scripts/local_env.py` | localhost MySQL、模拟短信/CAPTCHA 与端到端验收 |
-| `extensions/dsh-math-notebook-ui/` | 官方 Harness Web 的产品品牌和错题本入口扩展，不复制官方会话组件 |
+| `extensions/dsh-math-notebook-ui/` | 官方 Harness Web 的产品品牌、完整产品导航和固定工作区扩展，不复制官方会话组件 |
 | `config/deepseek-harness/web-product.patch.yml` | 学生工作台的 Harness Web 组合与编程能力禁用边界 |
 | `config/model-routing.json` | 模型路由策略 |
 | `docs/18-MODEL-PROVIDER-MIGRATION.md` | 阿里云模型供应商迁移、Provider 边界、自有 Harness、评测和灰度基线 |
