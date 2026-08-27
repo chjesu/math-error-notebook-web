@@ -50,6 +50,9 @@ MIGRATIONS = (
     ROOT / "services" / "web_domain" / "migrations" / "0010_codex_harness.sql",
 )
 HARNESS_WEB_HOME = ROOT / "data" / "runtime" / "deepseek-harness-web-home"
+HARNESS_PRODUCT_WORKSPACE = HARNESS_WEB_HOME / "math-notebook-workspace"
+HARNESS_AGENT_PRESETS = ROOT / "config" / "deepseek-harness" / "agent-presets"
+HARNESS_RUNTIME_PRESET = HARNESS_WEB_HOME / ".agent-presets" / "math-notebook" / "agent.cordis.yml"
 HARNESS_WEB_PATCH = ROOT / "config" / "deepseek-harness" / "web-product.patch.yml"
 HARNESS_WEB_STDOUT = ROOT / "data" / "runtime" / "deepseek-harness-web.stdout.log"
 HARNESS_WEB_STDERR = ROOT / "data" / "runtime" / "deepseek-harness-web.stderr.log"
@@ -934,10 +937,14 @@ def _harness_web_command() -> list[str]:
 
 def _start_harness_web() -> subprocess.Popen[Any]:
     HARNESS_WEB_HOME.mkdir(parents=True, exist_ok=True)
+    HARNESS_PRODUCT_WORKSPACE.mkdir(parents=True, exist_ok=True)
+    HARNESS_RUNTIME_PRESET.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(HARNESS_AGENT_PRESETS / "math-notebook" / "agent.cordis.yml", HARNESS_RUNTIME_PRESET)
     HARNESS_WEB_STDOUT.parent.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment.update({
         "DSH_HOME": str(HARNESS_WEB_HOME),
+        "LZLM_HARNESS_WORKSPACE_ROOT": str(HARNESS_PRODUCT_WORKSPACE),
         "DSH_PERMISSION_MODE": "read-only",
         "DSH_TELEMETRY_DISABLED": "1",
     })

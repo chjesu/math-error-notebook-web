@@ -24,6 +24,11 @@
         sandbox: read-only
         approval: never
 
+- id: agent-presets
+  config:
+    default: math-notebook
+    includeUserRoot: true
+
 - id: session-telemetry-otel
   disabled: true
 

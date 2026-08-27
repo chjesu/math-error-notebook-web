@@ -29,6 +29,12 @@ class LocalEnvironmentTests(unittest.TestCase):
         self.assertEqual(command[4], "--patch")
         self.assertEqual(Path(command[5]), local_env.HARNESS_WEB_PATCH)
         self.assertEqual(command[6:], ["--host", "127.0.0.1", "--port", "3080", "--no-open"])
+        self.assertEqual(local_env.HARNESS_PRODUCT_WORKSPACE.parent, local_env.HARNESS_WEB_HOME)
+        self.assertTrue((local_env.HARNESS_AGENT_PRESETS / "math-notebook" / "agent.cordis.yml").is_file())
+        self.assertEqual(
+            local_env.HARNESS_RUNTIME_PRESET,
+            local_env.HARNESS_WEB_HOME / ".agent-presets" / "math-notebook" / "agent.cordis.yml",
+        )
 
     def test_harness_web_process_is_stopped_with_parent(self) -> None:
         process = mock.Mock()

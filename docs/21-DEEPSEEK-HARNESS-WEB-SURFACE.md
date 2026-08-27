@@ -2,7 +2,7 @@
 
 ## 决策
 
-工作台不再复刻 DeepSeek Harness 的视觉样式，而是直接运行其 MIT 许可的官方 Web Host 与 `@deepseek-ai/dsh-web-frontend@0.1.1-rc.2`。该版本与项目已固定的 Harness 核心版本一致。会话树、工作区、历史分页、附件输入、流式消息、上下文计量、自动压缩、模型选择、设置和原生交互均来自官方包；项目只增加品牌和错题本入口。
+工作台不再复刻 DeepSeek Harness 的视觉样式，而是直接运行其 MIT 许可的官方 Web Host 与 `@deepseek-ai/dsh-web-frontend@0.1.1-rc.2`。该版本与项目已固定的 Harness 核心版本一致。会话树、历史分页、附件输入、流式消息、上下文计量、自动压缩、模型选择、设置和原生交互均来自官方包；项目只增加品牌、错题本入口和学生产品边界。
 
 这意味着后续升级由依赖版本和组合补丁完成，不再维护一套看起来相似、能力却逐步分叉的聊天界面。
 
@@ -23,7 +23,9 @@ python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enab
 
 ## 产品定制与安全边界
 
-- `extensions/dsh-math-notebook-ui/` 只注册李兆霖数学错题本 Logo、名称和“错题本与复习”入口，不复制官方 React 组件。
+- `extensions/dsh-math-notebook-ui/` 注册李兆霖数学错题本 Logo、名称、“错题本与复习”入口和固定工作区边界，不复制官方 React 组件。
+- 启动时自动注册 Git 忽略目录中的固定“错题会话”工作区；学生界面隐藏开发者使用的工作区选择和添加入口，会话与历史能力保持不变。
+- 启动器把项目自带的 `math-notebook` 预设同步到 Git 忽略的 Harness 运行目录；会话只保留数学助手身份，不挂载开发者 Shell、文件编辑、技能或目标工具。
 - `config/deepseek-harness/web-product.patch.yml` 注入数学错题助手提示，并禁用 Shell、文件系统写入、子智能体、工作流、目标和编程编辑器等学生产品不需要的能力。
 - Harness Web 运行在只读 sandbox、`approval=never`、关闭遥测的本地配置下。
 - 账号注册、登录、短信、限流、用户数据归属、题目版本冻结和正式入库仍由 Python/MySQL 确定性代码负责，模型与前端不能绕过这些边界。

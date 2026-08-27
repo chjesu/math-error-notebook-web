@@ -5,6 +5,46 @@ window.__ModuleLoader__.load({
     const exports = module.exports;
     const {jsx} = require("react/jsx-runtime");
     const productOrigin = "http://127.0.0.1:8000";
+    const productWorkspaceTitle = "错题会话";
+
+    function installStudentSurface(ctx) {
+      ctx.effect(() => {
+        const style = document.createElement("style");
+        style.dataset.pluginCss = "@lizhaolin/dsh-math-notebook-ui/student-surface";
+        style.textContent = `
+          button[aria-label="选择工作区"],
+          button[aria-label="Choose workspace"],
+          button[aria-label="添加工作区"],
+          button[aria-label="Add workspace"] {
+            display: none !important;
+          }
+        `;
+        document.head.appendChild(style);
+        return () => style.remove();
+      }, "math-notebook: student surface");
+    }
+
+    function openProductWorkspace(ctx) {
+      ctx.effect(() => {
+        let connecting = false;
+        const open = () => {
+          const snapshot = ctx.workspaces.list.getSnapshot();
+          const workspace = snapshot.items.find((item) => item.title === productWorkspaceTitle);
+          if (connecting || !snapshot.baselinesReady || workspace === undefined) return;
+          if (ctx.sessions.list.getSnapshot().current !== undefined) return;
+          connecting = true;
+          ctx.workspaces.connectWorkspace(workspace.workspaceId).then((sessionId) => {
+            if (ctx.sessions.list.getSnapshot().current === undefined) ctx.sessions.open(sessionId);
+          }).catch((reason) => {
+            connecting = false;
+            console.warn("math notebook workspace connection failed:", reason);
+          });
+        };
+        const unsubscribe = ctx.workspaces.list.subscribe(open);
+        open();
+        return unsubscribe;
+      }, "math-notebook: fixed workspace");
+    }
 
     function BrandMark({size, className}) {
       return jsx("img", {
@@ -43,8 +83,10 @@ window.__ModuleLoader__.load({
       });
     }
 
-    const inject = ["slots"];
+    const inject = ["slots", "sessions", "workspaces"];
     function apply(ctx) {
+      installStudentSurface(ctx);
+      openProductWorkspace(ctx);
       ctx.slots.inject("sidebar.brand.mark", () =>
         ctx.slots.inject("sidebar.brand.name", () =>
           ctx.slots.inject("conversation.hero.brand.mark", () =>
