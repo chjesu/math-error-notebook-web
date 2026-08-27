@@ -557,6 +557,9 @@ async def _asgi_call(
     cookie: str | None = None,
     idempotency_key: str | None = None,
     method: str = "POST",
+    origin: str = "https://local.test",
+    extra_headers: dict[str, str] | None = None,
+    client: tuple[str, int] = ("198.51.100.10", 12345),
 ) -> tuple[int, dict[str, str], Any]:
     body = json.dumps(payload).encode("utf-8")
     requests = [{"type": "http.request", "body": body, "more_body": False}]
@@ -574,16 +577,18 @@ async def _asgi_call(
         (b"x-device-id", b"local-smoke-device"),
     ]
     if cookie:
-        request_headers.extend([(b"cookie", cookie.split(";", 1)[0].encode("ascii")), (b"origin", b"https://local.test")])
+        request_headers.extend([(b"cookie", cookie.split(";", 1)[0].encode("ascii")), (b"origin", origin.encode("ascii"))])
     if idempotency_key:
         request_headers.append((b"idempotency-key", idempotency_key.encode("ascii")))
+    for key, value in (extra_headers or {}).items():
+        request_headers.append((key.encode("ascii"), value.encode("ascii")))
     await app(
         {
             "type": "http",
             "method": method,
             "path": path,
             "scheme": "https",
-            "client": ("198.51.100.10", 12345),
+            "client": client,
             "headers": request_headers,
         },
         receive,
@@ -644,7 +649,8 @@ def _domain_smoke(service: Any, sender: Any, session_cookie: str, phone: str) ->
                 raise
         else:
             raise RuntimeError("file upload idempotency conflict was not rejected")
-        app = NotebookAsgiApp(service, notebook, allowed_hosts={"local.test"})
+        harness_token = "local-smoke-harness-token"
+        app = NotebookAsgiApp(service, notebook, allowed_hosts={"local.test"}, harness_internal_token=harness_token)
         created = asyncio.run(_asgi_call(app, "/v1/intakes", {"file_id": uploaded.file_id}, cookie=session_cookie, idempotency_key="smoke-extract"))
         if created[0] != 202:
             raise RuntimeError("domain intake API smoke test failed")
@@ -669,10 +675,42 @@ def _domain_smoke(service: Any, sender: Any, session_cookie: str, phone: str) ->
         }, cookie=session_cookie))
         if graded[0] != 201:
             raise RuntimeError("domain manual grade candidate API smoke test failed")
-        committed = asyncio.run(_asgi_call(app, f"/v1/grade-results/{graded[2]['result_id']}/commit", {"input_version": 1}, cookie=session_cookie, idempotency_key="smoke-commit"))
-        if committed[0] != 201:
-            raise RuntimeError("domain manual grade commit API smoke test failed")
-        error_id = committed[2]["error_id"]
+        bound = asyncio.run(_asgi_call(
+            app,
+            "/v1/harness/sessions/bind",
+            {"session_id": "local-smoke-session"},
+            cookie=session_cookie,
+            origin="http://local.test:3080",
+        ))
+        if bound[0] != 200:
+            raise RuntimeError("Harness session binding smoke test failed")
+        internal = {
+            "extra_headers": {"authorization": f"Bearer {harness_token}"},
+            "client": ("127.0.0.1", 3080),
+        }
+        committed = asyncio.run(_asgi_call(
+            app,
+            f"/v1/internal/harness/grade-results/{graded[2]['result_id']}/commit",
+            {"session_id": "local-smoke-session", "input_version": 1},
+            **internal,
+        ))
+        replayed_commit = asyncio.run(_asgi_call(
+            app,
+            f"/v1/internal/harness/grade-results/{graded[2]['result_id']}/commit",
+            {"session_id": "local-smoke-session", "input_version": 1},
+            **internal,
+        ))
+        receipt = committed[2].get("receipt", {}) if committed[0] == 200 else {}
+        replayed_receipt = replayed_commit[2].get("receipt", {}) if replayed_commit[0] == 200 else {}
+        if (
+            receipt.get("status") != "saved"
+            or receipt.get("knowledge_point_count") != 2
+            or receipt.get("review_status") != "scheduled"
+            or replayed_receipt.get("status") != "already_saved"
+            or replayed_receipt.get("error_id") != receipt.get("error_id")
+        ):
+            raise RuntimeError("Harness notebook receipt smoke test failed")
+        error_id = receipt["error_id"]
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         source_id = hashlib.sha256(f"{user.user_id}:source".encode("ascii")).hexdigest()[:32]
         question_id = hashlib.sha256(f"{user.user_id}:question".encode("ascii")).hexdigest()[:32]
@@ -936,7 +974,7 @@ def _harness_web_command() -> list[str]:
     ]
 
 
-def _start_harness_web() -> subprocess.Popen[Any]:
+def _start_harness_web(internal_token: str) -> subprocess.Popen[Any]:
     HARNESS_WEB_HOME.mkdir(parents=True, exist_ok=True)
     HARNESS_PRODUCT_WORKSPACE.mkdir(parents=True, exist_ok=True)
     HARNESS_RUNTIME_PRESET.parent.mkdir(parents=True, exist_ok=True)
@@ -946,6 +984,8 @@ def _start_harness_web() -> subprocess.Popen[Any]:
     environment.update({
         "DSH_HOME": str(HARNESS_WEB_HOME),
         "LZLM_HARNESS_WORKSPACE_ROOT": str(HARNESS_PRODUCT_WORKSPACE),
+        "LZLM_HARNESS_INTERNAL_TOKEN": internal_token,
+        "LZLM_PRODUCT_ORIGIN": "http://127.0.0.1:8000",
         "DSH_PERMISSION_MODE": "read-only",
         "DSH_TELEMETRY_DISABLED": "1",
     })
@@ -1014,6 +1054,7 @@ def serve(
         config=AuthConfig(captcha_after_phone_day=99, captcha_after_ip_hour=99),
     )
     notebook = NotebookService(MySqlDomainStore(_connection_factory()), RUNTIME / "quarantine")
+    harness_internal_token = secrets.token_urlsafe(32) if enable_harness_ui else None
     if enable_codex_model and enable_harness_model:
         raise RuntimeError("choose either the Harness model or the legacy Codex model")
     if enable_harness_model:
@@ -1034,9 +1075,10 @@ def serve(
         allowed_hosts={"127.0.0.1", "localhost"},
         require_https=False,
         model_runner=model_runner,
+        harness_internal_token=harness_internal_token,
     )
     app.resume_pending_deletions()
-    harness_web = _start_harness_web() if enable_harness_ui else None
+    harness_web = _start_harness_web(harness_internal_token) if harness_internal_token else None
     try:
         uvicorn.run(LocalOtpDisclosureApp(app, sender), host=host, port=port, access_log=False)
     finally:

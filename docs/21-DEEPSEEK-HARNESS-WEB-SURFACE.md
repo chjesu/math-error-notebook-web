@@ -31,6 +31,7 @@ python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enab
 - Harness Web 运行在只读 sandbox、`approval=never`、关闭遥测的本地配置下。
 - 账号注册、登录、短信、限流、用户数据归属、题目版本冻结和正式入库仍由 Python/MySQL 确定性代码负责，模型与前端不能绕过这些边界。
 - 当前 8000/3080 双端口嵌入只用于 localhost 测试。生产必须通过同源网关统一认证、WebSocket 和安全响应头，不能直接暴露 3080。
+- 本地 Harness 会在浏览器中把当前不透明会话编号绑定到 8000 端口已经认证的个人账号；判题候选完成后，`confirm_error_notebook_entry` 通过仅限回环地址、每次启动随机生成的内部令牌调用确定性入本接口。工具结果是权威入本回执并直接成为 Harness 会话事件，因此刷新、翻页和重新打开会话后仍可查看；令牌不写入仓库、日志或浏览器。
 
 ## 保留的产品页面
 

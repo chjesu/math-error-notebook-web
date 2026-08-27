@@ -11,7 +11,7 @@ from PIL import Image
 
 from services.web_app import NotebookAsgiApp
 from services.web_auth import AuthConfig, InMemoryCaptchaVerifier, InMemoryRegistrationStore, RecordingSmsSender, RegistrationService
-from services.web_domain import InMemoryNotebookStore, NotebookService, Question
+from services.web_domain import GradeCandidate, InMemoryNotebookStore, NotebookService, Question
 
 
 class NotebookE2ETests(unittest.TestCase):
@@ -28,7 +28,12 @@ class NotebookE2ETests(unittest.TestCase):
         )
         self.domain_store = InMemoryNotebookStore()
         self.notebook = NotebookService(self.domain_store, Path(self.temp.name))
-        self.app = NotebookAsgiApp(self.auth_service, self.notebook, allowed_hosts={"example.test"})
+        self.app = NotebookAsgiApp(
+            self.auth_service,
+            self.notebook,
+            allowed_hosts={"example.test"},
+            harness_internal_token="test-internal-token",
+        )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -39,7 +44,7 @@ class NotebookE2ETests(unittest.TestCase):
         Image.new("RGB", (10, 10), "white").save(stream, format="PNG")
         return stream.getvalue()
 
-    def call(self, path: str, *, method: str = "GET", payload: dict | None = None, body: bytes | None = None, content_type: str = "application/json", cookie: str | None = None, origin: str | None = "https://example.test", idempotency_key: str | None = None):
+    def call(self, path: str, *, method: str = "GET", payload: dict | None = None, body: bytes | None = None, content_type: str = "application/json", cookie: str | None = None, origin: str | None = "https://example.test", idempotency_key: str | None = None, extra_headers: dict[str, str] | None = None, client: tuple[str, int] = ("203.0.113.7", 12345)):
         route_path, _, query = path.partition("?")
         raw = body if body is not None else json.dumps(payload or {}).encode("utf-8")
         requests = [{"type": "http.request", "body": raw, "more_body": False}]
@@ -58,7 +63,9 @@ class NotebookE2ETests(unittest.TestCase):
                 headers.append((b"origin", origin.encode("ascii")))
         if idempotency_key:
             headers.append((b"idempotency-key", idempotency_key.encode("ascii")))
-        scope = {"type": "http", "method": method, "path": route_path, "query_string": query.encode("ascii"), "scheme": "https", "client": ("203.0.113.7", 12345), "headers": headers}
+        for key, value in (extra_headers or {}).items():
+            headers.append((key.encode("ascii"), value.encode("ascii")))
+        scope = {"type": "http", "method": method, "path": route_path, "query_string": query.encode("ascii"), "scheme": "https", "client": client, "headers": headers}
         asyncio.run(self.app(scope, receive, send))
         started = responses[0]
         response_headers = {key.decode("ascii"): value.decode("ascii") for key, value in started["headers"]}
@@ -180,6 +187,82 @@ class NotebookE2ETests(unittest.TestCase):
             with self.subTest(path=path, origin="wrong"):
                 response = self.call(path, method=method, payload=payload, cookie=cookie, origin="https://evil.example")
                 self.assertEqual((response[0], response[2]["error"]["code"]), (403, "forbidden"))
+
+    def test_harness_receipt_is_authoritative_idempotent_and_user_scoped(self) -> None:
+        cookie = self.login("13500135001")
+        other_cookie = self.login("13500135002")
+        content_type, body = self.multipart("receipt.png", self.png_bytes())
+        uploaded = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="receipt-upload")
+        created = self.call("/v1/intakes", method="POST", payload={"file_id": uploaded[2]["file_id"]}, cookie=cookie, idempotency_key="receipt-intake")
+        intake_id = created[2]["resource_id"]
+        self.call(f"/v1/intakes/{intake_id}/manual-candidate", method="POST", payload={"question_text": "若 x+1=2，求 x。", "answer_text": "x=0"}, cookie=cookie)
+        confirmed = self.call(f"/v1/intakes/{intake_id}/confirm", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="receipt-grade")
+        graded = self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/manual-grade", method="POST", payload={
+            "input_version": 1,
+            "verdict": "incorrect",
+            "first_error": "移项后符号错误",
+            "cause_code": "algebra_transform",
+            "evidence": "由 x+1=2 得到 x=0",
+            "knowledge_points": ["一元一次方程", "等式性质与移项"],
+            "correct_solution": "x=2-1=1",
+            "final_answer": "x=1",
+            "prevention_cue": "代回验算",
+        }, cookie=cookie)
+        candidate_id = graded[2]["result_id"]
+        harness_origin = "http://example.test:3080"
+        bound = self.call("/v1/harness/sessions/bind", method="POST", payload={"session_id": "session-receipt"}, cookie=cookie, origin=harness_origin)
+        self.assertEqual((bound[0], bound[2]), (200, {"status": "bound"}))
+        self.assertEqual(bound[1]["access-control-allow-origin"], harness_origin)
+
+        internal = {
+            "origin": None,
+            "client": ("127.0.0.1", 3080),
+            "extra_headers": {"authorization": "Bearer test-internal-token"},
+        }
+        bad_token = self.call(
+            f"/v1/internal/harness/grade-results/{candidate_id}/commit",
+            method="POST",
+            payload={"session_id": "session-receipt", "input_version": 1},
+            origin=None,
+            client=("127.0.0.1", 3080),
+            extra_headers={"authorization": "Bearer wrong-token"},
+        )
+        remote_client = self.call(
+            f"/v1/internal/harness/grade-results/{candidate_id}/commit",
+            method="POST",
+            payload={"session_id": "session-receipt", "input_version": 1},
+            origin=None,
+            client=("203.0.113.8", 3080),
+            extra_headers={"authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual((bad_token[0], remote_client[0]), (403, 403))
+        saved = self.call(f"/v1/internal/harness/grade-results/{candidate_id}/commit", method="POST", payload={"session_id": "session-receipt", "input_version": 1}, **internal)
+        replayed = self.call(f"/v1/internal/harness/grade-results/{candidate_id}/commit", method="POST", payload={"session_id": "session-receipt", "input_version": 1}, **internal)
+        self.assertEqual(saved[2]["receipt"]["status"], "saved")
+        self.assertEqual(saved[2]["receipt"]["knowledge_point_count"], 2)
+        self.assertEqual(saved[2]["receipt"]["review_status"], "scheduled")
+        self.assertEqual(replayed[2]["receipt"]["status"], "already_saved")
+        self.assertEqual(saved[2]["receipt"]["error_id"], replayed[2]["receipt"]["error_id"])
+        self.assertEqual(len(self.call("/v1/errors", cookie=cookie)[2]["items"]), 1)
+
+        self.call("/v1/harness/sessions/bind", method="POST", payload={"session_id": "session-other"}, cookie=other_cookie, origin=harness_origin)
+        denied = self.call(f"/v1/internal/harness/grade-results/{candidate_id}/commit", method="POST", payload={"session_id": "session-other", "input_version": 1}, **internal)
+        self.assertEqual((denied[0], denied[2]["error"]["code"]), (404, "not_found"))
+
+    def test_harness_receipt_explicitly_skips_correct_and_unclear_results(self) -> None:
+        correct = GradeCandidate("a" * 32, "b" * 32, 1, "correct", None, None, "candidate")
+        unclear = GradeCandidate("c" * 32, "d" * 32, 1, "unclear", None, None, "candidate")
+        self.assertEqual(
+            self.app._grade_receipt(correct),
+            {
+                "schema": "math-notebook-entry-receipt/v1",
+                "status": "not_saved_correct",
+                "knowledge_point_count": 0,
+                "review_status": "not_scheduled",
+                "message": "错题本记录检查：本题判定正确，未计入错题本。",
+            },
+        )
+        self.assertEqual(self.app._grade_receipt(unclear)["status"], "needs_review")
 
     def test_deletion_keeps_durable_pending_state_when_domain_cleanup_fails(self) -> None:
         phone = "13400134000"

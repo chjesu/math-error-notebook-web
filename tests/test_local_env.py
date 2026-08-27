@@ -43,6 +43,14 @@ class LocalEnvironmentTests(unittest.TestCase):
         process.terminate.assert_called_once_with()
         process.wait.assert_called_once_with(timeout=5)
 
+    def test_harness_receipt_bridge_token_is_runtime_only(self) -> None:
+        source = inspect.getsource(local_env._start_harness_web)
+        serve = inspect.getsource(local_env.serve)
+        self.assertIn('"LZLM_HARNESS_INTERNAL_TOKEN": internal_token', source)
+        self.assertIn('"LZLM_PRODUCT_ORIGIN": "http://127.0.0.1:8000"', source)
+        self.assertIn("secrets.token_urlsafe(32)", serve)
+        self.assertNotIn("test-internal-token", source + serve)
+
     def test_mysql_password_is_not_put_on_process_command_line(self) -> None:
         args = local_env._client_args(root=True)
         self.assertTrue(any(item.startswith("--defaults-extra-file=") for item in args))

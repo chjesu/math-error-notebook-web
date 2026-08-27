@@ -162,6 +162,34 @@ window.__ModuleLoader__.load({
       }, "math-notebook: fixed workspace");
     }
 
+    function bindProductSession(ctx) {
+      ctx.effect(() => {
+        let bound = null;
+        let pending = null;
+        const bind = () => {
+          const sessionId = ctx.sessions.list.getSnapshot().current;
+          if (sessionId === undefined || sessionId === bound || sessionId === pending) return;
+          pending = sessionId;
+          fetch(`${productOrigin}/v1/harness/sessions/bind`, {
+            method: "POST",
+            credentials: "include",
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({session_id: sessionId})
+          }).then((response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            bound = sessionId;
+          }).catch((reason) => {
+            console.warn("math notebook session binding failed:", reason);
+          }).finally(() => {
+            if (pending === sessionId) pending = null;
+          });
+        };
+        const unsubscribe = ctx.sessions.list.subscribe(bind);
+        bind();
+        return unsubscribe;
+      }, "math-notebook: bind product session");
+    }
+
     function closeProductOnSessionClick(ctx) {
       ctx.effect(() => {
         const close = (event) => {
@@ -230,6 +258,7 @@ window.__ModuleLoader__.load({
       pluginContext = ctx;
       installStudentSurface(ctx);
       openProductWorkspace(ctx);
+      bindProductSession(ctx);
       closeProductOnSessionClick(ctx);
       ctx.effect(() => {
         let current = ctx.sessions.list.getSnapshot().current;

@@ -85,6 +85,11 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('ctx.sessions.open(sessionId)', plugin)
         self.assertIn('ctx.workspaceRegistry.create(workspacePath, "错题会话")', host_plugin)
         self.assertIn('LZLM_HARNESS_WORKSPACE_ROOT', host_plugin)
+        self.assertIn('name: "confirm_error_notebook_entry"', host_plugin)
+        self.assertIn('exec.concludeTurn()', host_plugin)
+        self.assertIn('/v1/internal/harness/grade-results/', host_plugin)
+        self.assertIn('/v1/harness/sessions/bind', plugin)
+        self.assertIn('credentials: "include"', plugin)
         self.assertIn("ui-brand-official", patch)
         self.assertIn("ui-math-notebook", patch)
         self.assertIn("tool-bash", patch)
@@ -93,6 +98,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("includeUserRoot: true", patch)
         self.assertIn("@deepseek-ai/dsh-persona", preset)
         self.assertNotIn("dsh-tool-", preset)
+        self.assertIn("confirm_error_notebook_entry", preset)
 
     def test_harness_product_views_hide_the_legacy_sidebar(self) -> None:
         script = (WEB / "app.js").read_text(encoding="utf-8")

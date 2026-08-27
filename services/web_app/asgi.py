@@ -6,8 +6,10 @@ import asyncio
 import base64
 from email import policy
 from email.parser import BytesParser
+import hmac
 import json
 from pathlib import Path
+import re
 import secrets
 import string
 from threading import Event, Lock
@@ -34,6 +36,7 @@ class NotebookAsgiApp:
         session_cookie: str = "__Host-lzlm_session",
         max_upload_bytes: int = 26 * 1024 * 1024,
         model_runner: Any | None = None,
+        harness_internal_token: str | None = None,
     ) -> None:
         self.auth = AuthAsgiApp(auth_service, allowed_hosts=allowed_hosts, require_https=require_https, session_cookie=session_cookie)
         self.auth_service = auth_service
@@ -43,6 +46,10 @@ class NotebookAsgiApp:
         self.session_cookie = session_cookie
         self.max_upload_bytes = max_upload_bytes
         self.model_runner = model_runner
+        self.harness_internal_token = harness_internal_token
+        self.harness_origins = {f"http://{host}:3080" for host in self.allowed_hosts}
+        self._harness_sessions: dict[str, str] = {}
+        self._harness_sessions_lock = Lock()
         self._turn_cancellations: dict[tuple[str, str], Event] = {}
         self._turn_cancellations_lock = Lock()
         root = Path(__file__).resolve().parents[2]
@@ -100,6 +107,20 @@ class NotebookAsgiApp:
             await self._error(send, 400, "https_required")
             return
         method = str(scope.get("method", ""))
+        origin = headers.get("origin", "")
+        harness_origin = origin if origin in self.harness_origins else None
+        if path == "/v1/harness/sessions/bind" and method == "OPTIONS":
+            if harness_origin is None:
+                await self._error(send, 403, "forbidden")
+            else:
+                await self._json(send, 200, {"status": "ok"}, extra_headers=self._harness_cors(harness_origin))
+            return
+        if path == "/v1/harness/sessions/bind" and method == "POST" and harness_origin is None:
+            await self._error(send, 403, "forbidden")
+            return
+        if path.startswith("/v1/internal/harness/grade-results/") and path.endswith("/commit") and method == "POST":
+            await self._internal_harness_commit(scope, receive, send, headers)
+            return
         static = self.static_files.get(path)
         if method == "GET" and static:
             await self._asset(send, *static)
@@ -111,11 +132,22 @@ class NotebookAsgiApp:
             return
         if method in {"POST", "PATCH", "PUT", "DELETE"}:
             expected_origin = f"{scope.get('scheme', 'https')}://{headers.get('host', '')}"
-            if headers.get("origin") != expected_origin:
+            if headers.get("origin") != expected_origin and not (path == "/v1/harness/sessions/bind" and harness_origin):
                 await self._error(send, 403, "forbidden")
                 return
         try:
-            if path == "/v1/intakes" and method == "GET":
+            if path == "/v1/harness/sessions/bind" and method == "POST":
+                payload = await self._json_body(receive)
+                session_id = self._harness_session_id(payload)
+                with self._harness_sessions_lock:
+                    self._harness_sessions[session_id] = user.user_id
+                await self._json(
+                    send,
+                    200,
+                    {"status": "bound"},
+                    extra_headers=self._harness_cors(harness_origin),
+                )
+            elif path == "/v1/intakes" and method == "GET":
                 intakes = await self._sync(self.notebook.store.list_pending_intakes, user_id=user.user_id)
                 await self._json(send, 200, {"items": [self._intake_with_attachment(user.user_id, item) for item in intakes]})
             elif path.startswith("/v1/intakes/") and path.endswith("/source") and method == "GET":
@@ -807,6 +839,116 @@ class NotebookAsgiApp:
             return {"correct_solution": value}
         return payload if isinstance(payload, dict) and payload.get("schema") == "math-error-diagnosis/v1" else {"correct_solution": value}
 
+    async def _internal_harness_commit(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        client = scope.get("client")
+        client_host = str(client[0]) if isinstance(client, (tuple, list)) and client else ""
+        supplied = headers.get("authorization", "")
+        expected = f"Bearer {self.harness_internal_token}" if self.harness_internal_token else ""
+        if client_host not in {"127.0.0.1", "::1"} or not expected or not hmac.compare_digest(supplied, expected):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            candidate_id = str(scope.get("path", "")).split("/")[-2]
+            if re.fullmatch(r"[0-9a-f]{32}", candidate_id) is None:
+                raise ValueError("invalid candidate id")
+            payload = await self._json_body(receive)
+            if set(payload) != {"session_id", "input_version"}:
+                raise ValueError("invalid receipt request")
+            session_id = self._harness_session_id(payload)
+            with self._harness_sessions_lock:
+                user_id = self._harness_sessions.get(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            candidate = await self._sync(
+                self.notebook.store.get_grade_candidate,
+                user_id=user_id,
+                candidate_id=candidate_id,
+            )
+            if candidate is None:
+                raise LookupError("grade candidate not found")
+            if candidate.input_version != int(payload["input_version"]):
+                raise RuntimeError("input_version_changed")
+            receipt = self._grade_receipt(candidate)
+            if candidate.verdict in {"partial", "incorrect"}:
+                entry = await self._sync(
+                    self.notebook.store.commit_grade,
+                    user_id=user_id,
+                    candidate_id=candidate_id,
+                    expected_version=candidate.input_version,
+                )
+                receipt |= {
+                    "status": "already_saved" if candidate.status == "committed" else "saved",
+                    "error_id": entry.error_id,
+                    "review_status": "scheduled",
+                }
+                receipt["message"] = (
+                    "错题本记录检查：该题已经在错题本中，无需重复保存。"
+                    if candidate.status == "committed"
+                    else f"错题本记录检查：已计入错题本，已保存 {receipt['knowledge_point_count']} 个知识点，并已安排首次复习。"
+                )
+            await self._json(send, 200, {"receipt": receipt})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except RuntimeError as exc:
+            code = str(exc) if str(exc) == "input_version_changed" else "conflict"
+            await self._error(send, 409, code)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    @staticmethod
+    def _harness_session_id(payload: dict[str, Any]) -> str:
+        session_id = payload.get("session_id")
+        if not isinstance(session_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", session_id) is None:
+            raise ValueError("invalid harness session id")
+        return session_id
+
+    @staticmethod
+    def _harness_cors(origin: str) -> list[tuple[bytes, bytes]]:
+        return [
+            (b"access-control-allow-origin", origin.encode("ascii")),
+            (b"access-control-allow-credentials", b"true"),
+            (b"access-control-allow-methods", b"POST,OPTIONS"),
+            (b"access-control-allow-headers", b"content-type"),
+            (b"vary", b"Origin"),
+        ]
+
+    @staticmethod
+    def _grade_receipt(candidate: GradeCandidate) -> dict[str, Any]:
+        diagnosis = NotebookAsgiApp._diagnosis(candidate.evidence)
+        points = diagnosis.get("knowledge_points")
+        count = len(points) if isinstance(points, list) else 0
+        if candidate.verdict == "correct":
+            return {
+                "schema": "math-notebook-entry-receipt/v1",
+                "status": "not_saved_correct",
+                "knowledge_point_count": count,
+                "review_status": "not_scheduled",
+                "message": "错题本记录检查：本题判定正确，未计入错题本。",
+            }
+        if candidate.verdict == "unclear":
+            return {
+                "schema": "math-notebook-entry-receipt/v1",
+                "status": "needs_review",
+                "knowledge_point_count": count,
+                "review_status": "not_scheduled",
+                "message": "错题本记录检查：证据不足，尚未计入错题本，请补充或修正后重试。",
+            }
+        return {
+            "schema": "math-notebook-entry-receipt/v1",
+            "status": "pending",
+            "knowledge_point_count": count,
+            "review_status": "not_scheduled",
+            "message": "错题本记录检查：正在确认入本结果。",
+        }
+
     @staticmethod
     def _grade_values(payload: dict[str, Any], *, evidence_key: str) -> tuple[str, str | None, str]:
         verdict = str(payload["verdict"])
@@ -872,9 +1014,17 @@ class NotebookAsgiApp:
         await self._json(send, status, {"error": {"code": code, "message": code, "retryable": code in {"failed_retryable", "temporarily_unavailable", "model_unavailable", "model_network_error", "model_rate_limited", "rate_limited"}, "request_id": secrets.token_hex(8)}})
 
     @staticmethod
-    async def _json(send: Send, status: int, payload: dict[str, Any]) -> None:
+    async def _json(
+        send: Send,
+        status: int,
+        payload: dict[str, Any],
+        *,
+        extra_headers: list[tuple[bytes, bytes]] | None = None,
+    ) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", b"application/json; charset=utf-8"), (b"content-length", str(len(body)).encode("ascii")), (b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff")]})
+        response_headers = [(b"content-type", b"application/json; charset=utf-8"), (b"content-length", str(len(body)).encode("ascii")), (b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff")]
+        response_headers.extend(extra_headers or ())
+        await send({"type": "http.response.start", "status": status, "headers": response_headers})
         await send({"type": "http.response.body", "body": body})
 
     @staticmethod
