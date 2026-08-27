@@ -23,7 +23,7 @@ python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enab
 
 ## 产品定制与安全边界
 
-- `extensions/dsh-math-notebook-ui/` 注册李兆霖数学错题本 Logo、名称、六项产品导航和固定工作区边界，不复制官方 React 组件。
+- `extensions/dsh-math-notebook-ui/` 注册李兆霖数学错题本 Logo、名称、五项产品导航和固定工作区边界；工作台由当前 Harness 会话区直接承载，不重复显示入口。
 - 启动时自动注册 Git 忽略目录中的固定“错题会话”工作区；学生界面隐藏开发者使用的工作区选择和添加入口，会话与历史能力保持不变。
 - 启动器把项目自带的 `math-notebook` 预设同步到 Git 忽略的 Harness 运行目录；会话只保留数学助手身份，不挂载开发者 Shell、文件编辑、技能或目标工具。
 - `config/deepseek-harness/web-product.patch.yml` 注入数学错题助手提示，并禁用 Shell、文件系统写入、子智能体、工作流、目标和编程编辑器等学生产品不需要的能力。

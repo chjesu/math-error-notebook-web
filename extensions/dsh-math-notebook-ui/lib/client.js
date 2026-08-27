@@ -7,7 +7,6 @@ window.__ModuleLoader__.load({
     const productOrigin = "http://127.0.0.1:8000";
     const productWorkspaceTitle = "错题会话";
     const navigationItems = [
-      {path: "/", label: "工作台", icon: "workbench"},
       {path: "/errors", label: "错题本", icon: "errors"},
       {path: "/reviews", label: "今日复习", icon: "reviews"},
       {path: "/practice", label: "练习 PDF", icon: "practice"},
@@ -15,7 +14,6 @@ window.__ModuleLoader__.load({
       {path: "/settings", label: "设置与隐私", icon: "settings"}
     ];
     const navigationIcons = {
-      workbench: [["path", {d: "M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v9a2.5 2.5 0 0 1-2.5 2.5H10l-5 4v-4.7A2.5 2.5 0 0 1 4 14.5Z"}], ["path", {d: "M8 8h8M8 12h5"}]],
       errors: [["path", {d: "M5 4.5A2.5 2.5 0 0 1 7.5 2H19v18H7.5A2.5 2.5 0 0 0 5 22Z"}], ["path", {d: "M5 4.5v15M9 7h6M9 11h6M9 15h4"}]],
       reviews: [["circle", {cx: 12, cy: 12, r: 9}], ["path", {d: "M12 7v5l3 2M8 12l2 2 4-4"}]],
       practice: [["path", {d: "M6 2h8l4 4v16H6Z"}], ["path", {d: "M14 2v5h5M9 12h6M9 16h6"}]],
@@ -52,8 +50,7 @@ window.__ModuleLoader__.load({
             color: inherit;
             text-decoration: none;
           }
-          [data-lzlm-product-nav] a:hover,
-          [data-lzlm-product-nav] a[aria-current="page"] {
+          [data-lzlm-product-nav] a:hover {
             background: var(--dsw-alias-interactive-bg-hover);
           }
           [data-lzlm-product-nav] svg {
@@ -127,7 +124,6 @@ window.__ModuleLoader__.load({
           href: `${productOrigin}${item.path}`,
           target: "_top",
           title: item.label,
-          "aria-current": item.path === "/" ? "page" : undefined,
           style: wide ? undefined : {justifyContent: "center", padding: 0},
           children: [jsx(NavIcon, {name: item.icon}, "icon"), wide ? jsx("span", {children: item.label}, "label") : null]
         }, item.path))
