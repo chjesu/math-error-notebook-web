@@ -97,7 +97,17 @@ class FrontendContractTests(unittest.TestCase):
         css = (WEB / "app.css").read_text(encoding="utf-8")
         self.assertIn('new URLSearchParams(location.search).get("embedded") === "1"', script)
         self.assertIn("body.is-embedded .sidebar", css)
-        self.assertIn("body.is-embedded main { margin-left: 0; }", css)
+        self.assertIn("body.is-embedded main {", css)
+        self.assertIn("margin-left: 0;", css)
+
+    def test_harness_product_views_share_the_harness_visual_language(self) -> None:
+        css = (WEB / "app.css").read_text(encoding="utf-8")
+        self.assertIn("body.is-embedded {", css)
+        self.assertIn("--ink: #0f1115;", css)
+        self.assertIn("body.is-embedded .page-header", css)
+        self.assertIn("body.is-embedded .panel {", css)
+        self.assertIn("body.is-embedded button {", css)
+        self.assertIn("body.is-embedded .stats div {", css)
 
     def test_brand_and_learning_contract_survive_harness_adoption(self) -> None:
         html = "".join(path.read_text(encoding="utf-8") for path in WEB.glob("*.html"))
