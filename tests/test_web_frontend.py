@@ -67,6 +67,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('data-lzlm-product-surface', plugin)
         self.assertIn('?embedded=1', plugin)
         self.assertIn('data-lzlm-product-path', plugin)
+        self.assertIn("closeProductOnSessionClick(ctx)", plugin)
+        self.assertIn("event.target.closest('[role=\"treeitem\"]')", plugin)
         self.assertNotIn('target: "_top",\n          title: item.label', plugin)
         self.assertNotIn('path: "/settings", label: "设置与隐私"', plugin)
         self.assertIn('id: "account-privacy"', plugin)

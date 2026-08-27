@@ -180,6 +180,17 @@ window.__ModuleLoader__.load({
       }, "math-notebook: fixed workspace");
     }
 
+    function closeProductOnSessionClick(ctx) {
+      ctx.effect(() => {
+        const close = (event) => {
+          if (activeProductPath === null || !(event.target instanceof Element)) return;
+          if (event.target.closest('[role="treeitem"]') !== null) closeProductSurface();
+        };
+        document.addEventListener("click", close, true);
+        return () => document.removeEventListener("click", close, true);
+      }, "math-notebook: return to clicked session");
+    }
+
     function BrandMark({size, className}) {
       return jsx("img", {
         src: `${productOrigin}/assets/branding/logo-symbol-color-64-v1.png`,
@@ -240,6 +251,7 @@ window.__ModuleLoader__.load({
       pluginContext = ctx;
       installStudentSurface(ctx);
       openProductWorkspace(ctx);
+      closeProductOnSessionClick(ctx);
       ctx.effect(() => {
         let current = ctx.sessions.list.getSnapshot().current;
         return ctx.sessions.list.subscribe(() => {
