@@ -52,6 +52,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('name="today-error"', script)
         self.assertIn('data-error-detail=', script)
         self.assertNotIn('id="error-detail"', html)
+        self.assertNotIn("$$('", script)
         self.assertIn("review_stage_counts", script)
         self.assertIn("today_needs_correction_count", script)
 

@@ -1162,8 +1162,8 @@ function bindErrors() {
     const [item, recommendations] = await Promise.all([api(`/v1/errors/${id}`), api(`/v1/errors/${id}/recommendations`)]);
     const detail = $(`[data-error-detail="${CSS.escape(id)}"]`);
     if (!detail) return;
-    $$('[data-error-detail]').forEach(panel => { panel.hidden = true; });
-    $$('.error-detail-trigger').forEach(button => { button.textContent = "查看完整解析与操作"; button.setAttribute("aria-expanded", "false"); });
+    document.querySelectorAll('[data-error-detail]').forEach(panel => { panel.hidden = true; });
+    document.querySelectorAll('.error-detail-trigger').forEach(button => { button.textContent = "查看完整解析与操作"; button.setAttribute("aria-expanded", "false"); });
     const diagnosis = item.diagnosis || {};
     const recommendationHtml = recommendations.items.length ? recommendations.items.map((recommendation, index) => `<li><strong>练习 ${index + 1}</strong><p>${escapeHtml(recommendation.stem_text)}</p><small>${escapeHtml(recommendation.source)} · ${escapeHtml(recommendation.reason)}</small></li>`).join("") : '<li class="empty">还没有匹配练习。</li>';
     detail.hidden = false;
