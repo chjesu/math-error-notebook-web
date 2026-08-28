@@ -50,6 +50,8 @@ class FrontendContractTests(unittest.TestCase):
         for contract in ('api("/v1/errors")', 'api("/v1/reviews/today")', 'api("/v1/progress")', 'api("/v1/practice-pdfs"'):
             self.assertIn(contract, script)
         self.assertIn('name="today-error"', script)
+        self.assertIn('data-error-detail=', script)
+        self.assertNotIn('id="error-detail"', html)
         self.assertIn("review_stage_counts", script)
         self.assertIn("today_needs_correction_count", script)
 

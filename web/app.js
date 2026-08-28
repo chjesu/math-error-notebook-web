@@ -1098,7 +1098,6 @@ function bindWorkbench() {
 }
 
 function bindErrors() {
-  let currentErrorId = null;
   let errors = [];
   let dueReviews = [];
   let progress = {};
@@ -1153,19 +1152,26 @@ function bindErrors() {
       const diagnosis = item.diagnosis || {};
       const points = Array.isArray(diagnosis.knowledge_points) && diagnosis.knowledge_points.length ? diagnosis.knowledge_points.map(point => `<span>${escapeHtml(point)}</span>`).join("") : '<span>知识点待整理</span>';
       const checked = selectedErrorIds.has(item.error_id) ? " checked" : "";
-      return `<li class="error-card"><label class="error-select" title="加入今日复习"><input name="today-error" type="checkbox" value="${escapeHtml(item.error_id)}"${checked}><span class="sr-only">选择这道错题</span></label><article><div class="error-card-heading"><span class="badge">${escapeHtml(stageLabel(item))}</span><time datetime="${escapeHtml(item.created_at)}">${escapeHtml(new Date(item.created_at).toLocaleDateString("zh-CN"))}</time></div><h3>${escapeHtml(item.question_text)}</h3><dl><div><dt>错误原因</dt><dd><strong>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</strong>${escapeHtml(diagnosis.cause_evidence || item.first_error || "尚未记录")}</dd></div><div><dt>涉及知识点</dt><dd class="knowledge-tags">${points}</dd></div></dl><button class="text-button error-detail-trigger" type="button" data-error-id="${escapeHtml(item.error_id)}">查看完整解析与操作</button></article></li>`;
+      const detailId = `error-detail-${escapeHtml(item.error_id)}`;
+      return `<li class="error-card"><label class="error-select" title="加入今日复习"><input name="today-error" type="checkbox" value="${escapeHtml(item.error_id)}"${checked}><span class="sr-only">选择这道错题</span></label><article><div class="error-card-heading"><span class="badge">${escapeHtml(stageLabel(item))}</span><time datetime="${escapeHtml(item.created_at)}">${escapeHtml(new Date(item.created_at).toLocaleDateString("zh-CN"))}</time></div><h3>${escapeHtml(item.question_text)}</h3><dl><div><dt>错误原因</dt><dd><strong>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</strong>${escapeHtml(diagnosis.cause_evidence || item.first_error || "尚未记录")}</dd></div><div><dt>涉及知识点</dt><dd class="knowledge-tags">${points}</dd></div></dl><button class="text-button error-detail-trigger" type="button" data-error-id="${escapeHtml(item.error_id)}" aria-expanded="false" aria-controls="${detailId}">查看完整解析与操作</button><section id="${detailId}" class="error-detail" data-error-detail="${escapeHtml(item.error_id)}" hidden></section></article></li>`;
     }).join("") : '<li class="empty">还没有错题。</li>';
     renderMath($("#all-errors"));
   }
 
   async function showError(id) {
     const [item, recommendations] = await Promise.all([api(`/v1/errors/${id}`), api(`/v1/errors/${id}/recommendations`)]);
-    currentErrorId = id;
+    const detail = $(`[data-error-detail="${CSS.escape(id)}"]`);
+    if (!detail) return;
+    $$('[data-error-detail]').forEach(panel => { panel.hidden = true; });
+    $$('.error-detail-trigger').forEach(button => { button.textContent = "查看完整解析与操作"; button.setAttribute("aria-expanded", "false"); });
     const diagnosis = item.diagnosis || {};
     const recommendationHtml = recommendations.items.length ? recommendations.items.map((recommendation, index) => `<li><strong>练习 ${index + 1}</strong><p>${escapeHtml(recommendation.stem_text)}</p><small>${escapeHtml(recommendation.source)} · ${escapeHtml(recommendation.reason)}</small></li>`).join("") : '<li class="empty">还没有匹配练习。</li>';
-    $("#error-detail").hidden = false;
-    $("#error-detail").innerHTML = `<h2>错题详情</h2><dl class="diagnosis-list"><dt>原题</dt><dd>${escapeHtml(item.question_text)}</dd><dt>你的作答</dt><dd>${escapeHtml(item.answer_text || "未填写")}</dd><dt>第一处实质错误</dt><dd>${escapeHtml(item.first_error || "待整理")}</dd><dt>主要错因</dt><dd>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</dd><dt>判断依据</dt><dd>${escapeHtml(diagnosis.cause_evidence || "待整理")}</dd><dt>知识点梳理</dt><dd>${escapeHtml(diagnosis.knowledge_points?.join("\n") || "待整理")}</dd><dt>完整正确过程</dt><dd>${escapeHtml(diagnosis.correct_solution || "待整理")}</dd><dt>最终答案</dt><dd>${escapeHtml(diagnosis.final_answer || "待整理")}</dd><dt>防错提示</dt><dd>${escapeHtml(diagnosis.prevention_cue || "待整理")}</dd></dl><h3>已验证练习</h3><ol class="recommendation-list">${recommendationHtml}</ol><div class="actions"><button type="button" data-error-action="recommend" class="ghost">匹配练习</button><button type="button" data-error-action="master" class="ghost">标记已掌握</button><button type="button" data-error-action="remove" class="danger">移除错题</button></div>`;
-    renderMath($("#error-detail"));
+    detail.hidden = false;
+    detail.innerHTML = `<h2>错题详情</h2><dl class="diagnosis-list"><dt>原题</dt><dd>${escapeHtml(item.question_text)}</dd><dt>你的作答</dt><dd>${escapeHtml(item.answer_text || "未填写")}</dd><dt>第一处实质错误</dt><dd>${escapeHtml(item.first_error || "待整理")}</dd><dt>主要错因</dt><dd>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</dd><dt>判断依据</dt><dd>${escapeHtml(diagnosis.cause_evidence || "待整理")}</dd><dt>知识点梳理</dt><dd>${escapeHtml(diagnosis.knowledge_points?.join("\n") || "待整理")}</dd><dt>完整正确过程</dt><dd>${escapeHtml(diagnosis.correct_solution || "待整理")}</dd><dt>最终答案</dt><dd>${escapeHtml(diagnosis.final_answer || "待整理")}</dd><dt>防错提示</dt><dd>${escapeHtml(diagnosis.prevention_cue || "待整理")}</dd></dl><h3>已验证练习</h3><ol class="recommendation-list">${recommendationHtml}</ol><div class="actions"><button type="button" data-error-action="recommend" class="ghost">匹配练习</button><button type="button" data-error-action="master" class="ghost">标记已掌握</button><button type="button" data-error-action="remove" class="danger">移除错题</button></div>`;
+    renderMath(detail);
+    const trigger = $(`[data-error-id="${CSS.escape(id)}"]`);
+    trigger.textContent = "收起完整解析与操作";
+    trigger.setAttribute("aria-expanded", "true");
   }
   async function loadDashboard() {
     try {
@@ -1201,31 +1207,39 @@ function bindErrors() {
     renderPlan();
   });
   $("#all-errors").addEventListener("click", async event => {
-    const id = event.target.closest("[data-error-id]")?.dataset.errorId;
+    const trigger = event.target.closest("[data-error-id]");
+    const id = trigger?.dataset.errorId;
     if (!id) return;
+    const detail = $(`[data-error-detail="${CSS.escape(id)}"]`);
+    if (detail && !detail.hidden) {
+      detail.hidden = true;
+      trigger.textContent = "查看完整解析与操作";
+      trigger.setAttribute("aria-expanded", "false");
+      return;
+    }
     try {
       await showError(id);
     } catch (error) {
       status($("#page-status"), authError(error), true);
     }
   });
-  $("#error-detail").addEventListener("click", async event => {
+  $("#all-errors").addEventListener("click", async event => {
     const action = event.target.dataset.errorAction;
-    if (!action || !currentErrorId) return;
+    const detail = event.target.closest("[data-error-detail]");
+    if (!action || !detail) return;
+    const errorId = detail.dataset.errorDetail;
     event.target.disabled = true;
     try {
-      if (action === "recommend") await api(`/v1/errors/${currentErrorId}/recommendations`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}});
-      else if (action === "master") await api(`/v1/errors/${currentErrorId}/master`, {method: "POST"});
+      if (action === "recommend") await api(`/v1/errors/${errorId}/recommendations`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}});
+      else if (action === "master") await api(`/v1/errors/${errorId}/master`, {method: "POST"});
       else if (action === "remove") {
         if (!confirm("移除后将取消这道错题的待复习和未完成推荐，确认继续？")) return;
-        await api(`/v1/errors/${currentErrorId}`, {method: "DELETE"});
-        currentErrorId = null;
-        $("#error-detail").hidden = true;
+        await api(`/v1/errors/${errorId}`, {method: "DELETE"});
         await loadDashboard();
         return;
       }
-      await showError(currentErrorId);
       await loadDashboard();
+      await showError(errorId);
     } catch (error) {
       status($("#page-status"), authError(error), true);
     } finally {
