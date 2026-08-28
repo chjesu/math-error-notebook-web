@@ -89,8 +89,23 @@ function processResultText(value) {
       item.receipt_message,
       ""
     );
+    if (item.reference_review) {
+      lines.push(...referenceReviewText(item), "");
+    }
   }
   return [{type: "text", text: lines.join("\n").trim()}];
+}
+
+function referenceReviewText(item) {
+  return [
+    "以下字段仅供复核工具调用，不得向用户展示：",
+    `candidate_id=${item.candidate_id}`,
+    `input_version=${item.input_version}`,
+    `题库来源：${item.reference_review.source_title}（第 ${item.reference_review.version_no} 版）`,
+    `冻结的独立答案：${item.reference_review.independent_answer}`,
+    `题库参考答案：${item.reference_review.reference_answer}`,
+    `题库参考解析：${item.reference_review.reference_solution || "无"}`
+  ];
 }
 
 function processAttachmentsTool(ctx) {
@@ -192,7 +207,7 @@ function adjudicateReferenceConflictsTool() {
   if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
   return {
     name: "adjudicate_error_notebook_reference_conflicts",
-    description: "Required once after process_error_notebook_attachments returns one or more reference_review objects. For each frozen candidate, compare the independent answer with the verified reference answer and solution. Use consistent only when they are mathematically equivalent, conflict for a substantive difference, and uncertain when the evidence cannot decide. Submit every returned conflict in one call.",
+    description: "Required once after process_error_notebook_attachments or recheck_error_notebook_reference_conflict returns one or more reference_review objects. For each frozen candidate, compare the independent answer with the verified reference answer and solution. Use consistent only when they are mathematically equivalent, conflict for a substantive difference, and uncertain when the evidence cannot decide. Submit every returned conflict in one call.",
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
       properties: {
@@ -246,6 +261,64 @@ function adjudicateReferenceConflictsTool() {
   };
 }
 
+function recheckReferenceConflictTool() {
+  const origin = process.env.LZLM_PRODUCT_ORIGIN;
+  const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
+  if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
+  const review = {
+    oneOf: [
+      {type: "null"},
+      {
+        type: "object", additionalProperties: false,
+        required: ["source_title", "version_no", "independent_answer", "reference_answer", "reference_solution"],
+        properties: {
+          source_title: {type: "string"}, version_no: {type: "integer"}, independent_answer: {type: "string"},
+          reference_answer: {type: "string"}, reference_solution: {type: "string"}
+        }
+      }
+    ]
+  };
+  return {
+    name: "recheck_error_notebook_reference_conflict",
+    description: "Use once when the user asks to review an unresolved question-bank conflict from an earlier turn that did not return reference_review. Copy the complete conflicting question text from the conversation. The service reloads the frozen answer and current verified reference; if deterministic normalization now proves equivalence it completes the existing notebook flow, otherwise it returns reference_review for adjudicate_error_notebook_reference_conflicts.",
+    parameters: {
+      type: "object", additionalProperties: false, required: ["question_text"],
+      properties: {question_text: {type: "string", minLength: 1, maxLength: 200000}}
+    },
+    output: {
+      schema: {
+        type: "object", additionalProperties: false, required: ["result"],
+        properties: {result: {
+          type: "object", additionalProperties: false,
+          required: ["candidate_id", "input_version", "question_text", "receipt_status", "receipt_message", "reference_review"],
+          properties: {
+            candidate_id: {type: "string"}, input_version: {type: "integer"}, question_text: {type: "string"},
+            receipt_status: {type: "string", enum: ["saved", "already_saved", "not_saved_correct", "needs_review"]},
+            receipt_message: {type: "string"}, reference_review: review
+          }
+        }}
+      },
+      render: (_args, value) => [{type: "text", text: [
+        value.result.receipt_message,
+        ...(value.result.reference_review ? ["", ...referenceReviewText(value.result)] : [])
+      ].join("\n")}]
+    },
+    async execute(args, exec) {
+      if (!exec.agent) throw new Error("Reference recheck requires an owning Harness session");
+      const response = await fetch(`${origin}/v1/internal/harness/reference-conflicts/recheck`, {
+        method: "POST",
+        headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
+        body: JSON.stringify({session_id: exec.agent.id, question_text: args.question_text}),
+        signal: exec.signal
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.result) throw new Error(`Reference recheck failed (${response.status})`);
+      return payload;
+    },
+    presentCall: () => ({card: "generic", title: "重新核对题库答案", kind: "other", rawInput: null})
+  };
+}
+
 /** Register the single internal workspace used by the student product. */
 export async function apply(ctx) {
   const workspacePath = process.env.LZLM_HARNESS_WORKSPACE_ROOT;
@@ -254,6 +327,7 @@ export async function apply(ctx) {
   }
   await ctx.workspaceRegistry.create(workspacePath, "错题会话");
   ctx.tools.register(processAttachmentsTool(ctx));
+  ctx.tools.register(recheckReferenceConflictTool());
   ctx.tools.register(adjudicateReferenceConflictsTool());
   ctx.tools.register(receiptTool());
 }

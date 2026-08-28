@@ -292,6 +292,24 @@ class InMemoryNotebookStore:
         attempt = self.attempts.get(candidate.attempt_id)
         return candidate if attempt and attempt.user_id == user_id else None
 
+    def find_reference_conflict_candidate(self, *, user_id: str, question_text: str) -> GradeCandidate | None:
+        committed_attempts = {item.attempt_id for item in self.errors.values() if item.user_id == user_id}
+        for candidate in reversed(tuple(self.candidates.values())):
+            attempt = self.attempts.get(candidate.attempt_id)
+            validation = reference_validation_from_evidence(candidate.evidence)
+            if (
+                candidate.status == "candidate"
+                and attempt is not None
+                and attempt.user_id == user_id
+                and attempt.attempt_id not in committed_attempts
+                and validation is not None
+                and validation.get("status") == "conflict"
+                and not reference_conflict_resolved(candidate.evidence)
+                and (attempt.question_text == question_text or question_match_score(attempt.question_text, question_text) >= 0.92)
+            ):
+                return candidate
+        return None
+
     def commit_grade(self, *, user_id: str, candidate_id: str, expected_version: int) -> ErrorEntry:
         candidate = self.get_grade_candidate(user_id=user_id, candidate_id=candidate_id)
         if not candidate:

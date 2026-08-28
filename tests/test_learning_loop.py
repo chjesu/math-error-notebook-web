@@ -6,7 +6,7 @@ import json
 import tempfile
 import unittest
 
-from services.web_domain import ErrorEntry, InMemoryNotebookStore, NotebookService, Question, cross_validate_reference
+from services.web_domain import ErrorEntry, InMemoryNotebookStore, NotebookService, Question, VerifiedQuestionReference, cross_validate_reference
 from services.web_domain.learning import next_review, rank_questions
 from services.web_domain.notebook import Attempt
 
@@ -108,6 +108,21 @@ class LearningLoopTests(unittest.TestCase):
 
         changed_bound = answer.replace(r"\sqrt{13}+2", r"\sqrt{13}+3")
         self.assertEqual(cross_validate_reference(matched, changed_bound)["status"], "conflict")
+
+        escaped_reference = VerifiedQuestionReference(
+            "5" * 32,
+            "6" * 32,
+            1,
+            question.stem_text,
+            r"(1)$(x-2)^{2}+(y-3)^{2}=4$\n(2)$3x-4y+1=0$或$x=1$；\n(3)$\sqrt{13}-2\le m\le \sqrt{13}+2$",
+            None,
+            "授权题库",
+            0.99,
+        )
+        unicode_answer = "(1) (x-2)²+(y-3)²=4；(2) x=1 或 3x-4y+1=0；(3) √13-2≤m≤√13+2。"
+        normalized = cross_validate_reference(escaped_reference, unicode_answer)
+        self.assertEqual(normalized["status"], "consistent")
+        self.assertEqual(normalized["reference_answer_sha256"], normalized["independent_answer_sha256"])
 
 
 if __name__ == "__main__":

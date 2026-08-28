@@ -139,6 +139,9 @@ class NotebookAsgiApp:
         if path == "/v1/internal/harness/reference-conflicts/adjudicate" and method == "POST":
             await self._internal_harness_adjudicate(scope, receive, send, headers)
             return
+        if path == "/v1/internal/harness/reference-conflicts/recheck" and method == "POST":
+            await self._internal_harness_recheck(scope, receive, send, headers)
+            return
         static = self.static_files.get(path)
         if method == "GET" and static:
             await self._asset(send, *static)
@@ -1219,6 +1222,95 @@ class NotebookAsgiApp:
                     "receipt_message": receipt["message"],
                 })
             await self._json(send, 200, {"results": results})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except RuntimeError as exc:
+            code = str(exc) if str(exc) in {"input_version_changed", "reference_conflict", "conflict"} else "conflict"
+            await self._error(send, 409, code)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    async def _internal_harness_recheck(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive)
+            if set(payload) != {"session_id", "question_text"}:
+                raise ValueError("invalid reference recheck request")
+            session_id = self._harness_session_id(payload)
+            question_text = payload["question_text"]
+            if not isinstance(question_text, str) or not 1 <= len(question_text.strip()) <= 200000:
+                raise ValueError("invalid reference recheck request")
+            with self._harness_sessions_lock:
+                user_id = self._harness_sessions.get(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            candidate = await self._sync(
+                self.notebook.store.find_reference_conflict_candidate,
+                user_id=user_id,
+                question_text=question_text.strip(),
+            )
+            if candidate is None:
+                raise LookupError("reference conflict not found")
+            attempt = await self._sync(
+                self.notebook.store.get_attempt,
+                user_id=user_id,
+                attempt_id=candidate.attempt_id,
+            )
+            diagnosis = self._diagnosis(candidate.evidence)
+            final_answer = str(diagnosis.get("final_answer") or "").strip()
+            reference = await self._sync(
+                self.notebook.store.find_verified_question,
+                question_text=attempt.question_text if attempt is not None else "",
+            )
+            if attempt is None or reference is None or not final_answer:
+                raise RuntimeError("reference_conflict")
+            validation = cross_validate_reference(reference, final_answer)
+            diagnosis["cross_validation"] = validation
+            diagnosis.pop("reference_adjudication", None)
+            revised = await self._sync(
+                self.notebook.store.record_grade_candidate,
+                user_id=user_id,
+                attempt_id=candidate.attempt_id,
+                input_version=candidate.input_version,
+                verdict=candidate.verdict,
+                first_error=candidate.first_error,
+                evidence=json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":")),
+            )
+            if validation["status"] == "consistent":
+                await self._sync(
+                    self.notebook.store.link_attempt_question,
+                    user_id=user_id,
+                    attempt_id=candidate.attempt_id,
+                    question_id=str(validation["question_id"]),
+                )
+            receipt = await self._commit_candidate_receipt(user_id, revised)
+            review = None
+            if validation["status"] == "conflict":
+                review = {
+                    "source_title": reference.source_title,
+                    "version_no": reference.version_no,
+                    "independent_answer": final_answer,
+                    "reference_answer": reference.answer_text,
+                    "reference_solution": reference.solution_text or "",
+                }
+            await self._json(send, 200, {"result": {
+                "candidate_id": revised.candidate_id,
+                "input_version": revised.input_version,
+                "question_text": attempt.question_text,
+                "receipt_status": receipt["status"],
+                "receipt_message": receipt["message"],
+                "reference_review": review,
+            }})
         except LookupError:
             await self._error(send, 404, "not_found")
         except PermissionError:

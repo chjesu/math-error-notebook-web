@@ -768,6 +768,31 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def find_reference_conflict_candidate(self, *, user_id: str, question_text: str) -> GradeCandidate | None:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT c.id,c.attempt_id,c.input_version,c.verdict,c.first_error,c.evidence_text,c.status,a.question_text "
+                "FROM grade_candidates c JOIN attempts a ON a.id=c.attempt_id AND a.user_id=c.user_id "
+                "LEFT JOIN error_notebook_entries e ON e.user_id=c.user_id AND e.attempt_id=c.attempt_id "
+                "WHERE c.user_id=%s AND c.status='candidate' AND e.id IS NULL ORDER BY c.created_at DESC LIMIT 50",
+                (user_id,),
+            )
+            for row in cursor.fetchall():
+                validation = reference_validation_from_evidence(row[5])
+                if (
+                    validation is not None
+                    and validation.get("status") == "conflict"
+                    and not reference_conflict_resolved(row[5])
+                    and (str(row[7]) == question_text or question_match_score(str(row[7]), question_text) >= 0.92)
+                ):
+                    return GradeCandidate(str(row[0]), str(row[1]), int(row[2]), str(row[3]), row[4], row[5], str(row[6]))
+            return None
+        finally:
+            cursor.close()
+            connection.close()
+
     def list_errors(self, *, user_id: str) -> list[ErrorEntry]:
         connection = self._connect()
         cursor = connection.cursor()

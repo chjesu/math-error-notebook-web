@@ -14,6 +14,7 @@ from PIL import Image
 from services.web_app import NotebookAsgiApp
 from services.web_auth import AuthConfig, InMemoryCaptchaVerifier, InMemoryRegistrationStore, RecordingSmsSender, RegistrationService
 from services.web_domain import GradeCandidate, InMemoryNotebookStore, NotebookService, Question, cross_validate_reference
+from services.web_domain.notebook import Attempt
 
 
 class NotebookE2ETests(unittest.TestCase):
@@ -488,6 +489,64 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(len(self.domain_store.errors), 1)
         evidence = json.loads(next(iter(self.domain_store.errors.values())).evidence)
         self.assertEqual(evidence["reference_adjudication"]["status"], "consistent")
+
+    def test_harness_rechecks_historical_false_conflict_without_reupload(self) -> None:
+        cookie = self.login("13500135006")
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        assert user is not None
+        harness_origin = "http://example.test:3080"
+        self.call(
+            "/v1/harness/sessions/bind", method="POST",
+            payload={"session_id": "session-historical-conflict"}, cookie=cookie, origin=harness_origin,
+        )
+        stem = "已知圆C经过两点，求圆方程、弦所在直线及参数范围。"
+        question = Question(
+            "7" * 32,
+            stem,
+            r"(1)$(x-2)^{2}+(y-3)^{2}=4$\n(2)$3x-4y+1=0$或$x=1$；\n(3)$\sqrt{13}-2\le m\le \sqrt{13}+2$",
+            10,
+            4.0,
+            "公开验证题库",
+            solution_text="三问依次由圆心、弦长和两圆位置关系得到。",
+            version_id="8" * 32,
+            version_no=1,
+        )
+        self.domain_store.add_question(question)
+        attempt_id = "9" * 32
+        self.domain_store.attempts[attempt_id] = Attempt(
+            attempt_id, user.user_id, "a" * 32, 1, stem, "第（3）问未作答", "grade_ready",
+        )
+        final_answer = "(1) (x-2)²+(y-3)²=4；(2) x=1 或 3x-4y+1=0；(3) √13-2≤m≤√13+2。"
+        old_conflict = {
+            "schema": "question-bank-cross-validation/v1", "status": "conflict",
+            "question_id": question.question_id, "version_id": question.version_id, "version_no": 1,
+            "source_title": question.source_title, "match_score": 1.0,
+            "reference_answer_sha256": "b" * 64, "independent_answer_sha256": "c" * 64,
+        }
+        candidate = self.domain_store.record_grade_candidate(
+            user_id=user.user_id, attempt_id=attempt_id, input_version=1, verdict="partial",
+            first_error="第（3）问未作答", evidence=json.dumps({
+                "schema": "math-error-diagnosis/v1", "cause_code": "reasoning_gap",
+                "cause_evidence": "第（3）问缺少作答。", "knowledge_points": ["圆与圆的位置关系"],
+                "correct_solution": "完整解析", "final_answer": final_answer, "prevention_cue": "逐问检查",
+                "cross_validation": old_conflict,
+            }, ensure_ascii=False),
+        )
+        self.assertEqual(candidate.status, "candidate")
+        internal = {
+            "origin": None,
+            "client": ("127.0.0.1", 3080),
+            "extra_headers": {"authorization": "Bearer test-internal-token"},
+        }
+        rechecked = self.call(
+            "/v1/internal/harness/reference-conflicts/recheck", method="POST",
+            payload={"session_id": "session-historical-conflict", "question_text": stem}, **internal,
+        )
+        self.assertEqual((rechecked[0], rechecked[2]["result"]["receipt_status"]), (200, "saved"))
+        self.assertIsNone(rechecked[2]["result"]["reference_review"])
+        self.assertIn("确定性校验一致", rechecked[2]["result"]["receipt_message"])
+        self.assertEqual(len(self.domain_store.errors), 1)
+        self.assertEqual(next(iter(self.domain_store.errors.values())).question_id, question.question_id)
 
     def test_deletion_keeps_durable_pending_state_when_domain_cleanup_fails(self) -> None:
         phone = "13400134000"

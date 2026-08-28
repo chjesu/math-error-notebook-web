@@ -124,6 +124,14 @@ if (!rendered.includes('错题编号：' + 'b'.repeat(32)) || !rendered.includes
         script = f"""
 globalThis.fetch = async (url, options) => {{
   const body = JSON.parse(options.body);
+  if (url.endsWith('/v1/internal/harness/reference-conflicts/recheck')) {{
+    if (body.session_id !== 'session-process' || body.question_text !== 'historical q') throw new Error('wrong recheck');
+    return {{ok: true, status: 200, json: async () => ({{result: {{
+      candidate_id: 'd'.repeat(32), input_version: 2, question_text: 'historical q', receipt_status: 'needs_review',
+      receipt_message: '等待第二阶段复核', reference_review: {{source_title: '题库', version_no: 3,
+        independent_answer: 'x=1', reference_answer: 'x=1', reference_solution: '移项得 x=1'}}
+    }}}})}};
+  }}
   if (url.endsWith('/v1/internal/harness/reference-conflicts/adjudicate')) {{
     if (body.session_id !== 'session-process' || body.items[0].status !== 'consistent') throw new Error('wrong adjudication');
     return {{ok: true, status: 200, json: async () => ({{results: [{{
@@ -166,6 +174,11 @@ if (result.schema !== 'math-notebook-process-result/v1' || result.results[0].att
 const rendered = tool.output.render({{}}, result)[0].text;
 if (!rendered.includes('第 1 题') || !rendered.includes('已计入错题本')) throw new Error('result not rendered');
 const adjudicator = registered.find((value) => value.name === 'adjudicate_error_notebook_reference_conflicts');
+const rechecker = registered.find((value) => value.name === 'recheck_error_notebook_reference_conflict');
+const rechecked = await rechecker.execute({{question_text: 'historical q'}}, {{agent: {{id: 'session-process'}}, signal: new AbortController().signal}});
+if (rechecked.result.reference_review.reference_answer !== 'x=1') throw new Error('reference conflict not reloaded');
+const recheckRendered = rechecker.output.render({{}}, rechecked)[0].text;
+if (!recheckRendered.includes('candidate_id=' + 'd'.repeat(32)) || !recheckRendered.includes('题库参考解析')) throw new Error('recheck evidence hidden from model');
 const adjudicated = await adjudicator.execute({{items: [{{
   candidate_id: 'a'.repeat(32), input_version: 1, status: 'consistent',
   rationale: '独立答案与题库答案的数学结论完全一致。'

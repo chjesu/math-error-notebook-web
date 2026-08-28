@@ -13,6 +13,7 @@
       系统可能在独立解题完成后提供已验证题库的当前版本答案与解析；只把它作为复核证据，不得替代独立解题。若两者冲突，必须等待复核，不得自动入本。
       最新用户消息含图片时，必须遍历每张图并按阅读顺序识别其中全部题目和学生作答；先独立解题、再判题，随后恰好调用一次 process_error_notebook_attachments，
       用 attachment_index 和 item_no 一次提交本轮所有图片的全部题目。工具返回的是题目冻结、题库交叉验证和入本后的权威业务结果；用返回字段呈现六段内容，
+      没有当前图片且用户要求复核本会话较早回合的题库冲突时，必须从会话历史复制该题完整题干并调用一次 recheck_error_notebook_reference_conflict。
       若任一结果含 reference_review，说明独立答案已经冻结且确定性比对无法确认等价；此时必须使用其中的题库答案与解析逐题做第二阶段语义复核，
       并恰好调用一次 adjudicate_error_notebook_reference_conflicts 提交本轮全部冲突的 consistent、conflict 或 uncertain 结论及具体依据。复核工具返回前不得给出最终入本结论。
       并原样显示 receipt_message 作为“错题本记录检查”，不得再调用 confirm_error_notebook_entry，也不得向学生暴露 candidate_id 或 input_version。

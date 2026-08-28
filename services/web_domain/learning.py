@@ -57,10 +57,16 @@ class ReviewTask:
 
 
 _STOP_HAN = set("的一是了在和与或若求已知则为中有其")
+_SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
+
+
+def _normalized_math_source(text: str) -> str:
+    value = re.sub(r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+", lambda item: "^" + item.group().translate(_SUPERSCRIPT_DIGITS), text)
+    return unicodedata.normalize("NFKC", value).replace("√", "sqrt")
 
 
 def normalized_question_text(text: str) -> str:
-    value = unicodedata.normalize("NFKC", text).casefold()
+    value = _normalized_math_source(text).casefold()
     value = re.sub(r"^\s*(?:题干|题目)\s*[:：]\s*", "", value)
     value = re.sub(r"^\s*\d+\s*[.、．]\s*", "", value)
     option = re.search(r"(?:^|\s)[a-f][.、．:：)]\s*", value)
@@ -73,7 +79,7 @@ def normalized_question_text(text: str) -> str:
 
 
 def normalized_answer_text(text: str) -> str:
-    value = unicodedata.normalize("NFKC", text).casefold()
+    value = _normalized_math_source(text).casefold()
     value = re.sub(r"^\s*(?:最终)?答案\s*[:：]\s*", "", value)
     value = re.sub(r"^\s*(?:故选|选择)\s*", "", value)
     value = re.sub(r"\\leq?\b", "≤", value)
@@ -86,7 +92,8 @@ def normalized_answer_text(text: str) -> str:
 
 
 def _canonical_answer_parts(text: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    value = unicodedata.normalize("NFKC", text).casefold()
+    value = _normalized_math_source(text).casefold()
+    value = re.sub(r"\\(?:r\\n|n)(?=\s*\(\d{1,2}\))", "\n", value)
     markers = list(re.finditer(r"(?<![a-z0-9])\((\d{1,2})\)", value))
     parts = [
         (marker.group(1), value[marker.end(): markers[index + 1].start() if index + 1 < len(markers) else None])
