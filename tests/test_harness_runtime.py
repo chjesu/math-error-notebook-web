@@ -98,6 +98,7 @@ const result = await tool.execute({{candidate_id: 'a'.repeat(32), input_version:
 if (result.status !== 'saved' || concluded !== 1) throw new Error('receipt did not conclude the turn');
 const rendered = tool.output.render({{}}, result)[0].text;
 if (!rendered.includes('错题编号：' + 'b'.repeat(32)) || !rendered.includes('知识点：2 个') || !rendered.includes('复习任务：已安排')) throw new Error('receipt details were not rendered');
+if (!rendered.includes('下一步：') || !rendered.includes('打开「错题本」')) throw new Error('receipt next step missing');
 """
         environment = dict(os.environ)
         environment.update({
@@ -173,17 +174,21 @@ const result = await tool.execute({{items: [{{
 if (result.schema !== 'math-notebook-process-result/v1' || result.results[0].attachment_index !== 1) throw new Error('wrong result');
 const rendered = tool.output.render({{}}, result)[0].text;
 if (!rendered.includes('第 1 题') || !rendered.includes('已计入错题本')) throw new Error('result not rendered');
+if (!rendered.includes('下一步：') || !rendered.includes('打开「错题本」')) throw new Error('processing next step missing');
 const adjudicator = registered.find((value) => value.name === 'adjudicate_error_notebook_reference_conflicts');
 const rechecker = registered.find((value) => value.name === 'recheck_error_notebook_reference_conflict');
 const rechecked = await rechecker.execute({{question_text: 'historical q'}}, {{agent: {{id: 'session-process'}}, signal: new AbortController().signal}});
 if (rechecked.result.reference_review.reference_answer !== 'x=1') throw new Error('reference conflict not reloaded');
 const recheckRendered = rechecker.output.render({{}}, rechecked)[0].text;
 if (!recheckRendered.includes('candidate_id=' + 'd'.repeat(32)) || !recheckRendered.includes('题库参考解析')) throw new Error('recheck evidence hidden from model');
+if (!recheckRendered.includes('下一步：') || !recheckRendered.includes('等待本轮复核完成')) throw new Error('recheck next step missing');
 const adjudicated = await adjudicator.execute({{items: [{{
   candidate_id: 'a'.repeat(32), input_version: 1, status: 'consistent',
   rationale: '独立答案与题库答案的数学结论完全一致。'
 }}]}}, {{agent: {{id: 'session-process'}}, signal: new AbortController().signal}});
 if (adjudicated.results[0].status !== 'saved') throw new Error('reference conflict not adjudicated');
+const adjudicatedRendered = adjudicator.output.render({{}}, adjudicated)[0].text;
+if (!adjudicatedRendered.includes('下一步：') || !adjudicatedRendered.includes('打开「错题本」')) throw new Error('adjudication next step missing');
 """
         environment = dict(os.environ)
         environment.update({

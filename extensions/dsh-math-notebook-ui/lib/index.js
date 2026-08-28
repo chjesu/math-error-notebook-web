@@ -1,5 +1,19 @@
 export const inject = ["workspaceRegistry", "tools", "attachments"];
 
+function nextStepText(results) {
+  const statuses = results.map((item) => item.receipt_status || item.status);
+  if (results.some((item) => item.reference_review)) {
+    return "下一步：系统将继续核对已验证题库解析，请等待本轮复核完成。";
+  }
+  if (statuses.includes("needs_review")) {
+    return "下一步：请补充更清晰的题目或作答图片，也可以直接说明需要修正的题干、作答或解题过程。";
+  }
+  if (statuses.includes("saved") || statuses.includes("already_saved")) {
+    return "下一步：可打开「错题本」查看错因和知识点并选择今日复习，也可以继续上传下一张题目图片。";
+  }
+  return "下一步：本轮题目无需计入错题本；可以继续上传下一张题目图片，或在当前会话追问解析。";
+}
+
 function receiptText(value) {
   const lines = [value.message];
   if (value.error_id) lines.push(`错题编号：${value.error_id}`);
@@ -7,6 +21,7 @@ function receiptText(value) {
   lines.push(`题库核验：${referenceLabels[value.reference_status]}`);
   lines.push(`知识点：${value.knowledge_point_count} 个`);
   lines.push(`复习任务：${value.review_status === "scheduled" ? "已安排" : "未安排"}`);
+  lines.push(nextStepText([value]));
   return [{type: "text", text: lines.join("\n")}];
 }
 
@@ -93,6 +108,7 @@ function processResultText(value) {
       lines.push(...referenceReviewText(item), "");
     }
   }
+  lines.push(nextStepText(value.results));
   return [{type: "text", text: lines.join("\n").trim()}];
 }
 
@@ -243,7 +259,7 @@ function adjudicateReferenceConflictsTool() {
           }
         }
       },
-      render: (_args, value) => [{type: "text", text: value.results.map((item) => item.receipt_message).join("\n")}]
+      render: (_args, value) => [{type: "text", text: [...value.results.map((item) => item.receipt_message), "", nextStepText(value.results)].join("\n")}]
     },
     async execute(args, exec) {
       if (!exec.agent) throw new Error("Reference adjudication requires an owning Harness session");
@@ -300,7 +316,9 @@ function recheckReferenceConflictTool() {
       },
       render: (_args, value) => [{type: "text", text: [
         value.result.receipt_message,
-        ...(value.result.reference_review ? ["", ...referenceReviewText(value.result)] : [])
+        ...(value.result.reference_review ? ["", ...referenceReviewText(value.result)] : []),
+        "",
+        nextStepText([value.result])
       ].join("\n")}]
     },
     async execute(args, exec) {

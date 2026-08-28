@@ -153,6 +153,8 @@ class FrontendContractTests(unittest.TestCase):
             self.assertNotIn('未收到判题流程返回', prompt)
             self.assertIn('最终答案', prompt)
             self.assertIn('*（小建议：……）*', prompt)
+            self.assertIn('“## 下一步”', prompt)
+            self.assertIn('只给出一个最优先', prompt)
             self.assertNotIn('最终答案及小建议', prompt)
 
     def test_harness_product_views_hide_the_legacy_sidebar(self) -> None:
