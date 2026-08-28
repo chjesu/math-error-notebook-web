@@ -454,7 +454,7 @@ textarea:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset
   .diagnosis-list dd { margin-bottom: 10px; }
   .recent { grid-column: auto; }
   .actions button { flex: 1 1 130px; }
-  .bottom-nav { position: fixed; inset: auto 0 0; display: grid; grid-template-columns: repeat(5, 1fr); padding: 8px 4px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--paper); text-align: center; }
+  .bottom-nav { position: fixed; inset: auto 0 0; display: grid; grid-template-columns: repeat(4, 1fr); padding: 8px 4px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--paper); text-align: center; }
   .bottom-nav a { padding: 9px 3px; font-size: 12px; }
   .bottom-nav a.active { color: var(--brand); font-weight: 700; }
 }

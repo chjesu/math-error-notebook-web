@@ -11,9 +11,7 @@ class FrontendContractTests(unittest.TestCase):
     def test_product_pages_remain_independent_documents(self) -> None:
         pages = {
             "errors.html": ('data-page="errors"', 'id="all-errors"'),
-            "reviews.html": ('data-page="reviews"', 'id="review-actions"'),
             "practice.html": ('data-page="practice"', 'id="practice-errors"'),
-            "progress.html": ('data-page="progress"', 'id="progress-stats"'),
             "settings.html": ('data-page="settings"', 'id="sensitive-form"'),
         }
         unique_markers = [marker for _, marker in pages.values()]
@@ -25,10 +23,14 @@ class FrontendContractTests(unittest.TestCase):
             self.assertIn('/web/vendor/katex/katex.min.js', html)
             self.assertIn('/web/vendor/katex/auto-render.min.js', html)
             self.assertIn('李兆霖数学错题本', html)
-            for route in ('href="/"', 'href="/errors"', 'href="/reviews"', 'href="/practice"', 'href="/progress"', 'href="/settings"'):
+            for route in ('href="/"', 'href="/errors"', 'href="/practice"', 'href="/settings"'):
                 self.assertIn(route, html)
-            for icon in ("errors", "reviews", "practice", "progress", "settings"):
+            for icon in ("errors", "practice", "settings"):
                 self.assertIn(f'/web/nav-icons.svg#{icon}', html)
+            self.assertNotIn('href="/reviews"', html)
+            self.assertNotIn('href="/progress"', html)
+            self.assertNotIn("今日复习", html)
+            self.assertNotIn("学习进度", html)
             self.assertNotIn('/web/nav-icons.svg#workbench', html)
             self.assertIn('aria-label="返回工作台"', html)
             self.assertIn('<span>设置</span>', html)
@@ -37,6 +39,8 @@ class FrontendContractTests(unittest.TestCase):
             for other_marker in unique_markers:
                 if other_marker != own_marker:
                     self.assertNotIn(other_marker, html)
+        self.assertFalse((WEB / "reviews.html").exists())
+        self.assertFalse((WEB / "progress.html").exists())
 
     def test_workbench_is_the_official_deepseek_harness_surface(self) -> None:
         html = (WEB / "index.html").read_text(encoding="utf-8")
@@ -61,8 +65,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('李兆霖数学错题本', plugin)
         self.assertIn('id: "math-notebook-navigation"', plugin)
         self.assertIn('sidebar.footer.action', plugin)
-        for label, route in (("错题本", "/errors"), ("今日复习", "/reviews"), ("练习 PDF", "/practice"), ("学习进度", "/progress")):
+        for label, route in (("错题本", "/errors"), ("练习 PDF", "/practice")):
             self.assertIn(f'path: "{route}", label: "{label}"', plugin)
+        self.assertNotIn('path: "/reviews"', plugin)
+        self.assertNotIn('path: "/progress"', plugin)
+        self.assertNotIn("今日复习", plugin)
+        self.assertNotIn("学习进度", plugin)
         self.assertNotIn('path: "/", label: "工作台"', plugin)
         self.assertIn('ctx.slots.register({name: "conversation", priority: -1}, ProductSurface)', plugin)
         self.assertIn('data-lzlm-product-surface', plugin)
@@ -144,7 +152,6 @@ class FrontendContractTests(unittest.TestCase):
         for removed in ("昵称", "年级", "出生日期", "监护人", "家庭"):
             self.assertNotIn(removed, html + script)
         self.assertIn("next_action", (ROOT / "openapi" / "web-v1.json").read_text(encoding="utf-8"))
-        self.assertIn("今日复习", html)
         self.assertIn("练习 PDF", html)
         self.assertIn("/v1/reviews/today", script)
         self.assertIn("/v1/practice-pdfs", script)
@@ -169,7 +176,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="logout"', settings)
         self.assertIn("退出当前账号", settings)
         self.assertIn('id="logout-all"', settings)
-        for filename in ("index.html", "errors.html", "reviews.html", "practice.html", "progress.html"):
+        for filename in ("index.html", "errors.html", "practice.html"):
             self.assertNotIn('id="logout"', (WEB / filename).read_text(encoding="utf-8"))
 
     def test_login_and_register_are_separate_documents(self) -> None:
