@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
@@ -264,6 +266,109 @@ class NotebookE2ETests(unittest.TestCase):
             },
         )
         self.assertEqual(self.app._grade_receipt(unclear)["status"], "needs_review")
+
+    def test_harness_attachment_bridge_freezes_grades_and_writes_authoritative_receipts(self) -> None:
+        cookie = self.login("13500135003")
+        harness_origin = "http://example.test:3080"
+        bound = self.call(
+            "/v1/harness/sessions/bind",
+            method="POST",
+            payload={"session_id": "session-process"},
+            cookie=cookie,
+            origin=harness_origin,
+        )
+        self.assertEqual(bound[0], 200)
+        self.domain_store.add_question(Question(
+            "1" * 32,
+            "若 x+1=2，求 x。",
+            "x=1",
+            7,
+            1.0,
+            "公开验证题库",
+            solution_text="移项得 x=1。",
+            version_id="2" * 32,
+            version_no=3,
+        ))
+        content = self.png_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        content_type, body = self.multipart("legacy-upload.png", content)
+        uploaded = self.call(
+            "/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie,
+            idempotency_key="legacy-before-harness",
+        )
+        created = self.call(
+            "/v1/intakes", method="POST", payload={"file_id": uploaded[2]["file_id"]}, cookie=cookie,
+            idempotency_key="legacy-intake-before-harness",
+        )
+        self.call(
+            f"/v1/intakes/{created[2]['resource_id']}/manual-candidate",
+            method="POST",
+            payload={"question_text": "旧识别文本", "answer_text": ""},
+            cookie=cookie,
+        )
+        payload = {
+            "session_id": "session-process",
+            "attachment": {
+                "attachment_id": f"sha256:{digest}",
+                "name": "two-questions.png",
+                "media_type": "image/png",
+                "data": base64.b64encode(content).decode("ascii"),
+            },
+            "items": [
+                {
+                    "item_no": 1,
+                    "question_text": "若 x+1=2，求 x。",
+                    "answer_text": "x=0",
+                    "verdict": "incorrect",
+                    "first_error": "移项时常数项处理错误",
+                    "cause_code": "algebra_transform",
+                    "cause_evidence": "学生把 1 移到等号右边后仍写成 0",
+                    "knowledge_points": ["一元一次方程", "等式性质与移项"],
+                    "correct_solution": "由 x+1=2，移项得 x=2-1=1。",
+                    "final_answer": "x=1",
+                    "prevention_cue": "移项后代回原式验算",
+                    "confidence": 0.98,
+                },
+                {
+                    "item_no": 2,
+                    "question_text": "计算 2+3。",
+                    "answer_text": "5",
+                    "verdict": "correct",
+                    "first_error": "",
+                    "cause_code": "",
+                    "cause_evidence": "",
+                    "knowledge_points": ["整数加法"],
+                    "correct_solution": "2+3=5。",
+                    "final_answer": "5",
+                    "prevention_cue": "保持书写清晰",
+                    "confidence": 0.99,
+                },
+            ],
+        }
+        internal = {
+            "origin": None,
+            "client": ("127.0.0.1", 3080),
+            "extra_headers": {"authorization": "Bearer test-internal-token"},
+        }
+        first = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
+        replay = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
+
+        self.assertEqual((first[0], replay[0]), (200, 200))
+        self.assertEqual([item["receipt_status"] for item in first[2]["results"]], ["saved", "not_saved_correct"])
+        self.assertEqual([item["receipt_status"] for item in replay[2]["results"]], ["already_saved", "not_saved_correct"])
+        self.assertIn("题库第 3 版解析交叉验证一致", first[2]["results"][0]["receipt_message"])
+        self.assertEqual(first[2]["results"][0]["error_id"], replay[2]["results"][0]["error_id"])
+        self.assertEqual(first[2]["results"][0]["knowledge_points"], ["一元一次方程", "等式性质与移项"])
+        self.assertEqual(len(self.domain_store.files), 1)
+        self.assertEqual(len(self.domain_store.intakes), 2)
+        self.assertEqual(len(self.domain_store.attempts), 2)
+        self.assertEqual(len(self.domain_store.errors), 1)
+        self.assertEqual(len(self.domain_store.review_tasks), 1)
+        self.assertEqual(len(self.call("/v1/errors", cookie=cookie)[2]["items"]), 1)
+
+        unbound = payload | {"session_id": "session-unbound"}
+        denied = self.call("/v1/internal/harness/intakes/process", method="POST", payload=unbound, **internal)
+        self.assertEqual((denied[0], denied[2]["error"]["code"]), (403, "forbidden"))
 
     def test_deletion_keeps_durable_pending_state_when_domain_cleanup_fails(self) -> None:
         phone = "13400134000"

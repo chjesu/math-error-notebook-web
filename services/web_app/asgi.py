@@ -6,6 +6,7 @@ import asyncio
 import base64
 from email import policy
 from email.parser import BytesParser
+import hashlib
 import hmac
 import json
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs
 
 from services.web_auth import AuthAsgiApp, RegistrationService
-from services.web_domain import ErrorEntry, GradeCandidate, IntakeItem, Job, NotebookService, Recommendation, ReviewTask
+from services.web_domain import ErrorEntry, GradeCandidate, IntakeItem, Job, NotebookService, Recommendation, ReviewTask, cross_validate_reference
 from .codex_model import ModelUnavailableError
 
 
@@ -117,6 +118,9 @@ class NotebookAsgiApp:
             return
         if path == "/v1/harness/sessions/bind" and method == "POST" and harness_origin is None:
             await self._error(send, 403, "forbidden")
+            return
+        if path == "/v1/internal/harness/intakes/process" and method == "POST":
+            await self._internal_harness_process(scope, receive, send, headers)
             return
         if path.startswith("/v1/internal/harness/grade-results/") and path.endswith("/commit") and method == "POST":
             await self._internal_harness_commit(scope, receive, send, headers)
@@ -689,20 +693,21 @@ class NotebookAsgiApp:
         body = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         await send({"type": "http.response.body", "body": body, "more_body": more})
 
-    async def _read(self, receive: Receive) -> bytes:
+    async def _read(self, receive: Receive, *, max_bytes: int | None = None) -> bytes:
+        limit = self.max_upload_bytes if max_bytes is None else max_bytes
         body = bytearray()
         while True:
             message = await receive()
             if message.get("type") != "http.request":
                 raise ValueError("invalid ASGI message")
             body.extend(message.get("body", b""))
-            if len(body) > self.max_upload_bytes:
+            if len(body) > limit:
                 raise RequestTooLarge
             if not message.get("more_body", False):
                 return bytes(body)
 
-    async def _json_body(self, receive: Receive) -> dict[str, Any]:
-        value = json.loads((await self._read(receive)).decode("utf-8"))
+    async def _json_body(self, receive: Receive, *, max_bytes: int | None = None) -> dict[str, Any]:
+        value = json.loads((await self._read(receive, max_bytes=max_bytes)).decode("utf-8"))
         if not isinstance(value, dict):
             raise ValueError("object required")
         return value
@@ -860,6 +865,182 @@ class NotebookAsgiApp:
             return {"correct_solution": value}
         return payload if isinstance(payload, dict) and payload.get("schema") == "math-error-diagnosis/v1" else {"correct_solution": value}
 
+    async def _internal_harness_process(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        client = scope.get("client")
+        client_host = str(client[0]) if isinstance(client, (tuple, list)) and client else ""
+        supplied = headers.get("authorization", "")
+        expected = f"Bearer {self.harness_internal_token}" if self.harness_internal_token else ""
+        if client_host not in {"127.0.0.1", "::1"} or not expected or not hmac.compare_digest(supplied, expected):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive, max_bytes=self.max_upload_bytes * 2)
+            if set(payload) != {"session_id", "attachment", "items"}:
+                raise ValueError("invalid Harness processing request")
+            session_id = self._harness_session_id(payload)
+            with self._harness_sessions_lock:
+                user_id = self._harness_sessions.get(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            attachment = payload["attachment"]
+            if not isinstance(attachment, dict) or set(attachment) != {"attachment_id", "name", "media_type", "data"}:
+                raise ValueError("invalid Harness attachment")
+            if not all(isinstance(attachment[key], str) for key in ("attachment_id", "name", "media_type", "data")):
+                raise ValueError("invalid Harness attachment")
+            attachment_id = attachment["attachment_id"]
+            digest_match = re.fullmatch(r"sha256:([0-9a-f]{64})", attachment_id)
+            media_type = attachment["media_type"]
+            name = attachment["name"]
+            if digest_match is None or media_type not in {"image/png", "image/jpeg"} or not 1 <= len(name) <= 255:
+                raise ValueError("invalid Harness attachment")
+            try:
+                content = base64.b64decode(attachment["data"], validate=True)
+            except (ValueError, TypeError) as exc:
+                raise ValueError("invalid Harness attachment") from exc
+            if not content or len(content) > self.max_upload_bytes or hashlib.sha256(content).hexdigest() != digest_match.group(1):
+                raise ValueError("invalid Harness attachment")
+            raw_items = payload["items"]
+            required = {
+                "item_no", "question_text", "answer_text", "verdict", "first_error", "cause_code",
+                "cause_evidence", "knowledge_points", "correct_solution", "final_answer", "prevention_cue", "confidence",
+            }
+            if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= 20:
+                raise ValueError("invalid Harness result items")
+            for index, item in enumerate(raw_items, 1):
+                if (
+                    not isinstance(item, dict)
+                    or set(item) != required
+                    or item.get("item_no") != index
+                    or isinstance(item.get("item_no"), bool)
+                ):
+                    raise ValueError("invalid Harness result items")
+                string_fields = required - {"item_no", "knowledge_points", "confidence"}
+                if any(not isinstance(item.get(key), str) for key in string_fields):
+                    raise ValueError("invalid Harness result items")
+                confidence = item.get("confidence")
+                if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
+                    raise ValueError("invalid Harness confidence")
+
+            digest = digest_match.group(1)
+            record = await self._sync(
+                self.notebook.upload,
+                user_id=user_id,
+                purpose="question_image",
+                original_name=name,
+                content=content,
+                idempotency_key=f"harness-file-{digest[:51]}",
+            )
+            intakes = await self._sync(self.notebook.store.get_file_intakes, user_id=user_id, file_id=record.file_id)
+            if intakes:
+                primary = intakes[0]
+            else:
+                primary, _ = await self._sync(
+                    self.notebook.store.create_intake,
+                    user_id=user_id,
+                    file_id=record.file_id,
+                    idempotency_key=f"harness-intake-{digest[:49]}",
+                )
+            extracted = [
+                {"item_no": index, "question_text": str(item["question_text"]).strip(), "answer_text": str(item["answer_text"]).strip()}
+                for index, item in enumerate(raw_items, 1)
+            ]
+            if primary.status == "extracting":
+                intakes = await self._sync(
+                    self.notebook.store.save_extraction_candidates,
+                    user_id=user_id,
+                    intake_id=primary.intake_id,
+                    items=extracted,
+                    evidence={"source": "deepseek_harness_tool", "attachment_id": attachment_id},
+                )
+            else:
+                existing = [(item.item_no, item.question_text, item.answer_text) for item in intakes]
+                requested = [(item["item_no"], item["question_text"], item["answer_text"]) for item in extracted]
+                if existing != requested:
+                    if all(item.status == "waiting_confirmation" for item in intakes):
+                        intakes = await self._sync(
+                            self.notebook.store.save_extraction_candidates,
+                            user_id=user_id,
+                            intake_id=primary.intake_id,
+                            items=extracted,
+                            evidence={"source": "deepseek_harness_tool", "attachment_id": attachment_id},
+                            replace_existing=True,
+                        )
+                    else:
+                        raise RuntimeError("conflict")
+
+            results = []
+            for intake, item in zip(intakes, raw_items, strict=True):
+                attempt_id, _ = await self._sync(
+                    self.notebook.store.confirm_intake,
+                    user_id=user_id,
+                    intake_id=intake.intake_id,
+                    expected_version=intake.input_version,
+                    idempotency_key=f"harness-grade-{intake.intake_id}-{intake.input_version}",
+                )
+                reference = await self._sync(self.notebook.store.find_verified_question, question_text=intake.question_text)
+                final_answer = str(item["final_answer"]).strip()
+                validation = cross_validate_reference(reference, final_answer) if reference is not None and final_answer else None
+                verdict, first_error, evidence = self._grade_values(
+                    item,
+                    evidence_key="cause_evidence",
+                    cross_validation=validation,
+                )
+                candidate = await self._sync(
+                    self.notebook.store.record_grade_candidate,
+                    user_id=user_id,
+                    attempt_id=attempt_id,
+                    input_version=intake.input_version,
+                    verdict=verdict,
+                    first_error=first_error,
+                    evidence=evidence,
+                    confidence=float(item["confidence"]),
+                )
+                if isinstance(validation, dict) and validation.get("status") == "consistent":
+                    await self._sync(
+                        self.notebook.store.link_attempt_question,
+                        user_id=user_id,
+                        attempt_id=attempt_id,
+                        question_id=str(validation["question_id"]),
+                    )
+                receipt = await self._commit_candidate_receipt(user_id, candidate)
+                diagnosis = self._diagnosis(candidate.evidence)
+                results.append({
+                    "item_no": intake.item_no,
+                    "candidate_id": candidate.candidate_id,
+                    "input_version": candidate.input_version,
+                    "verdict": candidate.verdict,
+                    "question_text": intake.question_text,
+                    "answer_text": intake.answer_text,
+                    "first_error": candidate.first_error or "",
+                    "cause_code": str(diagnosis.get("cause_code") or ""),
+                    "cause_evidence": str(diagnosis.get("cause_evidence") or ""),
+                    "knowledge_points": diagnosis.get("knowledge_points") if isinstance(diagnosis.get("knowledge_points"), list) else [],
+                    "correct_solution": str(diagnosis.get("correct_solution") or ""),
+                    "final_answer": str(diagnosis.get("final_answer") or ""),
+                    "prevention_cue": str(diagnosis.get("prevention_cue") or ""),
+                    "receipt_status": receipt["status"],
+                    "receipt_message": receipt["message"],
+                    "error_id": str(receipt.get("error_id") or ""),
+                })
+            await self._json(send, 200, {"results": results})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except RuntimeError as exc:
+            code = str(exc) if str(exc) in {"input_version_changed", "reference_conflict", "conflict"} else "conflict"
+            await self._error(send, 409, code)
+        except RequestTooLarge:
+            await self._error(send, 413, "request_too_large")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
     async def _internal_harness_commit(
         self,
         scope: dict[str, Any],
@@ -895,26 +1076,7 @@ class NotebookAsgiApp:
                 raise LookupError("grade candidate not found")
             if candidate.input_version != int(payload["input_version"]):
                 raise RuntimeError("input_version_changed")
-            receipt = self._grade_receipt(candidate)
-            if candidate.verdict in {"partial", "incorrect"} and receipt["status"] == "pending":
-                entry = await self._sync(
-                    self.notebook.store.commit_grade,
-                    user_id=user_id,
-                    candidate_id=candidate_id,
-                    expected_version=candidate.input_version,
-                )
-                receipt |= {
-                    "status": "already_saved" if candidate.status == "committed" else "saved",
-                    "error_id": entry.error_id,
-                    "review_status": "scheduled",
-                }
-                receipt["message"] = (
-                    "错题本记录检查：该题已经在错题本中，无需重复保存。"
-                    if candidate.status == "committed"
-                    else f"错题本记录检查：已计入错题本，已保存 {receipt['knowledge_point_count']} 个知识点，并已安排首次复习。"
-                )
-                if receipt["reference_status"] == "consistent":
-                    receipt["message"] = f"题库第 {receipt['reference_version_no']} 版解析交叉验证一致；" + receipt["message"]
+            receipt = await self._commit_candidate_receipt(user_id, candidate)
             await self._json(send, 200, {"receipt": receipt})
         except LookupError:
             await self._error(send, 404, "not_found")
@@ -925,6 +1087,31 @@ class NotebookAsgiApp:
             await self._error(send, 409, code)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
+
+    async def _commit_candidate_receipt(self, user_id: str, candidate: GradeCandidate) -> dict[str, Any]:
+        receipt = self._grade_receipt(candidate)
+        if candidate.verdict not in {"partial", "incorrect"} or receipt["status"] != "pending":
+            return receipt
+        entry = await self._sync(
+            self.notebook.store.commit_grade,
+            user_id=user_id,
+            candidate_id=candidate.candidate_id,
+            expected_version=candidate.input_version,
+        )
+        already_saved = candidate.status == "committed"
+        receipt |= {
+            "status": "already_saved" if already_saved else "saved",
+            "error_id": entry.error_id,
+            "review_status": "scheduled",
+        }
+        receipt["message"] = (
+            "错题本记录检查：该题已经在错题本中，无需重复保存。"
+            if already_saved
+            else f"错题本记录检查：已计入错题本，已保存 {receipt['knowledge_point_count']} 个知识点，并已安排首次复习。"
+        )
+        if receipt["reference_status"] == "consistent":
+            receipt["message"] = f"题库第 {receipt['reference_version_no']} 版解析交叉验证一致；" + receipt["message"]
+        return receipt
 
     @staticmethod
     def _harness_session_id(payload: dict[str, Any]) -> str:

@@ -116,6 +116,67 @@ if (!rendered.includes('错题编号：' + 'b'.repeat(32)) || !rendered.includes
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    def test_attachment_tool_reads_latest_image_and_returns_durable_business_result(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is required by the Harness runtime")
+        module_uri = (Path(__file__).parents[1] / "extensions" / "dsh-math-notebook-ui" / "lib" / "index.js").as_uri()
+        script = f"""
+globalThis.fetch = async (url, options) => {{
+  if (!url.endsWith('/v1/internal/harness/intakes/process')) throw new Error('wrong endpoint');
+  const body = JSON.parse(options.body);
+  if (body.session_id !== 'session-process' || body.attachment.attachment_id !== 'sha256:' + 'c'.repeat(64)) throw new Error('wrong attachment');
+  if (body.items.length !== 1 || body.items[0].item_no !== 1 || 'attachment_index' in body.items[0]) throw new Error('wrong items');
+  return {{ok: true, status: 200, json: async () => ({{results: [{{
+    item_no: 1, candidate_id: 'a'.repeat(32), input_version: 1, verdict: 'incorrect', question_text: 'q', answer_text: 'a',
+    first_error: 'e', cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'],
+    correct_solution: 'solution', final_answer: 'answer', prevention_cue: 'check', receipt_status: 'saved',
+    receipt_message: '已计入错题本', error_id: 'b'.repeat(32)
+  }}]}})}};
+}};
+const extension = await import({json.dumps(module_uri)});
+const registered = [];
+await extension.apply({{
+  workspaceRegistry: {{create: async () => undefined}},
+  tools: {{register: (value) => registered.push(value)}},
+  attachments: {{readImage: async (ref) => {{
+    if (ref !== 'image-ref') throw new Error('wrong image ref');
+    return {{ref: {{attachmentId: 'sha256:' + 'c'.repeat(64), mediaType: 'image/png', name: 'q.png'}}, data: new Uint8Array([1, 2, 3])}};
+  }}}}
+}});
+const tool = registered.find((value) => value.name === 'process_error_notebook_attachments');
+const result = await tool.execute({{items: [{{
+  attachment_index: 1, item_no: 1, question_text: 'q', answer_text: 'a', verdict: 'incorrect', first_error: 'e',
+  cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'], correct_solution: 'solution',
+  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9
+}}]}}, {{
+  agent: {{id: 'session-process', session: {{deriveMessages: () => [
+    {{role: 'user', content: [{{type: 'image', attachment: 'old-ref'}}]}},
+    {{role: 'assistant', content: [{{type: 'text', text: 'old'}}]}},
+    {{role: 'user', content: [{{type: 'text', text: 'please process'}}, {{type: 'image', attachment: 'image-ref'}}]}}
+  ]}}}}, signal: new AbortController().signal
+}});
+if (result.schema !== 'math-notebook-process-result/v1' || result.results[0].attachment_index !== 1) throw new Error('wrong result');
+const rendered = tool.output.render({{}}, result)[0].text;
+if (!rendered.includes('第 1 题') || !rendered.includes('已计入错题本')) throw new Error('result not rendered');
+"""
+        environment = dict(os.environ)
+        environment.update({
+            "LZLM_PRODUCT_ORIGIN": "http://127.0.0.1:8000",
+            "LZLM_HARNESS_INTERNAL_TOKEN": "synthetic-test-token",
+            "LZLM_HARNESS_WORKSPACE_ROOT": str(Path.cwd()),
+        })
+        completed = subprocess.run(
+            [node, "--input-type=module", "-e", script],
+            cwd=Path(__file__).parents[1],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
