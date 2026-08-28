@@ -80,6 +80,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('aria-label": "错题本功能导航"', plugin)
         self.assertIn('button[aria-label="选择工作区"]', plugin)
         self.assertIn('button[aria-label="添加工作区"]', plugin)
+        self.assertIn('button[aria-label="新建会话"]:has(svg)', plugin)
+        self.assertIn('button[aria-label="New session"]:has(svg)', plugin)
         self.assertIn('item.title === productWorkspaceTitle', plugin)
         self.assertIn('ctx.workspaces.connectWorkspace(workspace.workspaceId)', plugin)
         self.assertIn('ctx.sessions.open(sessionId)', plugin)

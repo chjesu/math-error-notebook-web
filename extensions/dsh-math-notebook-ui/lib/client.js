@@ -72,7 +72,9 @@ window.__ModuleLoader__.load({
           button[aria-label="选择工作区"],
           button[aria-label="Choose workspace"],
           button[aria-label="添加工作区"],
-          button[aria-label="Add workspace"] {
+          button[aria-label="Add workspace"],
+          button[aria-label="新建会话"]:has(svg),
+          button[aria-label="New session"]:has(svg) {
             display: none !important;
           }
           [data-lzlm-product-nav] {
