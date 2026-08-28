@@ -19,6 +19,7 @@ from .learning import (
     question_anchor,
     question_match_score,
     rank_questions,
+    reference_conflict_resolved,
     reference_validation_from_evidence,
 )
 
@@ -719,7 +720,7 @@ class MySqlDomainStore:
             if str(row[2]) not in {"partial", "incorrect"}:
                 raise RuntimeError("failed_final")
             validation = reference_validation_from_evidence(row[7])
-            if validation and validation.get("status") == "conflict":
+            if validation and validation.get("status") == "conflict" and not reference_conflict_resolved(row[7]):
                 raise RuntimeError("reference_conflict")
             attempt_id = str(row[0])
             cursor.execute("SELECT id,question_text,answer_text,first_error,status,created_at,question_id FROM error_notebook_entries WHERE user_id=%s AND attempt_id=%s FOR UPDATE", (user_id, attempt_id))

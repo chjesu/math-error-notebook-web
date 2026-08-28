@@ -123,8 +123,14 @@ if (!rendered.includes('错题编号：' + 'b'.repeat(32)) || !rendered.includes
         module_uri = (Path(__file__).parents[1] / "extensions" / "dsh-math-notebook-ui" / "lib" / "index.js").as_uri()
         script = f"""
 globalThis.fetch = async (url, options) => {{
-  if (!url.endsWith('/v1/internal/harness/intakes/process')) throw new Error('wrong endpoint');
   const body = JSON.parse(options.body);
+  if (url.endsWith('/v1/internal/harness/reference-conflicts/adjudicate')) {{
+    if (body.session_id !== 'session-process' || body.items[0].status !== 'consistent') throw new Error('wrong adjudication');
+    return {{ok: true, status: 200, json: async () => ({{results: [{{
+      candidate_id: 'a'.repeat(32), input_version: 1, status: 'saved', receipt_message: '第二阶段复核一致，已计入错题本'
+    }}]}})}};
+  }}
+  if (!url.endsWith('/v1/internal/harness/intakes/process')) throw new Error('wrong endpoint');
   if (body.session_id !== 'session-process' || body.attachment.attachment_id !== 'sha256:' + 'c'.repeat(64)) throw new Error('wrong attachment');
   if (body.items.length !== 1 || body.items[0].item_no !== 1 || 'attachment_index' in body.items[0]) throw new Error('wrong items');
   return {{ok: true, status: 200, json: async () => ({{results: [{{
@@ -159,6 +165,12 @@ const result = await tool.execute({{items: [{{
 if (result.schema !== 'math-notebook-process-result/v1' || result.results[0].attachment_index !== 1) throw new Error('wrong result');
 const rendered = tool.output.render({{}}, result)[0].text;
 if (!rendered.includes('第 1 题') || !rendered.includes('已计入错题本')) throw new Error('result not rendered');
+const adjudicator = registered.find((value) => value.name === 'adjudicate_error_notebook_reference_conflicts');
+const adjudicated = await adjudicator.execute({{items: [{{
+  candidate_id: 'a'.repeat(32), input_version: 1, status: 'consistent',
+  rationale: '独立答案与题库答案的数学结论完全一致。'
+}}]}}, {{agent: {{id: 'session-process'}}, signal: new AbortController().signal}});
+if (adjudicated.results[0].status !== 'saved') throw new Error('reference conflict not adjudicated');
 """
         environment = dict(os.environ)
         environment.update({

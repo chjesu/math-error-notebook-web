@@ -15,6 +15,8 @@ from .learning import (
     ReviewTask,
     VerifiedQuestionReference,
     cross_validate_reference,
+    reference_adjudication_from_evidence,
+    reference_conflict_resolved,
     reference_validation_from_evidence,
 )
 from .paper_intake import PaperDraft, PaperItem
@@ -31,6 +33,8 @@ __all__ = [
     "Question",
     "VerifiedQuestionReference",
     "cross_validate_reference",
+    "reference_adjudication_from_evidence",
+    "reference_conflict_resolved",
     "reference_validation_from_evidence",
     "Recommendation",
     "ReviewTask",

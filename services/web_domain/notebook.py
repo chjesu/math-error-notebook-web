@@ -20,6 +20,7 @@ from .learning import (
     next_review,
     question_match_score,
     rank_questions,
+    reference_conflict_resolved,
     reference_validation_from_evidence,
 )
 from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job, normalize_extraction_items
@@ -301,7 +302,7 @@ class InMemoryNotebookStore:
         if candidate.verdict not in {"partial", "incorrect"}:
             raise RuntimeError("failed_final")
         validation = reference_validation_from_evidence(candidate.evidence)
-        if validation and validation.get("status") == "conflict":
+        if validation and validation.get("status") == "conflict" and not reference_conflict_resolved(candidate.evidence):
             raise RuntimeError("reference_conflict")
         existing = next((item for item in self.errors.values() if item.user_id == user_id and item.attempt_id == attempt.attempt_id), None)
         if existing:

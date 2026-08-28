@@ -356,7 +356,7 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual((first[0], replay[0]), (200, 200))
         self.assertEqual([item["receipt_status"] for item in first[2]["results"]], ["saved", "not_saved_correct"])
         self.assertEqual([item["receipt_status"] for item in replay[2]["results"]], ["already_saved", "not_saved_correct"])
-        self.assertIn("题库第 3 版解析交叉验证一致", first[2]["results"][0]["receipt_message"])
+        self.assertIn("题库第 3 版参考答案确定性校验一致", first[2]["results"][0]["receipt_message"])
         self.assertEqual(first[2]["results"][0]["error_id"], replay[2]["results"][0]["error_id"])
         self.assertEqual(first[2]["results"][0]["knowledge_points"], ["一元一次方程", "等式性质与移项"])
         self.assertEqual(len(self.domain_store.files), 1)
@@ -369,6 +369,125 @@ class NotebookE2ETests(unittest.TestCase):
         unbound = payload | {"session_id": "session-unbound"}
         denied = self.call("/v1/internal/harness/intakes/process", method="POST", payload=unbound, **internal)
         self.assertEqual((denied[0], denied[2]["error"]["code"]), (403, "forbidden"))
+
+    def test_harness_reference_conflict_requires_frozen_semantic_adjudication(self) -> None:
+        cookie = self.login("13500135004")
+        other_cookie = self.login("13500135005")
+        harness_origin = "http://example.test:3080"
+        self.call(
+            "/v1/harness/sessions/bind", method="POST",
+            payload={"session_id": "session-reference-review"}, cookie=cookie, origin=harness_origin,
+        )
+        self.call(
+            "/v1/harness/sessions/bind", method="POST",
+            payload={"session_id": "session-reference-other"}, cookie=other_cookie, origin=harness_origin,
+        )
+        self.domain_store.add_question(Question(
+            "4" * 32,
+            "若 x+1=2，求 x。",
+            "x=1",
+            7,
+            1.0,
+            "公开验证题库",
+            solution_text="等式两边同时减去 1，得到 x=1。",
+            version_id="5" * 32,
+            version_no=6,
+        ))
+        content = self.png_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        payload = {
+            "session_id": "session-reference-review",
+            "attachment": {
+                "attachment_id": f"sha256:{digest}",
+                "name": "semantic-reference.png",
+                "media_type": "image/png",
+                "data": base64.b64encode(content).decode("ascii"),
+            },
+            "items": [{
+                "item_no": 1,
+                "question_text": "若 x+1=2，求 x。",
+                "answer_text": "x=0",
+                "verdict": "incorrect",
+                "first_error": "移项时常数项处理错误",
+                "cause_code": "algebra_transform",
+                "cause_evidence": "学生把等号左侧的 1 消去后写成 x=0",
+                "knowledge_points": ["一元一次方程", "等式性质"],
+                "correct_solution": "两边同时减去 1，得到 x=1。",
+                "final_answer": "方程的唯一实数解是 x=1",
+                "prevention_cue": "完成移项后代回原式验算",
+                "confidence": 0.96,
+            }],
+        }
+        internal = {
+            "origin": None,
+            "client": ("127.0.0.1", 3080),
+            "extra_headers": {"authorization": "Bearer test-internal-token"},
+        }
+        processed = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
+        self.assertEqual(processed[0], 200)
+        result = processed[2]["results"][0]
+        self.assertEqual(result["receipt_status"], "needs_review")
+        self.assertEqual(result["reference_review"], {
+            "source_title": "公开验证题库",
+            "version_no": 6,
+            "independent_answer": "方程的唯一实数解是 x=1",
+            "reference_answer": "x=1",
+            "reference_solution": "等式两边同时减去 1，得到 x=1。",
+        })
+        self.assertEqual(len(self.domain_store.errors), 0)
+
+        uncertain = self.call(
+            "/v1/internal/harness/reference-conflicts/adjudicate", method="POST",
+            payload={"session_id": "session-reference-review", "items": [{
+                "candidate_id": result["candidate_id"], "input_version": result["input_version"],
+                "status": "uncertain", "rationale": "现有图片证据不足，无法确认两种答案写法是否严格等价。",
+            }]},
+            **internal,
+        )
+        self.assertEqual((uncertain[0], uncertain[2]["results"][0]["status"]), (200, "needs_review"))
+        self.assertEqual(len(self.domain_store.errors), 0)
+
+        denied = self.call(
+            "/v1/internal/harness/reference-conflicts/adjudicate", method="POST",
+            payload={"session_id": "session-reference-other", "items": [{
+                "candidate_id": result["candidate_id"], "input_version": result["input_version"],
+                "status": "consistent", "rationale": "两份答案都明确给出唯一实数解 x=1，因此数学结论完全一致。",
+            }]},
+            **internal,
+        )
+        self.assertEqual((denied[0], denied[2]["error"]["code"]), (404, "not_found"))
+
+        self.domain_store.add_question(Question(
+            "4" * 32, "若 x+1=2，求 x。", "x=2", 7, 1.0, "公开验证题库",
+            solution_text="更新后的解析。", version_id="6" * 32, version_no=7,
+        ))
+        stale = self.call(
+            "/v1/internal/harness/reference-conflicts/adjudicate", method="POST",
+            payload={"session_id": "session-reference-review", "items": [{
+                "candidate_id": result["candidate_id"], "input_version": result["input_version"],
+                "status": "consistent", "rationale": "两份答案都明确给出唯一实数解 x=1，因此数学结论完全一致。",
+            }]},
+            **internal,
+        )
+        self.assertEqual((stale[0], stale[2]["error"]["code"]), (409, "reference_conflict"))
+        self.domain_store.add_question(Question(
+            "4" * 32, "若 x+1=2，求 x。", "x=1", 7, 1.0, "公开验证题库",
+            solution_text="等式两边同时减去 1，得到 x=1。", version_id="5" * 32, version_no=6,
+        ))
+
+        adjudicated = self.call(
+            "/v1/internal/harness/reference-conflicts/adjudicate", method="POST",
+            payload={"session_id": "session-reference-review", "items": [{
+                "candidate_id": result["candidate_id"], "input_version": result["input_version"],
+                "status": "consistent", "rationale": "独立答案与题库答案都明确给出唯一实数解 x=1，题库解析也验证了同一移项过程。",
+            }]},
+            **internal,
+        )
+        self.assertEqual((adjudicated[0], adjudicated[2]["results"][0]["status"]), (200, "saved"))
+        self.assertIn("第二阶段语义复核一致", adjudicated[2]["results"][0]["receipt_message"])
+        self.assertEqual(len(self.domain_store.errors), 1)
+        evidence = json.loads(next(iter(self.domain_store.errors.values())).evidence)
+        self.assertEqual(evidence["reference_adjudication"]["status"], "consistent")
 
     def test_deletion_keeps_durable_pending_state_when_domain_cleanup_fails(self) -> None:
         phone = "13400134000"

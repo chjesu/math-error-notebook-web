@@ -18,7 +18,18 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs
 
 from services.web_auth import AuthAsgiApp, RegistrationService
-from services.web_domain import ErrorEntry, GradeCandidate, IntakeItem, Job, NotebookService, Recommendation, ReviewTask, cross_validate_reference
+from services.web_domain import (
+    ErrorEntry,
+    GradeCandidate,
+    IntakeItem,
+    Job,
+    NotebookService,
+    Recommendation,
+    ReviewTask,
+    cross_validate_reference,
+    reference_adjudication_from_evidence,
+    reference_conflict_resolved,
+)
 from .codex_model import ModelUnavailableError
 
 
@@ -124,6 +135,9 @@ class NotebookAsgiApp:
             return
         if path.startswith("/v1/internal/harness/grade-results/") and path.endswith("/commit") and method == "POST":
             await self._internal_harness_commit(scope, receive, send, headers)
+            return
+        if path == "/v1/internal/harness/reference-conflicts/adjudicate" and method == "POST":
+            await self._internal_harness_adjudicate(scope, receive, send, headers)
             return
         static = self.static_files.get(path)
         if method == "GET" and static:
@@ -872,11 +886,7 @@ class NotebookAsgiApp:
         send: Send,
         headers: dict[str, str],
     ) -> None:
-        client = scope.get("client")
-        client_host = str(client[0]) if isinstance(client, (tuple, list)) and client else ""
-        supplied = headers.get("authorization", "")
-        expected = f"Bearer {self.harness_internal_token}" if self.harness_internal_token else ""
-        if client_host not in {"127.0.0.1", "::1"} or not expected or not hmac.compare_digest(supplied, expected):
+        if not self._internal_harness_allowed(scope, headers):
             await self._error(send, 403, "forbidden")
             return
         try:
@@ -1010,7 +1020,7 @@ class NotebookAsgiApp:
                     )
                 receipt = await self._commit_candidate_receipt(user_id, candidate)
                 diagnosis = self._diagnosis(candidate.evidence)
-                results.append({
+                result_item = {
                     "item_no": intake.item_no,
                     "candidate_id": candidate.candidate_id,
                     "input_version": candidate.input_version,
@@ -1027,7 +1037,17 @@ class NotebookAsgiApp:
                     "receipt_status": receipt["status"],
                     "receipt_message": receipt["message"],
                     "error_id": str(receipt.get("error_id") or ""),
-                })
+                    "reference_review": None,
+                }
+                if reference is not None and isinstance(validation, dict) and validation.get("status") == "conflict":
+                    result_item["reference_review"] = {
+                        "source_title": reference.source_title,
+                        "version_no": reference.version_no,
+                        "independent_answer": final_answer,
+                        "reference_answer": reference.answer_text,
+                        "reference_solution": reference.solution_text or "",
+                    }
+                results.append(result_item)
             await self._json(send, 200, {"results": results})
         except LookupError:
             await self._error(send, 404, "not_found")
@@ -1048,11 +1068,7 @@ class NotebookAsgiApp:
         send: Send,
         headers: dict[str, str],
     ) -> None:
-        client = scope.get("client")
-        client_host = str(client[0]) if isinstance(client, (tuple, list)) and client else ""
-        supplied = headers.get("authorization", "")
-        expected = f"Bearer {self.harness_internal_token}" if self.harness_internal_token else ""
-        if client_host not in {"127.0.0.1", "::1"} or not expected or not hmac.compare_digest(supplied, expected):
+        if not self._internal_harness_allowed(scope, headers):
             await self._error(send, 403, "forbidden")
             return
         try:
@@ -1088,6 +1104,138 @@ class NotebookAsgiApp:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
 
+    async def _internal_harness_adjudicate(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive)
+            if set(payload) != {"session_id", "items"}:
+                raise ValueError("invalid reference adjudication request")
+            session_id = self._harness_session_id(payload)
+            with self._harness_sessions_lock:
+                user_id = self._harness_sessions.get(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            items = payload["items"]
+            if not isinstance(items, list) or not 1 <= len(items) <= 20:
+                raise ValueError("invalid reference adjudication items")
+            results = []
+            for item in items:
+                if not isinstance(item, dict) or set(item) != {"candidate_id", "input_version", "status", "rationale"}:
+                    raise ValueError("invalid reference adjudication item")
+                candidate_id = item["candidate_id"]
+                input_version = item["input_version"]
+                status = item["status"]
+                rationale = item["rationale"]
+                if (
+                    not isinstance(candidate_id, str)
+                    or re.fullmatch(r"[0-9a-f]{32}", candidate_id) is None
+                    or not isinstance(input_version, int)
+                    or isinstance(input_version, bool)
+                    or input_version < 1
+                    or status not in {"consistent", "conflict", "uncertain"}
+                    or not isinstance(rationale, str)
+                    or not 20 <= len(rationale.strip()) <= 4000
+                ):
+                    raise ValueError("invalid reference adjudication item")
+                candidate = await self._sync(
+                    self.notebook.store.get_grade_candidate,
+                    user_id=user_id,
+                    candidate_id=candidate_id,
+                )
+                if candidate is None:
+                    raise LookupError("grade candidate not found")
+                if candidate.input_version != input_version:
+                    raise RuntimeError("input_version_changed")
+                diagnosis = self._diagnosis(candidate.evidence)
+                validation = diagnosis.get("cross_validation")
+                if not isinstance(validation, dict) or validation.get("status") != "conflict":
+                    raise RuntimeError("reference_conflict")
+                if status != "consistent":
+                    results.append({
+                        "candidate_id": candidate_id,
+                        "input_version": input_version,
+                        "status": "needs_review",
+                        "receipt_message": (
+                            "错题本记录检查：第二阶段复核确认独立解答与题库参考答案存在实质冲突，尚未计入错题本。"
+                            if status == "conflict"
+                            else "错题本记录检查：第二阶段复核仍无法确认两份答案等价，尚未计入错题本。"
+                        ),
+                    })
+                    continue
+                attempt = await self._sync(
+                    self.notebook.store.get_attempt,
+                    user_id=user_id,
+                    attempt_id=candidate.attempt_id,
+                )
+                reference = await self._sync(
+                    self.notebook.store.find_verified_question,
+                    question_text=attempt.question_text if attempt is not None else "",
+                )
+                fresh_validation = cross_validate_reference(reference, str(diagnosis.get("final_answer") or "")) if reference is not None else None
+                if (
+                    attempt is None
+                    or fresh_validation is None
+                    or fresh_validation.get("question_id") != validation.get("question_id")
+                    or fresh_validation.get("version_id") != validation.get("version_id")
+                    or fresh_validation.get("reference_answer_sha256") != validation.get("reference_answer_sha256")
+                    or fresh_validation.get("independent_answer_sha256") != validation.get("independent_answer_sha256")
+                ):
+                    raise RuntimeError("reference_conflict")
+                diagnosis["reference_adjudication"] = {
+                    "schema": "question-bank-reference-adjudication/v1",
+                    "status": "consistent",
+                    "rationale": rationale.strip(),
+                    "reference_answer_sha256": validation["reference_answer_sha256"],
+                    "independent_answer_sha256": validation["independent_answer_sha256"],
+                }
+                revised = await self._sync(
+                    self.notebook.store.record_grade_candidate,
+                    user_id=user_id,
+                    attempt_id=candidate.attempt_id,
+                    input_version=candidate.input_version,
+                    verdict=candidate.verdict,
+                    first_error=candidate.first_error,
+                    evidence=json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":")),
+                )
+                await self._sync(
+                    self.notebook.store.link_attempt_question,
+                    user_id=user_id,
+                    attempt_id=candidate.attempt_id,
+                    question_id=str(validation["question_id"]),
+                )
+                receipt = await self._commit_candidate_receipt(user_id, revised)
+                results.append({
+                    "candidate_id": candidate_id,
+                    "input_version": input_version,
+                    "status": receipt["status"],
+                    "receipt_message": receipt["message"],
+                })
+            await self._json(send, 200, {"results": results})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except RuntimeError as exc:
+            code = str(exc) if str(exc) in {"input_version_changed", "reference_conflict", "conflict"} else "conflict"
+            await self._error(send, 409, code)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    def _internal_harness_allowed(self, scope: dict[str, Any], headers: dict[str, str]) -> bool:
+        client = scope.get("client")
+        client_host = str(client[0]) if isinstance(client, (tuple, list)) and client else ""
+        supplied = headers.get("authorization", "")
+        expected = f"Bearer {self.harness_internal_token}" if self.harness_internal_token else ""
+        return client_host in {"127.0.0.1", "::1"} and bool(expected) and hmac.compare_digest(supplied, expected)
+
     async def _commit_candidate_receipt(self, user_id: str, candidate: GradeCandidate) -> dict[str, Any]:
         receipt = self._grade_receipt(candidate)
         if candidate.verdict not in {"partial", "incorrect"} or receipt["status"] != "pending":
@@ -1110,7 +1258,13 @@ class NotebookAsgiApp:
             else f"错题本记录检查：已计入错题本，已保存 {receipt['knowledge_point_count']} 个知识点，并已安排首次复习。"
         )
         if receipt["reference_status"] == "consistent":
-            receipt["message"] = f"题库第 {receipt['reference_version_no']} 版解析交叉验证一致；" + receipt["message"]
+            adjudication = reference_adjudication_from_evidence(candidate.evidence)
+            prefix = (
+                f"题库第 {receipt['reference_version_no']} 版答案与解析经第二阶段语义复核一致；"
+                if adjudication and adjudication.get("status") == "consistent"
+                else f"题库第 {receipt['reference_version_no']} 版参考答案确定性校验一致；"
+            )
+            receipt["message"] = prefix + receipt["message"]
         return receipt
 
     @staticmethod
@@ -1137,9 +1291,10 @@ class NotebookAsgiApp:
         count = len(points) if isinstance(points, list) else 0
         validation = diagnosis.get("cross_validation")
         reference = {"reference_status": "not_found"}
+        resolved = reference_conflict_resolved(candidate.evidence)
         if isinstance(validation, dict):
             reference = {
-                "reference_status": str(validation["status"]),
+                "reference_status": "consistent" if resolved else str(validation["status"]),
                 "reference_question_id": str(validation["question_id"]),
                 "reference_version_no": int(validation["version_no"]),
             }
@@ -1149,7 +1304,7 @@ class NotebookAsgiApp:
                 "status": "needs_review",
                 "knowledge_point_count": count,
                 "review_status": "not_scheduled",
-                "message": "错题本记录检查：独立解答与已验证题库解析存在冲突，尚未计入错题本，请复核。",
+                "message": "错题本记录检查：独立解答与题库参考答案未通过确定性一致性校验，正在等待第二阶段语义复核。",
             } | reference
         if candidate.verdict == "correct":
             return {

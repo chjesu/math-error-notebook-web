@@ -157,6 +157,30 @@ def reference_validation_from_evidence(evidence: str | None) -> dict[str, object
     return result if isinstance(result, dict) and result.get("schema") == "question-bank-cross-validation/v1" else None
 
 
+def reference_adjudication_from_evidence(evidence: str | None) -> dict[str, object] | None:
+    if not evidence:
+        return None
+    try:
+        value = json.loads(evidence)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    result = value.get("reference_adjudication") if isinstance(value, dict) else None
+    return result if isinstance(result, dict) and result.get("schema") == "question-bank-reference-adjudication/v1" else None
+
+
+def reference_conflict_resolved(evidence: str | None) -> bool:
+    validation = reference_validation_from_evidence(evidence)
+    adjudication = reference_adjudication_from_evidence(evidence)
+    return bool(
+        validation
+        and validation.get("status") == "conflict"
+        and adjudication
+        and adjudication.get("status") == "consistent"
+        and adjudication.get("reference_answer_sha256") == validation.get("reference_answer_sha256")
+        and adjudication.get("independent_answer_sha256") == validation.get("independent_answer_sha256")
+    )
+
+
 def math_tokens(text: str) -> set[str]:
     latin = set(re.findall(r"[a-z0-9]+", text.lower()))
     han = {character for character in text if "\u4e00" <= character <= "\u9fff" and character not in _STOP_HAN}

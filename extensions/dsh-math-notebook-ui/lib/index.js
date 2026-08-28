@@ -117,11 +117,24 @@ function processAttachmentsTool(ctx) {
     verdict: {type: "string", enum: ["correct", "partial", "incorrect", "unclear"]}, question_text: {type: "string"}, answer_text: {type: "string"},
     first_error: {type: "string"}, cause_code: {type: "string"}, cause_evidence: {type: "string"}, knowledge_points: {type: "array", items: {type: "string"}},
     correct_solution: {type: "string"}, final_answer: {type: "string"}, prevention_cue: {type: "string"},
-    receipt_status: {type: "string", enum: ["saved", "already_saved", "not_saved_correct", "needs_review"]}, receipt_message: {type: "string"}, error_id: {type: "string"}
+    receipt_status: {type: "string", enum: ["saved", "already_saved", "not_saved_correct", "needs_review"]}, receipt_message: {type: "string"}, error_id: {type: "string"},
+    reference_review: {
+      anyOf: [
+        {type: "null"},
+        {
+          type: "object", additionalProperties: false,
+          required: ["source_title", "version_no", "independent_answer", "reference_answer", "reference_solution"],
+          properties: {
+            source_title: {type: "string"}, version_no: {type: "integer"}, independent_answer: {type: "string"},
+            reference_answer: {type: "string"}, reference_solution: {type: "string"}
+          }
+        }
+      ]
+    }
   };
   return {
     name: "process_error_notebook_attachments",
-    description: "Required once when the latest user message contains math images. Submit every recognized question and judgment in image order. The tool reads the actual latest attachments, validates and stores them, freezes versions, cross-checks the verified bank, writes only incorrect or partial questions, schedules review, and returns authoritative receipts. Use empty strings for inapplicable diagnosis fields; never invent candidate ids.",
+    description: "Required once when the latest user message contains math images. Submit every recognized question and judgment in image order. The tool reads the actual latest attachments, validates and stores them, freezes versions, cross-checks the verified bank, writes only incorrect or partial questions, schedules review, and returns authoritative receipts. If a result contains reference_review, compare its frozen independent answer with the protected reference answer and solution, then submit all such decisions once through adjudicate_error_notebook_reference_conflicts. Use empty strings for inapplicable diagnosis fields; never invent candidate ids.",
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
       properties: {items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
@@ -173,6 +186,66 @@ function processAttachmentsTool(ctx) {
   };
 }
 
+function adjudicateReferenceConflictsTool() {
+  const origin = process.env.LZLM_PRODUCT_ORIGIN;
+  const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
+  if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
+  return {
+    name: "adjudicate_error_notebook_reference_conflicts",
+    description: "Required once after process_error_notebook_attachments returns one or more reference_review objects. For each frozen candidate, compare the independent answer with the verified reference answer and solution. Use consistent only when they are mathematically equivalent, conflict for a substantive difference, and uncertain when the evidence cannot decide. Submit every returned conflict in one call.",
+    parameters: {
+      type: "object", additionalProperties: false, required: ["items"],
+      properties: {
+        items: {
+          type: "array", minItems: 1, maxItems: 20,
+          items: {
+            type: "object", additionalProperties: false,
+            required: ["candidate_id", "input_version", "status", "rationale"],
+            properties: {
+              candidate_id: {type: "string"}, input_version: {type: "integer"},
+              status: {type: "string", enum: ["consistent", "conflict", "uncertain"]},
+              rationale: {type: "string", minLength: 20, maxLength: 4000}
+            }
+          }
+        }
+      }
+    },
+    output: {
+      schema: {
+        type: "object", additionalProperties: false, required: ["results"],
+        properties: {
+          results: {
+            type: "array",
+            items: {
+              type: "object", additionalProperties: false,
+              required: ["candidate_id", "input_version", "status", "receipt_message"],
+              properties: {
+                candidate_id: {type: "string"}, input_version: {type: "integer"},
+                status: {type: "string", enum: ["saved", "already_saved", "not_saved_correct", "needs_review"]},
+                receipt_message: {type: "string"}
+              }
+            }
+          }
+        }
+      },
+      render: (_args, value) => [{type: "text", text: value.results.map((item) => item.receipt_message).join("\n")}]
+    },
+    async execute(args, exec) {
+      if (!exec.agent) throw new Error("Reference adjudication requires an owning Harness session");
+      const response = await fetch(`${origin}/v1/internal/harness/reference-conflicts/adjudicate`, {
+        method: "POST",
+        headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
+        body: JSON.stringify({session_id: exec.agent.id, items: args.items}),
+        signal: exec.signal
+      });
+      const payload = await response.json();
+      if (!response.ok || !Array.isArray(payload.results)) throw new Error(`Reference adjudication failed (${response.status})`);
+      return payload;
+    },
+    presentCall: () => ({card: "generic", title: "复核题库答案", kind: "other", rawInput: null})
+  };
+}
+
 /** Register the single internal workspace used by the student product. */
 export async function apply(ctx) {
   const workspacePath = process.env.LZLM_HARNESS_WORKSPACE_ROOT;
@@ -181,5 +254,6 @@ export async function apply(ctx) {
   }
   await ctx.workspaceRegistry.create(workspacePath, "错题会话");
   ctx.tools.register(processAttachmentsTool(ctx));
+  ctx.tools.register(adjudicateReferenceConflictsTool());
   ctx.tools.register(receiptTool());
 }

@@ -90,6 +90,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('LZLM_HARNESS_WORKSPACE_ROOT', host_plugin)
         self.assertIn('name: "confirm_error_notebook_entry"', host_plugin)
         self.assertIn('name: "process_error_notebook_attachments"', host_plugin)
+        self.assertIn('name: "adjudicate_error_notebook_reference_conflicts"', host_plugin)
+        self.assertIn('/v1/internal/harness/reference-conflicts/adjudicate', host_plugin)
         self.assertIn('ctx.attachments.readImage', host_plugin)
         self.assertIn('/v1/internal/harness/intakes/process', host_plugin)
         self.assertIn('latestUserImages(exec.agent)', host_plugin)
@@ -108,6 +110,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("confirm_error_notebook_entry", preset)
         for prompt in (patch, preset, runtime_config):
             self.assertIn('process_error_notebook_attachments', prompt)
+            self.assertIn('adjudicate_error_notebook_reference_conflicts', prompt)
             self.assertIn('receipt_message', prompt)
             self.assertNotIn('未收到判题流程返回', prompt)
             self.assertIn('最终答案', prompt)
