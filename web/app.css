@@ -122,7 +122,7 @@ input {
 .phone-row:focus-within { outline: 3px solid rgba(0, 32, 96, .25); outline-offset: 2px; }
 .phone-row span { padding-left: 14px; color: var(--ink); font-variant-numeric: tabular-nums; }
 .phone-row input { border: 0; outline: 0; }
-input:focus,
+input:focus-visible,
 button:focus-visible,
 a:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset: 2px; }
 .phone-row input:focus { outline: 0; }
