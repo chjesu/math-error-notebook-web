@@ -57,18 +57,21 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('data-error-detail=', script)
         self.assertNotIn('id="error-detail"', html)
         self.assertNotIn("$$('", script)
-        self.assertIn("review_stage_counts", script)
         self.assertIn("today_needs_correction_count", script)
 
-    def test_learning_progress_owns_review_rules_and_stage_statistics(self) -> None:
+    def test_learning_progress_owns_review_rules_and_monthly_error_calendar(self) -> None:
         html = (WEB / "progress.html").read_text(encoding="utf-8")
         script = (WEB / "app.js").read_text(encoding="utf-8")
-        for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "各复习阶段"):
+        for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "错题月份表"):
             self.assertIn(text, html)
-        for marker in ("stage-count-1", "stage-count-6", "total-error-count", "review-accuracy", "refresh-progress"):
+        self.assertNotIn("各复习阶段", html)
+        for marker in ("review-calendar", "calendar-month", "calendar-prev", "calendar-next", "calendar-summary", "refresh-progress"):
             self.assertIn(f'id="{marker}"', html)
+        self.assertNotIn('id="stage-count-1"', html)
         self.assertIn('function bindProgress()', script)
-        self.assertIn('const progress = await api("/v1/progress")', script)
+        self.assertIn('api("/v1/progress")', script)
+        self.assertIn('api("/v1/errors")', script)
+        self.assertIn('item.review?.stage', script)
 
     def test_workbench_is_the_official_deepseek_harness_surface(self) -> None:
         html = (WEB / "index.html").read_text(encoding="utf-8")

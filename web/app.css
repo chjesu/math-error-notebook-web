@@ -287,9 +287,10 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .page-intro { margin: 6px 0 0; color: var(--muted); }
 .error-dashboard { display: grid; max-width: 1120px; gap: 18px; }
 .dashboard-overview { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(340px, .9fr); gap: 18px; }
+.progress-dashboard .dashboard-overview { grid-template-columns: minmax(0, 1fr); }
 .section-kicker { margin: 0 0 2px; color: var(--muted); font-size: 12px; }
 .review-rule-panel,
-.review-stats-panel,
+.review-calendar-panel,
 .today-plan-panel,
 .all-errors-panel { min-width: 0; }
 .review-rule-panel > p { color: var(--muted); }
@@ -301,16 +302,25 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .memory-principles p { display: grid; align-content: start; gap: 4px; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
 .memory-principles strong { font-size: 13px; }
 .memory-principles span { color: var(--muted); font-size: 12px; }
-.metric-total { white-space: nowrap; font-size: 18px; }
-.stage-stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 18px; }
-.stage-stat-grid div { display: grid; gap: 2px; padding: 12px; border-radius: 10px; background: var(--brand-soft); }
-.stage-stat-grid strong { font-size: 22px; }
-.stage-stat-grid span { color: var(--muted); font-size: 12px; }
-.stage-stat-grid .is-mastered { background: #edf8f2; color: #126b45; }
-.review-summary { display: grid; gap: 0; margin: 16px 0 0; }
-.review-summary div { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); }
-.review-summary dt { color: var(--muted); }
-.review-summary dd { margin: 0; font-weight: 700; }
+.calendar-controls { display: flex; align-items: center; gap: 8px; }
+.calendar-controls button { width: 36px; min-height: 36px; padding: 0; border-radius: 50%; }
+.calendar-controls strong { min-width: 112px; text-align: center; }
+.calendar-summary { margin: 14px 0 10px; color: var(--muted); }
+.review-calendar-scroll { overflow-x: auto; padding-bottom: 4px; }
+.calendar-weekdays,
+.review-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); min-width: 840px; }
+.calendar-weekdays span { padding: 8px; color: var(--muted); text-align: center; font-size: 12px; }
+.review-calendar-grid { border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+.calendar-day { min-height: 148px; padding: 10px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--paper); }
+.calendar-day.is-empty { background: #fafafa; }
+.calendar-day.is-today { box-shadow: inset 0 0 0 2px var(--brand); }
+.calendar-day-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.calendar-day-heading > strong { font-size: 14px; }
+.calendar-day-heading > span { padding: 2px 7px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); font-size: 11px; }
+.calendar-question-list { display: grid; max-height: 170px; gap: 6px; padding: 0; margin: 9px 0 0; overflow-y: auto; list-style: none; }
+.calendar-question { display: grid; gap: 3px; padding: 7px; border-radius: 8px; background: var(--brand-soft); }
+.calendar-question .calendar-stage { color: var(--brand); font-size: 11px; font-weight: 700; }
+.calendar-question .calendar-question-text { display: -webkit-box; overflow: hidden; color: var(--ink); font-size: 12px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .plan-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 0; margin: 18px 0; list-style: none; }
 .plan-steps li { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
 .plan-steps li > span { display: grid; width: 28px; height: 28px; flex: 0 0 28px; place-items: center; border-radius: 50%; background: var(--brand-soft); color: var(--muted); font-weight: 700; }
@@ -527,6 +537,5 @@ textarea:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset
   .review-rule-stages { grid-template-columns: repeat(3, 1fr); }
   .memory-principles,
   .plan-steps { grid-template-columns: 1fr; }
-  .stage-stat-grid { grid-template-columns: repeat(2, 1fr); }
   .error-card dl > div { grid-template-columns: 1fr; gap: 3px; }
 }

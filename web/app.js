@@ -1256,21 +1256,66 @@ function bindErrors() {
 }
 
 function bindProgress() {
+  let monthCursor = new Date();
+  monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
+  let errors = [];
+  let progress = {};
+
+  function stageLabel(item) {
+    if (item.status === "mastered") return "已掌握";
+    const stage = Number(item.review?.stage);
+    return Number.isInteger(stage) && stage >= 1 && stage <= 6 ? `第 ${stage} 阶段` : "待安排";
+  }
+
+  function localDateKey(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "" : `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  }
+
+  function renderCalendar() {
+    const year = monthCursor.getFullYear();
+    const month = monthCursor.getMonth();
+    const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const byDay = new Map();
+    errors.forEach(item => {
+      const key = localDateKey(item.created_at);
+      if (!key) return;
+      if (!byDay.has(key)) byDay.set(key, []);
+      byDay.get(key).push(item);
+    });
+    const monthItems = errors.filter(item => {
+      const date = new Date(item.created_at);
+      return !Number.isNaN(date.getTime()) && date.getFullYear() === year && date.getMonth() === month;
+    });
+    const today = new Date();
+    const cells = Array.from({length: firstWeekday}, () => '<div class="calendar-day is-empty" aria-hidden="true"></div>');
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const items = byDay.get(`${year}-${month}-${day}`) || [];
+      const isToday = today.getFullYear() === year && today.getMonth() === month && today.getDate() === day;
+      const questions = items.length ? `<ul class="calendar-question-list">${items.map(item => `<li class="calendar-question"><span class="calendar-stage">${stageLabel(item)}</span><span class="calendar-question-text">${escapeHtml(item.question_text || "未命名题目")}</span></li>`).join("")}</ul>` : "";
+      cells.push(`<div class="calendar-day${isToday ? " is-today" : ""}" aria-label="${year}年${month + 1}月${day}日，${items.length}道错题"><div class="calendar-day-heading"><strong>${day}</strong>${items.length ? `<span>${items.length} 道</span>` : ""}</div>${questions}</div>`);
+    }
+    while (cells.length % 7) cells.push('<div class="calendar-day is-empty" aria-hidden="true"></div>');
+    $("#calendar-month").textContent = `${year} 年 ${month + 1} 月`;
+    $("#calendar-summary").textContent = monthItems.length ? `本月新增 ${monthItems.length} 道错题，累计 ${progress.error_count || errors.length} 道。日期格内显示每道题的当前复习阶段。` : `本月没有新增错题，累计 ${progress.error_count || errors.length} 道。`;
+    $("#review-calendar").innerHTML = cells.join("");
+    renderMath($("#review-calendar"));
+  }
+
   async function loadProgress() {
     try {
-      const progress = await api("/v1/progress");
-      const counts = progress.review_stage_counts || {};
-      for (let stage = 1; stage <= 6; stage += 1) $(`#stage-count-${stage}`).textContent = counts[String(stage)] || 0;
-      $("#total-error-count").textContent = `${progress.error_count || 0} 道`;
-      $("#mastered-count").textContent = progress.mastered_count || 0;
-      $("#due-review-count").textContent = progress.due_review_count || 0;
-      $("#completed-review-count").textContent = progress.completed_review_count || 0;
-      $("#review-accuracy").textContent = `${progress.review_accuracy_percent || 0}%`;
+      const [errorsResult, progressResult] = await Promise.all([api("/v1/errors"), api("/v1/progress")]);
+      errors = errorsResult.items || [];
+      progress = progressResult;
+      renderCalendar();
       status($("#progress-status"), "数据已更新。");
     } catch (error) {
       status($("#progress-status"), authError(error), true);
     }
   }
+  $("#calendar-prev").addEventListener("click", () => { monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1); renderCalendar(); });
+  $("#calendar-next").addEventListener("click", () => { monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1); renderCalendar(); });
   $("#refresh-progress").addEventListener("click", loadProgress);
   loadProgress();
 }

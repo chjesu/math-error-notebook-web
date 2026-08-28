@@ -13,12 +13,16 @@
           </ol>
           <div class="memory-principles"><p><strong>主动提取</strong><span>不看答案重做，比重复阅读更能加固回忆路径。</span></p><p><strong>间隔效应</strong><span>在快要遗忘时再次提取，让记忆保持得更久。</span></p><p><strong>即时反馈</strong><span>立刻定位首错并改正，避免错误过程被重复强化。</span></p></div>
         </section>
-        <section class="panel review-stats-panel" aria-labelledby="review-stats-heading">
-          <div class="panel-title"><div><p class="section-kicker">错题统计</p><h2 id="review-stats-heading">各复习阶段</h2></div><strong id="total-error-count" class="metric-total">— 道</strong></div>
-          <div class="stage-stat-grid">
-            <div><strong id="stage-count-1">—</strong><span>阶段 1</span></div><div><strong id="stage-count-2">—</strong><span>阶段 2</span></div><div><strong id="stage-count-3">—</strong><span>阶段 3</span></div><div><strong id="stage-count-4">—</strong><span>阶段 4</span></div><div><strong id="stage-count-5">—</strong><span>阶段 5</span></div><div><strong id="stage-count-6">—</strong><span>阶段 6</span></div><div class="is-mastered"><strong id="mastered-count">—</strong><span>已掌握</span></div>
+        <section class="panel review-calendar-panel" aria-labelledby="review-calendar-heading">
+          <div class="panel-title">
+            <div><p class="section-kicker">错题统计与阶段</p><h2 id="review-calendar-heading">错题月份表</h2></div>
+            <div class="calendar-controls" aria-label="切换月份"><button id="calendar-prev" class="ghost" type="button" aria-label="上个月">‹</button><strong id="calendar-month" aria-live="polite">—</strong><button id="calendar-next" class="ghost" type="button" aria-label="下个月">›</button></div>
           </div>
-          <dl class="review-summary"><div><dt>今日待复习</dt><dd id="due-review-count">—</dd></div><div><dt>累计完成</dt><dd id="completed-review-count">—</dd></div><div><dt>独立做对率</dt><dd id="review-accuracy">—</dd></div></dl>
+          <p id="calendar-summary" class="calendar-summary">正在读取错题记录…</p>
+          <div class="review-calendar-scroll">
+            <div class="calendar-weekdays" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+            <div id="review-calendar" class="review-calendar-grid" aria-label="错题月份表"></div>
+          </div>
         </section>
       </div>
       <p id="progress-status" class="status" role="status" aria-live="polite"></p>
