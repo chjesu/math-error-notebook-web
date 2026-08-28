@@ -119,7 +119,7 @@ function processAttachmentsTool(ctx) {
     correct_solution: {type: "string"}, final_answer: {type: "string"}, prevention_cue: {type: "string"},
     receipt_status: {type: "string", enum: ["saved", "already_saved", "not_saved_correct", "needs_review"]}, receipt_message: {type: "string"}, error_id: {type: "string"},
     reference_review: {
-      anyOf: [
+      oneOf: [
         {type: "null"},
         {
           type: "object", additionalProperties: false,

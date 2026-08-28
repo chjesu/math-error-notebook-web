@@ -92,6 +92,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('name: "process_error_notebook_attachments"', host_plugin)
         self.assertIn('name: "adjudicate_error_notebook_reference_conflicts"', host_plugin)
         self.assertIn('/v1/internal/harness/reference-conflicts/adjudicate', host_plugin)
+        self.assertNotIn('anyOf:', host_plugin)
         self.assertIn('ctx.attachments.readImage', host_plugin)
         self.assertIn('/v1/internal/harness/intakes/process', host_plugin)
         self.assertIn('latestUserImages(exec.agent)', host_plugin)
