@@ -61,7 +61,7 @@ flowchart TB
 | 任务领取、租约、证据、恢复 | `scripts/project_workflow.py` | 已实现注册模板和全项目模板 |
 | 个人账号与 user_id 数据隔离 | `services/web_domain/` | 已实现；API、Store、任务和下载均从服务端会话注入 `user_id` |
 | Web 题库、错题、作答和复习数据 | MySQL 个人 `user_id` 模型 | 权威桌面题库已同步到本地 MySQL：10,569 题，其中 10,278 题保持已验证、291 题按授权/质量门降级为候选；生产回滚未完成 |
-| 文件上传、解析、审核、判题 | API + Codex CLI 候选 + Codex app-server 会话适配器 | PNG/JPEG 可从一张图片按阅读顺序拆出至多 20 道题及其对应作答；同图题目共享父 Harness 线程。上传批次即授权按顺序自动冻结候选、判题和整理：正确题自动跳过，错误或部分正确自动入本，只有无法识别或证据冲突才等待补充。判题重新附原图，执行“独立解题→受限验算→线程内复核”，并仅对困难/几何题升级 xhigh/max。模型不可用时安全停止，PDF/DOCX 自动解析与生产异步 Worker 仍延期 |
+| 文件上传、解析、审核、判题 | API + Codex CLI 候选 + Codex app-server 会话适配器 | PNG/JPEG 可从一张图片按阅读顺序拆出至多 20 道题及其对应作答；同图题目共享父 Harness 线程。上传批次即授权按顺序自动冻结候选、判题和整理：正确题自动跳过，错误或部分正确自动入本，只有无法识别或证据冲突才等待补充。判题重新附原图，执行“独立解题→受限验算→线程内复核”；若保守匹配到已验证、当前且授权的题库版本，则在独立解题后交叉验证答案与解析，一致时绑定 `question_id`，冲突时禁止自动入本。仅对困难/几何题升级 xhigh/max。模型不可用时安全停止，PDF/DOCX 自动解析与生产异步 Worker 仍延期 |
 | 推荐、复习计划和 PDF | `services/web_domain/` | 仅已验证且授权题可推荐；推荐、复习和 PDF 本地链路已验收，题库为空时展示缺口 |
 | 前端/PWA、运营后台和运维恢复 | `@deepseek-ai/dsh-web-frontend`、`extensions/dsh-math-notebook-ui/`、`web/` | 工作台已直接复用固定版 DeepSeek Harness 官方 Web 前端和 Host，会话树、历史分页、附件、输入、上下文计量、压缩及设置不再由项目仿写；Harness 内部固定使用隔离的“错题会话”工作区，学生界面不显示工作区选择和添加入口。错题本、复习、练习和进度通过 Harness 的 `conversation` 扩展面载入内容视图，账号与隐私通过 Harness 的 `settings.section` 载入嵌入态内容，全部始终复用同一官方外壳，并统一采用 Harness 的字体层级、中性色、间距、圆角、按钮和状态组件规范；底层独立 HTML 只作为内容文档和直接访问回退。本地登录外壳在 8000 端口校验会话后嵌入隔离运行于 3080 的官方界面。PWA、运营后台和生产恢复仍延期 |
 | 阿里云部署 | WAF/SLB、RDS、OSS、运行环境 | 已后置；本地全链路通过后人工批准 |
@@ -131,7 +131,7 @@ flowchart LR
 
 模型任务统一走 `scripts/codex_task_router.py`，外发前必须显式授权。团队岗位和波次由 `config/team-roles.json` 声明；每个岗位对应一个独立、临时、只读的 Codex CLI 子进程，最多并行 4 个，完整职责见 `docs/14-CODEX-MULTI-AGENT-TEAM.md`。批量 `team-run` 只接受位于固定输入根目录、按岗位拆分的公开/合成资料包，并把结果限制到固定候选根目录；真实项目材料不得用该命令批量外发。手机号、验证码、密码、密钥和数据库凭据永不进入模型输入。本地数学流程只发送当前用户已授权处理的题目图片或当前题干/作答候选，且移除 `user_id` 等身份字段；图片外发前必须复验隔离对象哈希、解码并重编码为去 EXIF 的有界 PNG 预览。判题先以不含学生作答的临时只读任务独立求解，再把原图、参考解、受限 AST 验算报告与学生作答交给同图父 Harness 线程复核；验算器不提供 Shell、文件、网络或任意函数调用。同一任务资源与输入版本只允许一个进行中的调用，全局最多两个；图片识别结果必须按 `item_no` 连续编号，服务端在一个事务中把同一文件的每道题保存为独立 `intake_item`，输出匹配 JSON Schema、资源 ID 和冻结版本后才能进入自动处理队列。单项低置信度最多自动升级一次，批量波次不自动升级。
 
-本地 Web 的图片识别、独立解题和判题复核统一使用官方 Codex app-server 通道，以复用桌面客户端已经工作的登录与网络策略；不再让独立解题回退到普通 `codex exec` 子进程。瞬时连接、超时和限流错误在 app-server 调用层最多尝试两次，自动工作流仍失败时再延迟续跑一次；证书、认证和非网络错误不做盲目重试。每次尝试写入 `data/audits/codex-routing/codex-cli-events.jsonl`，仅记录调用标识、任务、模型、阶段、耗时、尝试次数、结果和错误分类，不记录题目、图片路径、提示词、stdout、stderr、账号或密钥。
+本地 Web 的图片识别、独立解题和判题复核统一使用官方 Codex app-server 通道，以复用桌面客户端已经工作的登录与网络策略；不再让独立解题回退到普通 `codex exec` 子进程。题库参考答案与解析只能在独立解题结果冻结后加入复核证据；服务端仅接受 `verified` 状态、当前版本、开放或用户授权来源且存在验证记录的题目，匹配阈值不足时按“未匹配”处理。瞬时连接、超时和限流错误在 app-server 调用层最多尝试两次，自动工作流仍失败时再延迟续跑一次；证书、认证和非网络错误不做盲目重试。每次尝试写入 `data/audits/codex-routing/codex-cli-events.jsonl`，仅记录调用标识、任务、模型、阶段、耗时、尝试次数、结果和错误分类，不记录题目、图片路径、提示词、stdout、stderr、账号或密钥。
 
 错题会话使用 `math-notebook-loop` 路由和官方 `codex app-server`：首轮通过 `thread/start` 建立持久线程，后续轮次只按 MySQL 中当前用户与 intake 绑定的不透明 thread id 调用 `thread/resume`；刷新与翻页时服务端通过 `thread/items/list` 和官方游标读取线程，只将结构化封包中的真实 `user_message` 与 `assistant_message` 转为产品消息。浏览器不能读取或提交 thread id，也不能看到内部提示；浏览器收到的产品游标同时绑定用户拥有的 intake。运行时固定只读 sandbox、拒绝审批、关闭 shell 与 MCP，最终消息必须通过 `math-loop-turn.schema.json`。真实 turn/item/delta/压缩/完成事件经 NDJSON 推送；工作台停止按钮调用 `turn/interrupt`，整理上下文调用 `thread/compact/start`。详细能力边界见 `docs/16-CODEX-APP-SERVER-HARNESS.md`。
 

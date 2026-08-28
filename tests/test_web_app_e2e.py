@@ -11,7 +11,7 @@ from PIL import Image
 
 from services.web_app import NotebookAsgiApp
 from services.web_auth import AuthConfig, InMemoryCaptchaVerifier, InMemoryRegistrationStore, RecordingSmsSender, RegistrationService
-from services.web_domain import GradeCandidate, InMemoryNotebookStore, NotebookService, Question
+from services.web_domain import GradeCandidate, InMemoryNotebookStore, NotebookService, Question, cross_validate_reference
 
 
 class NotebookE2ETests(unittest.TestCase):
@@ -260,6 +260,7 @@ class NotebookE2ETests(unittest.TestCase):
                 "knowledge_point_count": 0,
                 "review_status": "not_scheduled",
                 "message": "错题本记录检查：本题判定正确，未计入错题本。",
+                "reference_status": "not_found",
             },
         )
         self.assertEqual(self.app._grade_receipt(unclear)["status"], "needs_review")
@@ -388,13 +389,19 @@ class NotebookE2ETests(unittest.TestCase):
                     {"item_no": 2, "status": "complete", "question_text": "若 y-1=2，求 y。", "answer_text": "y=2", "confidence": 0.97},
                 ], "confidence": 0.98, "thread_id": "thread-e2e", "route": {"task": "math-intake-adjudication", "model": "test"}}
 
-            def grade(_, *, attempt, image_path, thread_id=None):
+            def grade(_, *, attempt, image_path, thread_id=None, reference=None):
                 resumed_threads.append(thread_id)
                 self.assertTrue(image_path.is_file())
                 self.assertEqual(image_path.parent.name, "model-previews")
-                return {"attempt_id": attempt.attempt_id, "input_version": attempt.input_version, "verdict": "incorrect", "first_error": "移项后结果错误", "cause_code": "algebra_transform", "cause_evidence": "由 x+1=2 得到 x=0", "knowledge_points": ["一元一次方程", "等式性质与移项"], "correct_solution": "x=2-1=1", "final_answer": "x=1", "prevention_cue": "移项后验算", "confidence": 0.97, "thread_id": "thread-e2e", "route": {"task": "math-grade-adjudication", "model": "test"}}
+                validation = cross_validate_reference(reference, "x=1") if reference else None
+                return {"attempt_id": attempt.attempt_id, "input_version": attempt.input_version, "verdict": "incorrect", "first_error": "移项后结果错误", "cause_code": "algebra_transform", "cause_evidence": "由 x+1=2 得到 x=0", "knowledge_points": ["一元一次方程", "等式性质与移项"], "correct_solution": "x=2-1=1", "final_answer": "x=1", "prevention_cue": "移项后验算", "cross_validation": validation, "confidence": 0.97, "thread_id": "thread-e2e", "route": {"task": "math-grade-adjudication", "model": "test"}}
 
         self.app.model_runner = FakeModel()
+        reference_id = "9" * 32
+        self.domain_store.add_question(Question(
+            reference_id, "若 x+1=2，求 x。", "x=1", 7, 1.0, "已验证题库",
+            solution_text="x=2-1=1", version_id="8" * 32,
+        ))
         cookie = self.login("13200132000")
         other_cookie = self.login("13200132001")
         content_type, body = self.multipart("model-question.png", self.png_bytes())
@@ -421,11 +428,13 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/model-grade", method="POST", payload={"input_version": 1}, cookie=other_cookie)[0], 404)
         graded = self.call(f"/v1/attempts/{confirmed[2]['resource_id']}/model-grade", method="POST", payload={"input_version": 1}, cookie=cookie)
         self.assertEqual((graded[0], graded[2]["verdict"], graded[2]["diagnosis"]["final_answer"]), (201, "incorrect", "x=1"))
+        self.assertEqual(graded[2]["diagnosis"]["cross_validation"]["status"], "consistent")
         self.assertEqual([item["item_no"] for item in self.call("/v1/intakes", cookie=cookie)[2]["items"]], [2])
         self.assertEqual(resumed_threads, [None, "thread-e2e", "thread-e2e"])
         self.assertEqual(self.call("/v1/errors", cookie=cookie)[2]["items"], [])
         committed = self.call(f"/v1/grade-results/{graded[2]['result_id']}/commit", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="model-commit")
         self.assertEqual((committed[0], committed[2]["question_text"]), (201, "若 x+1=2，求 x。"))
+        self.assertEqual(committed[2]["question_id"], reference_id)
         self.assertEqual(committed[2]["diagnosis"]["knowledge_points"], ["一元一次方程", "等式性质与移项"])
         second_id = refreshed[2]["items"][1]["intake_id"]
         second = self.call(f"/v1/intakes/{second_id}/confirm", method="POST", payload={"input_version": 1}, cookie=cookie, idempotency_key="model-grade-second")

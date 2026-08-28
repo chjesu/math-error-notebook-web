@@ -9,6 +9,7 @@ from typing import Any, Callable
 import uuid
 
 from scripts.codex_task_router import compact_conversation, read_conversation_history, run_conversation_turn, run_structured_harness_turn, select
+from services.web_domain.learning import VerifiedQuestionReference, cross_validate_reference
 from .math_verifier import verify_equations
 
 
@@ -169,6 +170,7 @@ class CodexNotebookModel:
         image_path: Path,
         thread_id: str | None = None,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
+        reference: VerifiedQuestionReference | None = None,
     ) -> dict[str, Any]:
         grade_key = (attempt.attempt_id, attempt.input_version)
         with self._active_lock:
@@ -195,6 +197,18 @@ class CodexNotebookModel:
                     "difficulty": difficulty,
                 },
             }
+            if reference is not None:
+                # The reference is introduced only after the independent solution is frozen.
+                frozen["evidence"]["verified_question_reference"] = {
+                    "question_id": reference.question_id,
+                    "version_id": reference.version_id,
+                    "version_no": reference.version_no,
+                    "stem_text": reference.stem_text,
+                    "answer_text": reference.answer_text,
+                    "solution_text": reference.solution_text,
+                    "source_title": reference.source_title,
+                    "match_score": reference.match_score,
+                }
             value = self._run(
                 f"math-grade-adjudication{suffix}", frozen, [image_path], thread_id, event_callback,
             )
@@ -228,6 +242,7 @@ class CodexNotebookModel:
             "correct_solution": correct_solution,
             "final_answer": final_answer,
             "prevention_cue": prevention_cue,
+            "cross_validation": cross_validate_reference(reference, solution["final_answer"]) if reference is not None else None,
             "thread_id": value["thread_id"],
             "route": self._route_metadata(value),
         }

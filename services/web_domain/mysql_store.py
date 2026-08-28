@@ -10,7 +10,17 @@ import json
 from typing import Any, Protocol
 import uuid
 
-from .learning import Question, Recommendation, ReviewTask, next_review, rank_questions
+from .learning import (
+    Question,
+    Recommendation,
+    ReviewTask,
+    VerifiedQuestionReference,
+    next_review,
+    question_anchor,
+    question_match_score,
+    rank_questions,
+    reference_validation_from_evidence,
+)
 
 
 class Cursor(Protocol):
@@ -89,6 +99,7 @@ class ErrorEntry:
     status: str
     created_at: datetime
     evidence: str | None = None
+    question_id: str | None = None
 
 
 def _required(value: str, label: str, maximum: int = 64) -> str:
@@ -343,12 +354,75 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             cursor.execute(
-                "SELECT intake_id,input_version,question_text,answer_text,status "
+                "SELECT intake_id,input_version,question_text,answer_text,status,question_id "
                 "FROM attempts WHERE id=%s AND user_id=%s",
                 (attempt_id, user_id),
             )
             row = cursor.fetchone()
-            return Attempt(attempt_id, user_id, str(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4])) if row else None
+            return Attempt(attempt_id, user_id, str(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4]), str(row[5]) if row[5] else None) if row else None
+        finally:
+            cursor.close()
+            connection.close()
+
+    def find_verified_question(self, *, question_text: str) -> VerifiedQuestionReference | None:
+        # Ponytail: use the current verified/version/license indexes before adding a second search service.
+        anchor = question_anchor(question_text)
+        if not anchor:
+            return None
+        escaped = anchor.replace("=", "==").replace("%", "=%").replace("_", "=_")
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT q.id,v.id,v.version_no,v.stem_text,v.answer_text,v.solution_text,s.title "
+                "FROM questions q JOIN question_sources s ON s.id=q.source_id "
+                "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
+                "WHERE q.status='verified' AND s.license_status IN ('open','user_authorized') "
+                "AND v.answer_text IS NOT NULL AND v.stem_text LIKE %s ESCAPE '=' "
+                "AND EXISTS (SELECT 1 FROM question_verifications x WHERE x.question_version_id=v.id AND x.verdict='verified') "
+                "ORDER BY q.id LIMIT 1000",
+                (f"%{escaped}%",),
+            )
+            matches = []
+            for row in cursor.fetchall():
+                score = question_match_score(question_text, str(row[3]))
+                if score >= 0.92:
+                    matches.append(VerifiedQuestionReference(
+                        question_id=str(row[0]), version_id=str(row[1]), version_no=int(row[2]),
+                        stem_text=str(row[3]), answer_text=str(row[4]), solution_text=row[5],
+                        source_title=str(row[6]), match_score=score,
+                    ))
+            return sorted(matches, key=lambda value: (-value.match_score, value.question_id))[0] if matches else None
+        finally:
+            cursor.close()
+            connection.close()
+
+    def link_attempt_question(self, *, user_id: str, attempt_id: str, question_id: str) -> Any:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute(
+                "SELECT q.id FROM questions q JOIN question_sources s ON s.id=q.source_id "
+                "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
+                "WHERE q.id=%s AND q.status='verified' AND s.license_status IN ('open','user_authorized') "
+                "AND EXISTS (SELECT 1 FROM question_verifications x WHERE x.question_version_id=v.id AND x.verdict='verified') FOR UPDATE",
+                (question_id,),
+            )
+            if not cursor.fetchone():
+                raise LookupError("verified question not found")
+            cursor.execute("SELECT question_id FROM attempts WHERE id=%s AND user_id=%s FOR UPDATE", (attempt_id, user_id))
+            row = cursor.fetchone()
+            if not row:
+                raise LookupError("attempt not found")
+            if row[0] and str(row[0]) != question_id:
+                raise RuntimeError("question_link_conflict")
+            cursor.execute("UPDATE attempts SET question_id=%s,updated_at=%s WHERE id=%s AND user_id=%s", (question_id, _utcnow(), attempt_id, user_id))
+            connection.commit()
+            return self.get_attempt(user_id=user_id, attempt_id=attempt_id)
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             cursor.close()
             connection.close()
@@ -632,7 +706,7 @@ class MySqlDomainStore:
         try:
             connection.begin()
             cursor.execute(
-                "SELECT c.attempt_id,c.input_version,c.verdict,c.first_error,c.status,a.question_text,a.answer_text,c.evidence_text "
+                "SELECT c.attempt_id,c.input_version,c.verdict,c.first_error,c.status,a.question_text,a.answer_text,c.evidence_text,a.question_id "
                 "FROM grade_candidates c JOIN attempts a ON a.id=c.attempt_id "
                 "WHERE c.id=%s AND c.user_id=%s AND a.user_id=%s FOR UPDATE",
                 (candidate_id, user_id, user_id),
@@ -644,27 +718,30 @@ class MySqlDomainStore:
                 raise RuntimeError("input_version_changed")
             if str(row[2]) not in {"partial", "incorrect"}:
                 raise RuntimeError("failed_final")
+            validation = reference_validation_from_evidence(row[7])
+            if validation and validation.get("status") == "conflict":
+                raise RuntimeError("reference_conflict")
             attempt_id = str(row[0])
-            cursor.execute("SELECT id,question_text,answer_text,first_error,status,created_at FROM error_notebook_entries WHERE user_id=%s AND attempt_id=%s FOR UPDATE", (user_id, attempt_id))
+            cursor.execute("SELECT id,question_text,answer_text,first_error,status,created_at,question_id FROM error_notebook_entries WHERE user_id=%s AND attempt_id=%s FOR UPDATE", (user_id, attempt_id))
             existing = cursor.fetchone()
             if existing:
                 self._ensure_review_tx(cursor, user_id, str(existing[0]), now)
                 connection.commit()
                 cursor.execute("SELECT evidence_text FROM grade_candidates WHERE id=%s AND user_id=%s", (candidate_id, user_id))
                 evidence = (cursor.fetchone() or (None,))[0]
-                return ErrorEntry(str(existing[0]), user_id, attempt_id, str(existing[1]), str(existing[2]), existing[3], str(existing[4]), existing[5].replace(tzinfo=timezone.utc), evidence)
+                return ErrorEntry(str(existing[0]), user_id, attempt_id, str(existing[1]), str(existing[2]), existing[3], str(existing[4]), existing[5].replace(tzinfo=timezone.utc), evidence, str(existing[6]) if existing[6] else None)
             error_id = uuid.uuid4().hex
             cursor.execute(
-                "INSERT INTO error_notebook_entries (id,user_id,attempt_id,grade_candidate_id,question_text,answer_text,first_error,status,created_at,updated_at) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,'open',%s,%s)",
-                (error_id, user_id, attempt_id, candidate_id, str(row[5]), str(row[6]), row[3], now, now),
+                "INSERT INTO error_notebook_entries (id,user_id,attempt_id,grade_candidate_id,question_id,question_text,answer_text,first_error,status,created_at,updated_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'open',%s,%s)",
+                (error_id, user_id, attempt_id, candidate_id, row[8], str(row[5]), str(row[6]), row[3], now, now),
             )
             cursor.execute("UPDATE grade_candidates SET status='committed' WHERE id=%s AND user_id=%s", (candidate_id, user_id))
             cursor.execute("UPDATE attempts SET status='committed',updated_at=%s WHERE id=%s AND user_id=%s", (now, attempt_id, user_id))
             self._ensure_review_tx(cursor, user_id, error_id, now)
-            cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'grade.committed','error',%s,%s,%s)", (user_id, error_id, json.dumps({"candidate_id": candidate_id}), now))
+            cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'grade.committed','error',%s,%s,%s)", (user_id, error_id, json.dumps({"candidate_id": candidate_id, "question_id": row[8], "reference_status": validation.get("status") if validation else "not_found"}), now))
             connection.commit()
-            return ErrorEntry(error_id, user_id, attempt_id, str(row[5]), str(row[6]), row[3], "open", now.replace(tzinfo=timezone.utc), row[7])
+            return ErrorEntry(error_id, user_id, attempt_id, str(row[5]), str(row[6]), row[3], "open", now.replace(tzinfo=timezone.utc), row[7], str(row[8]) if row[8] else None)
         except Exception:
             connection.rollback()
             raise
@@ -694,8 +771,8 @@ class MySqlDomainStore:
         connection = self._connect()
         cursor = connection.cursor()
         try:
-            cursor.execute("SELECT e.id,e.attempt_id,e.question_text,e.answer_text,e.first_error,e.status,e.created_at,c.evidence_text FROM error_notebook_entries e JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id WHERE e.user_id=%s AND e.status<>'removed' ORDER BY e.created_at DESC", (user_id,))
-            return [ErrorEntry(str(row[0]), user_id, str(row[1]), str(row[2]), str(row[3]), row[4], str(row[5]), row[6].replace(tzinfo=timezone.utc), row[7]) for row in cursor.fetchall()]
+            cursor.execute("SELECT e.id,e.attempt_id,e.question_text,e.answer_text,e.first_error,e.status,e.created_at,c.evidence_text,e.question_id FROM error_notebook_entries e JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id WHERE e.user_id=%s AND e.status<>'removed' ORDER BY e.created_at DESC", (user_id,))
+            return [ErrorEntry(str(row[0]), user_id, str(row[1]), str(row[2]), str(row[3]), row[4], str(row[5]), row[6].replace(tzinfo=timezone.utc), row[7], str(row[8]) if row[8] else None) for row in cursor.fetchall()]
         finally:
             cursor.close()
             connection.close()
@@ -715,9 +792,9 @@ class MySqlDomainStore:
         connection = self._connect()
         cursor = connection.cursor()
         try:
-            cursor.execute("SELECT e.attempt_id,e.question_text,e.answer_text,e.first_error,e.status,e.created_at,c.evidence_text FROM error_notebook_entries e JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id WHERE e.id=%s AND e.user_id=%s", (error_id, user_id))
+            cursor.execute("SELECT e.attempt_id,e.question_text,e.answer_text,e.first_error,e.status,e.created_at,c.evidence_text,e.question_id FROM error_notebook_entries e JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id WHERE e.id=%s AND e.user_id=%s", (error_id, user_id))
             row = cursor.fetchone()
-            return ErrorEntry(error_id, user_id, str(row[0]), str(row[1]), str(row[2]), row[3], str(row[4]), row[5].replace(tzinfo=timezone.utc), row[6]) if row else None
+            return ErrorEntry(error_id, user_id, str(row[0]), str(row[1]), str(row[2]), row[3], str(row[4]), row[5].replace(tzinfo=timezone.utc), row[6], str(row[7]) if row[7] else None) if row else None
         finally:
             cursor.close()
             connection.close()

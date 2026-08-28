@@ -12,7 +12,16 @@ import uuid
 
 from services.web_files import FileIntake
 
-from .learning import Question, Recommendation, ReviewTask, next_review, rank_questions
+from .learning import (
+    Question,
+    Recommendation,
+    ReviewTask,
+    VerifiedQuestionReference,
+    next_review,
+    question_match_score,
+    rank_questions,
+    reference_validation_from_evidence,
+)
 from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job, normalize_extraction_items
 from .practice_pdf import build_practice_pdf
 
@@ -26,6 +35,7 @@ class Attempt:
     question_text: str
     answer_text: str
     status: str
+    question_id: str | None = None
 
 
 def _now() -> datetime:
@@ -98,7 +108,7 @@ class InMemoryNotebookStore:
             self.intakes[intake_id] = IntakeItem(item.intake_id, item.user_id, item.file_id, item.input_version, "cancelled", item.question_text, item.answer_text, item.item_no)
         for attempt_id, item in list(self.attempts.items()):
             if item.user_id == user_id and item.status in {"grading", "grade_ready"}:
-                self.attempts[attempt_id] = Attempt(item.attempt_id, item.user_id, item.intake_id, item.input_version, item.question_text, item.answer_text, "cancelled")
+                self.attempts[attempt_id] = Attempt(item.attempt_id, item.user_id, item.intake_id, item.input_version, item.question_text, item.answer_text, "cancelled", item.question_id)
         for job_id, item in list(self.jobs.items()):
             if item.user_id == user_id and item.job_type in {"extract", "grade"} and item.status not in {"completed", "cancelled", "failed_final"}:
                 self.jobs[job_id] = Job(item.job_id, item.user_id, item.job_type, item.resource_id, "cancelled", item.checkpoint, item.last_error_code)
@@ -270,7 +280,7 @@ class InMemoryNotebookStore:
             return existing
         candidate = GradeCandidate(uuid.uuid4().hex, attempt_id, input_version, verdict, first_error, evidence, "candidate")
         self.candidates[candidate.candidate_id] = candidate
-        self.attempts[attempt_id] = Attempt(attempt.attempt_id, user_id, attempt.intake_id, attempt.input_version, attempt.question_text, attempt.answer_text, "grade_ready")
+        self.attempts[attempt_id] = Attempt(attempt.attempt_id, user_id, attempt.intake_id, attempt.input_version, attempt.question_text, attempt.answer_text, "grade_ready", attempt.question_id)
         self._update_job(user_id, "grade", attempt_id, "completed", {"candidate_id": candidate.candidate_id})
         return candidate
 
@@ -290,20 +300,57 @@ class InMemoryNotebookStore:
             raise RuntimeError("input_version_changed")
         if candidate.verdict not in {"partial", "incorrect"}:
             raise RuntimeError("failed_final")
+        validation = reference_validation_from_evidence(candidate.evidence)
+        if validation and validation.get("status") == "conflict":
+            raise RuntimeError("reference_conflict")
         existing = next((item for item in self.errors.values() if item.user_id == user_id and item.attempt_id == attempt.attempt_id), None)
         if existing:
             self._ensure_review(user_id, existing.error_id)
             return existing
-        entry = ErrorEntry(uuid.uuid4().hex, user_id, attempt.attempt_id, attempt.question_text, attempt.answer_text, candidate.first_error, "open", _now(), candidate.evidence)
+        entry = ErrorEntry(uuid.uuid4().hex, user_id, attempt.attempt_id, attempt.question_text, attempt.answer_text, candidate.first_error, "open", _now(), candidate.evidence, attempt.question_id)
         self.errors[entry.error_id] = entry
         self.candidates[candidate_id] = GradeCandidate(candidate.candidate_id, candidate.attempt_id, candidate.input_version, candidate.verdict, candidate.first_error, candidate.evidence, "committed")
-        self.attempts[attempt.attempt_id] = Attempt(attempt.attempt_id, user_id, attempt.intake_id, attempt.input_version, attempt.question_text, attempt.answer_text, "committed")
+        self.attempts[attempt.attempt_id] = Attempt(attempt.attempt_id, user_id, attempt.intake_id, attempt.input_version, attempt.question_text, attempt.answer_text, "committed", attempt.question_id)
         self._ensure_review(user_id, entry.error_id)
         return entry
 
     def add_question(self, question: Question, *, status: str = "verified", license_status: str = "open", verified: bool = True) -> None:
         self.questions[question.question_id] = question
         self.question_rules[question.question_id] = (status, license_status, verified)
+
+    def find_verified_question(self, *, question_text: str) -> VerifiedQuestionReference | None:
+        matches: list[VerifiedQuestionReference] = []
+        for question_id, question in self.questions.items():
+            if self.question_rules.get(question_id) not in {("verified", "open", True), ("verified", "user_authorized", True)}:
+                continue
+            score = question_match_score(question_text, question.stem_text)
+            if score >= 0.92 and question.answer_text:
+                matches.append(VerifiedQuestionReference(
+                    question_id=question_id,
+                    version_id=question.version_id or question_id,
+                    version_no=question.version_no,
+                    stem_text=question.stem_text,
+                    answer_text=question.answer_text,
+                    solution_text=question.solution_text,
+                    source_title=question.source_title,
+                    match_score=score,
+                ))
+        return sorted(matches, key=lambda value: (-value.match_score, value.question_id))[0] if matches else None
+
+    def link_attempt_question(self, *, user_id: str, attempt_id: str, question_id: str) -> Attempt:
+        attempt = self.get_attempt(user_id=user_id, attempt_id=attempt_id)
+        if not attempt:
+            raise LookupError("attempt not found")
+        if self.question_rules.get(question_id) not in {("verified", "open", True), ("verified", "user_authorized", True)}:
+            raise LookupError("verified question not found")
+        if attempt.question_id not in {None, question_id}:
+            raise RuntimeError("question_link_conflict")
+        linked = Attempt(
+            attempt.attempt_id, attempt.user_id, attempt.intake_id, attempt.input_version,
+            attempt.question_text, attempt.answer_text, attempt.status, question_id,
+        )
+        self.attempts[attempt_id] = linked
+        return linked
 
     def assign_recommendations(self, *, user_id: str, error_id: str, limit: int = 2) -> tuple[list[Recommendation], bool]:
         error = self.get_error(user_id=user_id, error_id=error_id)
@@ -357,7 +404,7 @@ class InMemoryNotebookStore:
         next_task = None
         if target is None:
             error = self.errors[task.error_id]
-            self.errors[task.error_id] = ErrorEntry(error.error_id, user_id, error.attempt_id, error.question_text, error.answer_text, error.first_error, "mastered", error.created_at, error.evidence)
+            self.errors[task.error_id] = ErrorEntry(error.error_id, user_id, error.attempt_id, error.question_text, error.answer_text, error.first_error, "mastered", error.created_at, error.evidence, error.question_id)
         else:
             stage, due_at = target
             review_key = (user_id, task.error_id, stage)
@@ -388,7 +435,7 @@ class InMemoryNotebookStore:
         error = self.get_error(user_id=user_id, error_id=error_id)
         if not error or error.status == "removed":
             raise LookupError("error not found")
-        updated = ErrorEntry(error.error_id, user_id, error.attempt_id, error.question_text, error.answer_text, error.first_error, status, error.created_at, error.evidence)
+        updated = ErrorEntry(error.error_id, user_id, error.attempt_id, error.question_text, error.answer_text, error.first_error, status, error.created_at, error.evidence, error.question_id)
         self.errors[error_id] = updated
         for task_id, task in list(self.review_tasks.items()):
             if task.user_id == user_id and task.error_id == error_id and task.status in {"pending", "ready"}:
@@ -500,7 +547,7 @@ class InMemoryNotebookStore:
                 self.intakes[intake_id] = IntakeItem(item.intake_id, item.user_id, item.file_id, item.input_version, "cancelled", item.question_text, item.answer_text, item.item_no)
         for attempt_id, item in list(self.attempts.items()):
             if item.user_id == user_id and item.status in {"grading", "grade_ready"}:
-                self.attempts[attempt_id] = Attempt(item.attempt_id, item.user_id, item.intake_id, item.input_version, item.question_text, item.answer_text, "cancelled")
+                self.attempts[attempt_id] = Attempt(item.attempt_id, item.user_id, item.intake_id, item.input_version, item.question_text, item.answer_text, "cancelled", item.question_id)
         for task_id, item in list(self.review_tasks.items()):
             if item.user_id == user_id and item.status in {"pending", "ready"}:
                 self.review_tasks[task_id] = ReviewTask(item.task_id, item.user_id, item.error_id, item.stage, item.due_at, "cancelled")
@@ -509,7 +556,7 @@ class InMemoryNotebookStore:
                 self.recommendations[recommendation_id] = Recommendation(item.recommendation_id, item.user_id, item.error_id, item.question, item.reason, "withdrawn")
         for error_id, item in list(self.errors.items()):
             if item.user_id == user_id and item.status != "removed":
-                self.errors[error_id] = ErrorEntry(item.error_id, item.user_id, item.attempt_id, item.question_text, item.answer_text, item.first_error, "removed", item.created_at, item.evidence)
+                self.errors[error_id] = ErrorEntry(item.error_id, item.user_id, item.attempt_id, item.question_text, item.answer_text, item.first_error, "removed", item.created_at, item.evidence, item.question_id)
 
     @staticmethod
     def _file_export(item: FileRecord) -> dict[str, Any]:
@@ -521,7 +568,7 @@ class InMemoryNotebookStore:
 
     @staticmethod
     def _attempt_export(item: Attempt) -> dict[str, Any]:
-        return {"attempt_id": item.attempt_id, "intake_id": item.intake_id, "input_version": item.input_version, "question_text": item.question_text, "answer_text": item.answer_text, "status": item.status}
+        return {"attempt_id": item.attempt_id, "intake_id": item.intake_id, "question_id": item.question_id, "input_version": item.input_version, "question_text": item.question_text, "answer_text": item.answer_text, "status": item.status}
 
     @staticmethod
     def _candidate_export(item: GradeCandidate) -> dict[str, Any]:

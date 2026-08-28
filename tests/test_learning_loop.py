@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
-from services.web_domain import ErrorEntry, InMemoryNotebookStore, NotebookService, Question
+from services.web_domain import ErrorEntry, InMemoryNotebookStore, NotebookService, Question, cross_validate_reference
 from services.web_domain.learning import next_review, rank_questions
+from services.web_domain.notebook import Attempt
 
 
 class LearningLoopTests(unittest.TestCase):
@@ -58,6 +60,29 @@ class LearningLoopTests(unittest.TestCase):
         self.assertEqual(next_review(4, "wrong", now)[0], 3)
         self.assertIsNone(next_review(6, "correct", now))
         self.assertEqual(rank_questions("函数 f x", [], 2), [])
+
+    def test_verified_bank_match_is_conservative_and_conflict_blocks_commit(self) -> None:
+        question = Question(
+            "1" * 32, "14. 若 x+1=2，求 x。", "答案：x=1", 7, 1.0, "授权题库",
+            solution_text="两边同时减一。", version_id="2" * 32, version_no=4,
+        )
+        self.store.add_question(question)
+        self.store.add_question(Question("3" * 32, "若 x+1=2，求 x。", "x=1", 7, 1.0, "受限题库"), license_status="restricted")
+        reference = self.store.find_verified_question(question_text="题干：若 x+1=2，求 x。")
+        self.assertIsNotNone(reference)
+        assert reference is not None
+        self.assertEqual((reference.question_id, reference.version_no), (question.question_id, 4))
+        self.assertEqual(cross_validate_reference(reference, "最终答案：x=1")["status"], "consistent")
+        conflict = cross_validate_reference(reference, "x=2")
+        attempt_id = "a" * 32
+        self.store.attempts[attempt_id] = Attempt(attempt_id, self.user_id, "i" * 32, 1, question.stem_text, "x=2", "grading")
+        candidate = self.store.record_grade_candidate(
+            user_id=self.user_id, attempt_id=attempt_id, input_version=1, verdict="incorrect",
+            first_error="计算错误", evidence=json.dumps({"schema": "math-error-diagnosis/v1", "cross_validation": conflict}),
+        )
+        with self.assertRaisesRegex(RuntimeError, "reference_conflict"):
+            self.store.commit_grade(user_id=self.user_id, candidate_id=candidate.candidate_id, expected_version=1)
+        self.assertEqual(self.store.errors, {self.error_id: self.store.errors[self.error_id]})
 
 
 if __name__ == "__main__":

@@ -80,7 +80,7 @@ globalThis.fetch = async (url, options) => {{
   if (!url.endsWith('/' + 'a'.repeat(32) + '/commit')) throw new Error('wrong endpoint');
   if (body.session_id !== 'session-test' || body.input_version !== 3) throw new Error('wrong payload');
   return {{ok: true, status: 200, json: async () => ({{receipt: {{
-    schema: 'math-notebook-entry-receipt/v1', status: 'saved', error_id: 'b'.repeat(32),
+    schema: 'math-notebook-entry-receipt/v1', status: 'saved', error_id: 'b'.repeat(32), reference_status: 'consistent',
     knowledge_point_count: 2, review_status: 'scheduled', message: '已计入错题本'
   }}}})}};
 }};

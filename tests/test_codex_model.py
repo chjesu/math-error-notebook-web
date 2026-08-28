@@ -8,6 +8,7 @@ from threading import Event, Thread
 import unittest
 
 from services.web_app.codex_model import CodexNotebookModel, ModelUnavailableError
+from services.web_domain import VerifiedQuestionReference
 
 
 def solution_review(route, review_input, output, images, thread_id=None, event_callback=None):
@@ -37,6 +38,7 @@ class CodexNotebookModelTests(unittest.TestCase):
                     result = {"attempt_id": frozen["attempt_id"], "input_version": 1, "solution": "1+1=2", "final_answer": "2", "verification_checks": [{"left": "1+1", "right": "2", "variables": []}], "confidence": 0.99}
                 else:
                     self.assertEqual(frozen["evidence"]["verification_report"][0]["status"], "verified")
+                    self.assertEqual(frozen["evidence"]["verified_question_reference"]["answer_text"], "2")
                     result = {"attempt_id": frozen["attempt_id"], "input_version": 1, "verdict": "incorrect", "first_error": "首错", "cause_code": "calculation", "cause_evidence": "证据", "knowledge_points": ["代数运算", "结果验算"], "correct_solution": "过程", "final_answer": "答案", "prevention_cue": "验算", "confidence": 0.98}
                 return {"route": route, "thread_id": thread_id or "thread-test", "result": result}
 
@@ -49,9 +51,11 @@ class CodexNotebookModelTests(unittest.TestCase):
             extracted = model.extract(intake=intake, file_record=file_record, image_path=image)
             self.assertEqual(extracted["items"][0]["question_text"], "题目")
             attempt = SimpleNamespace(attempt_id="b" * 32, input_version=1, question_text="题目", answer_text="作答")
-            graded = model.grade(attempt=attempt, image_path=image)
+            reference = VerifiedQuestionReference("1" * 32, "2" * 32, 3, "题目", "2", "1+1=2", "授权题库", 1.0)
+            graded = model.grade(attempt=attempt, image_path=image, reference=reference)
             self.assertEqual((graded["verdict"], graded["cause_code"]), ("incorrect", "calculation"))
             self.assertEqual(graded["knowledge_points"], ["代数运算", "结果验算"])
+            self.assertEqual(graded["cross_validation"]["status"], "consistent")
             self.assertEqual(list((root / "results").iterdir()), [])
 
     def test_rejects_a_response_for_another_attempt(self) -> None:

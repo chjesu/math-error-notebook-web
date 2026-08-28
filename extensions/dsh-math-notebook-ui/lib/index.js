@@ -3,6 +3,8 @@ export const inject = ["workspaceRegistry", "tools"];
 function receiptText(value) {
   const lines = [value.message];
   if (value.error_id) lines.push(`错题编号：${value.error_id}`);
+  const referenceLabels = {consistent: "已与已验证题库解析核对一致", conflict: "与题库解析冲突，等待复核", not_found: "题库未匹配"};
+  lines.push(`题库核验：${referenceLabels[value.reference_status]}`);
   lines.push(`知识点：${value.knowledge_point_count} 个`);
   lines.push(`复习任务：${value.review_status === "scheduled" ? "已安排" : "未安排"}`);
   return [{type: "text", text: lines.join("\n")}];
@@ -28,10 +30,13 @@ function receiptTool() {
       schema: {
         type: "object",
         additionalProperties: false,
-        required: ["schema", "status", "knowledge_point_count", "review_status", "message"],
+        required: ["schema", "status", "reference_status", "knowledge_point_count", "review_status", "message"],
         properties: {
           schema: {type: "string", const: "math-notebook-entry-receipt/v1"},
           status: {type: "string", enum: ["saved", "already_saved", "not_saved_correct", "needs_review"]},
+          reference_status: {type: "string", enum: ["consistent", "conflict", "not_found"]},
+          reference_question_id: {type: "string"},
+          reference_version_no: {type: "integer"},
           error_id: {type: "string"},
           knowledge_point_count: {type: "integer"},
           review_status: {type: "string", enum: ["scheduled", "not_scheduled"]},

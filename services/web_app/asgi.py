@@ -424,10 +424,14 @@ class NotebookAsgiApp:
                 file_record = await self._sync(self.notebook.store.get_file, user_id=user.user_id, file_id=intake.file_id)
                 if not file_record or file_record.media_type not in {"image/png", "image/jpeg"}:
                     raise ModelUnavailableError("grading requires the original PNG or JPEG")
+                reference = await self._sync(
+                    self.notebook.store.find_verified_question,
+                    question_text=attempt.question_text,
+                )
                 thread_owner_id, thread_id = await self._sync(self._intake_thread, user.user_id, intake)
                 with self.notebook.files.model_preview(file_record.object_key, file_record.content_sha256) as image_path:
                     result = await self._sync(
-                        self.model_runner.grade, attempt=attempt, image_path=image_path, thread_id=thread_id,
+                        self.model_runner.grade, attempt=attempt, image_path=image_path, thread_id=thread_id, reference=reference,
                     )
                 await self._sync(
                     self.notebook.store.save_codex_thread,
@@ -437,7 +441,11 @@ class NotebookAsgiApp:
                 )
                 if result.get("attempt_id") != attempt.attempt_id or result.get("input_version") != attempt.input_version:
                     raise ModelUnavailableError("model response does not match the frozen attempt")
-                verdict, first_error, evidence = self._grade_values(result, evidence_key="cause_evidence")
+                verdict, first_error, evidence = self._grade_values(
+                    result,
+                    evidence_key="cause_evidence",
+                    cross_validation=result.get("cross_validation"),
+                )
                 confidence = result.get("confidence")
                 if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
                     raise ModelUnavailableError("model returned invalid confidence")
@@ -451,6 +459,14 @@ class NotebookAsgiApp:
                     evidence=evidence,
                     confidence=float(confidence),
                 )
+                validation = self._diagnosis(candidate.evidence).get("cross_validation")
+                if isinstance(validation, dict) and validation.get("status") == "consistent":
+                    await self._sync(
+                        self.notebook.store.link_attempt_question,
+                        user_id=user.user_id,
+                        attempt_id=attempt_id,
+                        question_id=str(validation["question_id"]),
+                    )
                 await self._json(send, 201, self._candidate(candidate) | {"model": result.get("route")})
             elif path.startswith("/v1/grade-results/") and path.endswith("/commit") and method == "POST":
                 candidate_id = path.split("/")[-2]
@@ -532,7 +548,7 @@ class NotebookAsgiApp:
         except ModelUnavailableError as exc:
             await self._error(send, 503, exc.code)
         except RuntimeError as exc:
-            code = str(exc) if str(exc) in {"input_version_changed", "waiting_confirmation", "failed_final", "conflict"} else "conflict"
+            code = str(exc) if str(exc) in {"input_version_changed", "waiting_confirmation", "failed_final", "reference_conflict", "conflict"} else "conflict"
             await self._error(send, 422 if code == "failed_final" else 409, code)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
@@ -602,7 +618,12 @@ class NotebookAsgiApp:
         )
         self.notebook.store.save_codex_thread(user_id=user_id, conversation_id=thread_owner_id, thread_id=result["thread_id"])
         if result.get("action") == "revise_grade":
-            verdict, first_error, evidence = self._grade_values(result, evidence_key="cause_evidence")
+            prior_validation = self._diagnosis(candidate.evidence).get("cross_validation") if candidate else None
+            verdict, first_error, evidence = self._grade_values(
+                result,
+                evidence_key="cause_evidence",
+                cross_validation=prior_validation if isinstance(prior_validation, dict) else None,
+            )
             candidate = self.notebook.store.record_grade_candidate(
                 user_id=user_id, attempt_id=attempt_id, input_version=attempt.input_version,
                 verdict=verdict, first_error=first_error, evidence=evidence, confidence=float(result["confidence"]),
@@ -827,7 +848,7 @@ class NotebookAsgiApp:
 
     @staticmethod
     def _error_entry(value: ErrorEntry) -> dict[str, Any]:
-        return {"error_id": value.error_id, "status": value.status, "question_text": value.question_text, "answer_text": value.answer_text, "first_error": value.first_error, "diagnosis": NotebookAsgiApp._diagnosis(value.evidence), "created_at": value.created_at.isoformat()}
+        return {"error_id": value.error_id, "question_id": value.question_id, "status": value.status, "question_text": value.question_text, "answer_text": value.answer_text, "first_error": value.first_error, "diagnosis": NotebookAsgiApp._diagnosis(value.evidence), "created_at": value.created_at.isoformat()}
 
     @staticmethod
     def _diagnosis(value: str | None) -> dict[str, Any]:
@@ -875,7 +896,7 @@ class NotebookAsgiApp:
             if candidate.input_version != int(payload["input_version"]):
                 raise RuntimeError("input_version_changed")
             receipt = self._grade_receipt(candidate)
-            if candidate.verdict in {"partial", "incorrect"}:
+            if candidate.verdict in {"partial", "incorrect"} and receipt["status"] == "pending":
                 entry = await self._sync(
                     self.notebook.store.commit_grade,
                     user_id=user_id,
@@ -892,13 +913,15 @@ class NotebookAsgiApp:
                     if candidate.status == "committed"
                     else f"错题本记录检查：已计入错题本，已保存 {receipt['knowledge_point_count']} 个知识点，并已安排首次复习。"
                 )
+                if receipt["reference_status"] == "consistent":
+                    receipt["message"] = f"题库第 {receipt['reference_version_no']} 版解析交叉验证一致；" + receipt["message"]
             await self._json(send, 200, {"receipt": receipt})
         except LookupError:
             await self._error(send, 404, "not_found")
         except PermissionError:
             await self._error(send, 403, "forbidden")
         except RuntimeError as exc:
-            code = str(exc) if str(exc) == "input_version_changed" else "conflict"
+            code = str(exc) if str(exc) in {"input_version_changed", "reference_conflict"} else "conflict"
             await self._error(send, 409, code)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
@@ -925,6 +948,22 @@ class NotebookAsgiApp:
         diagnosis = NotebookAsgiApp._diagnosis(candidate.evidence)
         points = diagnosis.get("knowledge_points")
         count = len(points) if isinstance(points, list) else 0
+        validation = diagnosis.get("cross_validation")
+        reference = {"reference_status": "not_found"}
+        if isinstance(validation, dict):
+            reference = {
+                "reference_status": str(validation["status"]),
+                "reference_question_id": str(validation["question_id"]),
+                "reference_version_no": int(validation["version_no"]),
+            }
+        if reference["reference_status"] == "conflict":
+            return {
+                "schema": "math-notebook-entry-receipt/v1",
+                "status": "needs_review",
+                "knowledge_point_count": count,
+                "review_status": "not_scheduled",
+                "message": "错题本记录检查：独立解答与已验证题库解析存在冲突，尚未计入错题本，请复核。",
+            } | reference
         if candidate.verdict == "correct":
             return {
                 "schema": "math-notebook-entry-receipt/v1",
@@ -932,7 +971,7 @@ class NotebookAsgiApp:
                 "knowledge_point_count": count,
                 "review_status": "not_scheduled",
                 "message": "错题本记录检查：本题判定正确，未计入错题本。",
-            }
+            } | reference
         if candidate.verdict == "unclear":
             return {
                 "schema": "math-notebook-entry-receipt/v1",
@@ -940,17 +979,22 @@ class NotebookAsgiApp:
                 "knowledge_point_count": count,
                 "review_status": "not_scheduled",
                 "message": "错题本记录检查：证据不足，尚未计入错题本，请补充或修正后重试。",
-            }
+            } | reference
         return {
             "schema": "math-notebook-entry-receipt/v1",
             "status": "pending",
             "knowledge_point_count": count,
             "review_status": "not_scheduled",
             "message": "错题本记录检查：正在确认入本结果。",
-        }
+        } | reference
 
     @staticmethod
-    def _grade_values(payload: dict[str, Any], *, evidence_key: str) -> tuple[str, str | None, str]:
+    def _grade_values(
+        payload: dict[str, Any],
+        *,
+        evidence_key: str,
+        cross_validation: dict[str, Any] | None = None,
+    ) -> tuple[str, str | None, str]:
         verdict = str(payload["verdict"])
         first_error = str(payload.get("first_error") or "").strip() or None
         if verdict not in {"correct", "partial", "incorrect", "unclear"}:
@@ -977,7 +1021,29 @@ class NotebookAsgiApp:
             raise ValueError("complete diagnosis is required")
         if cause_code == "careless" and not cause_evidence:
             raise ValueError("careless requires direct evidence")
-        evidence = json.dumps({"schema": "math-error-diagnosis/v1", "cause_code": cause_code or None, "cause_evidence": cause_evidence or None, "knowledge_points": knowledge_points, "correct_solution": correct_solution or None, "final_answer": final_answer or None, "prevention_cue": prevention_cue or None}, ensure_ascii=False, separators=(",", ":"))
+        diagnosis: dict[str, Any] = {"schema": "math-error-diagnosis/v1", "cause_code": cause_code or None, "cause_evidence": cause_evidence or None, "knowledge_points": knowledge_points, "correct_solution": correct_solution or None, "final_answer": final_answer or None, "prevention_cue": prevention_cue or None}
+        if cross_validation is not None:
+            expected = {
+                "schema", "status", "question_id", "version_id", "version_no", "source_title",
+                "match_score", "reference_answer_sha256", "independent_answer_sha256",
+            }
+            if set(cross_validation) != expected or cross_validation.get("schema") != "question-bank-cross-validation/v1":
+                raise ValueError("invalid cross validation")
+            if cross_validation.get("status") not in {"consistent", "conflict"}:
+                raise ValueError("invalid cross validation")
+            if any(re.fullmatch(r"[0-9a-f]{32}", str(cross_validation.get(key, ""))) is None for key in ("question_id", "version_id")):
+                raise ValueError("invalid cross validation")
+            version_no, score = cross_validation.get("version_no"), cross_validation.get("match_score")
+            if not isinstance(version_no, int) or isinstance(version_no, bool) or version_no < 1:
+                raise ValueError("invalid cross validation")
+            if not isinstance(score, (int, float)) or isinstance(score, bool) or not 0.92 <= float(score) <= 1:
+                raise ValueError("invalid cross validation")
+            if not isinstance(cross_validation.get("source_title"), str) or not 1 <= len(cross_validation["source_title"]) <= 255:
+                raise ValueError("invalid cross validation")
+            if any(re.fullmatch(r"[0-9a-f]{64}", str(cross_validation.get(key, ""))) is None for key in ("reference_answer_sha256", "independent_answer_sha256")):
+                raise ValueError("invalid cross validation")
+            diagnosis["cross_validation"] = dict(cross_validation)
+        evidence = json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":"))
         return verdict, first_error, evidence
 
     @staticmethod
