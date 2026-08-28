@@ -134,6 +134,32 @@ window.__ModuleLoader__.load({
             border: 0;
             background: var(--dsw-alias-bg-base);
           }
+          [data-lzlm-selection-actions] {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            padding: 4px;
+            border: 1px solid var(--dsw-alias-border-l2);
+            border-radius: 9px;
+            background: var(--dsw-alias-bg-base);
+            box-shadow: var(--dsw-shadow-lv2);
+          }
+          [data-lzlm-selection-actions][data-open] { display: flex; }
+          [data-lzlm-selection-actions] button {
+            height: 30px;
+            padding: 0 10px;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--dsw-alias-label-primary);
+            font: inherit;
+            font-size: 13px;
+            cursor: pointer;
+          }
+          [data-lzlm-selection-actions] button:hover,
+          [data-lzlm-selection-actions] button:focus-visible {
+            background: var(--dsw-alias-interactive-bg-hover);
+          }
         `;
         document.head.appendChild(style);
         return () => style.remove();
@@ -201,6 +227,79 @@ window.__ModuleLoader__.load({
       }, "math-notebook: return to clicked session");
     }
 
+    function installSelectionToConversation(ctx) {
+      ctx.effect(() => {
+        const toolbar = document.createElement("div");
+        toolbar.dataset.lzlmSelectionActions = "";
+        toolbar.setAttribute("role", "toolbar");
+        toolbar.setAttribute("aria-label", "选中文本操作");
+        const addButton = document.createElement("button");
+        addButton.type = "button";
+        addButton.textContent = "添加到对话";
+        toolbar.appendChild(addButton);
+        document.body.appendChild(toolbar);
+        let selectedText = "";
+
+        const hide = () => {
+          selectedText = "";
+          toolbar.removeAttribute("data-open");
+        };
+        const show = () => {
+          const selection = window.getSelection();
+          if (selection === null || selection.isCollapsed || selection.rangeCount === 0) return hide();
+          const range = selection.getRangeAt(0);
+          const ancestor = range.commonAncestorContainer instanceof Element
+            ? range.commonAncestorContainer
+            : range.commonAncestorContainer.parentElement;
+          if (ancestor === null || ancestor.closest("[data-chat-flow]") === null || ancestor.closest("[data-composer-card]") !== null) return hide();
+          selectedText = selection.toString().trim();
+          if (selectedText === "") return hide();
+          toolbar.setAttribute("data-open", "");
+          toolbar.style.visibility = "hidden";
+          const rect = range.getBoundingClientRect();
+          const left = Math.min(window.innerWidth - toolbar.offsetWidth - 8, Math.max(8, rect.left + rect.width / 2 - toolbar.offsetWidth / 2));
+          toolbar.style.left = `${left}px`;
+          toolbar.style.top = `${Math.max(8, rect.top - toolbar.offsetHeight - 8)}px`;
+          toolbar.style.visibility = "visible";
+        };
+        const scheduleShow = () => requestAnimationFrame(show);
+        const hideOnMouseDown = (event) => {
+          if (!(event.target instanceof Element) || event.target.closest("[data-lzlm-selection-actions]") === null) hide();
+        };
+
+        addButton.addEventListener("mousedown", (event) => event.preventDefault());
+        addButton.addEventListener("click", () => {
+          const sessionId = ctx.sessions.list.getSnapshot().current;
+          const sessionContext = sessionId === undefined ? undefined : ctx.sessions.scope(sessionId);
+          if (sessionContext === undefined || selectedText === "") return hide();
+          const conversation = sessionContext.get("conversation");
+          if (conversation === undefined) return hide();
+          const input = conversation.input.for(sessionContext);
+          const quote = selectedText.split(/\r?\n/).map((line) => line === "" ? ">" : `> ${line}`).join("\n");
+          const draft = input.state.getSnapshot().draft.trimEnd();
+          input.setDraft(draft === "" ? quote : `${draft}\n\n${quote}`);
+          window.getSelection()?.removeAllRanges();
+          hide();
+          requestAnimationFrame(() => document.querySelector("[data-composer-card] textarea")?.focus());
+        });
+        document.addEventListener("mouseup", scheduleShow);
+        document.addEventListener("keyup", scheduleShow);
+        document.addEventListener("mousedown", hideOnMouseDown);
+        document.addEventListener("scroll", hide, true);
+        window.addEventListener("resize", hide);
+        const unsubscribe = ctx.sessions.list.subscribe(hide);
+        return () => {
+          unsubscribe();
+          document.removeEventListener("mouseup", scheduleShow);
+          document.removeEventListener("keyup", scheduleShow);
+          document.removeEventListener("mousedown", hideOnMouseDown);
+          document.removeEventListener("scroll", hide, true);
+          window.removeEventListener("resize", hide);
+          toolbar.remove();
+        };
+      }, "math-notebook: add selected text to conversation");
+    }
+
     function BrandMark({size, className}) {
       return jsx("img", {
         src: `${productOrigin}/assets/branding/logo-symbol-color-64-v1.png`,
@@ -253,13 +352,14 @@ window.__ModuleLoader__.load({
     }
 
     let pluginContext;
-    const inject = ["slots", "sessions", "workspaces"];
+    const inject = ["slots", "sessions", "workspaces", "conversation"];
     function apply(ctx) {
       pluginContext = ctx;
       installStudentSurface(ctx);
       openProductWorkspace(ctx);
       bindProductSession(ctx);
       closeProductOnSessionClick(ctx);
+      installSelectionToConversation(ctx);
       ctx.effect(() => {
         let current = ctx.sessions.list.getSnapshot().current;
         return ctx.sessions.list.subscribe(() => {
