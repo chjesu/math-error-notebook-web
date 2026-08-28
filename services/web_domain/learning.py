@@ -76,10 +76,36 @@ def normalized_answer_text(text: str) -> str:
     value = unicodedata.normalize("NFKC", text).casefold()
     value = re.sub(r"^\s*(?:最终)?答案\s*[:：]\s*", "", value)
     value = re.sub(r"^\s*(?:故选|选择)\s*", "", value)
+    value = re.sub(r"\\leq?\b", "≤", value)
+    value = re.sub(r"\\geq?\b", "≥", value)
+    value = re.sub(r"\\in\b", "∈", value)
     value = re.sub(r"\\(?:left|right|displaystyle|textstyle|,|!)", "", value)
     value = re.sub(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}", r"(\1)/(\2)", value)
     value = re.sub(r"\\sqrt\s*\{([^{}]+)\}", r"sqrt(\1)", value)
-    return "".join(re.findall(r"[0-9a-z\u4e00-\u9fff+\-*/=<>≤≥√^_|]", value))
+    return "".join(re.findall(r"[0-9a-z\u4e00-\u9fff+\-*/=<>≤≥∈√^_|]", value))
+
+
+def _canonical_answer_parts(text: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    value = unicodedata.normalize("NFKC", text).casefold()
+    markers = list(re.finditer(r"(?<![a-z0-9])\((\d{1,2})\)", value))
+    parts = [
+        (marker.group(1), value[marker.end(): markers[index + 1].start() if index + 1 < len(markers) else None])
+        for index, marker in enumerate(markers)
+    ] if markers else [("", value)]
+    canonical: list[tuple[str, tuple[str, ...]]] = []
+    for number, part in parts:
+        part = re.sub(r"\\leq?\b", "≤", part)
+        part = re.sub(r"\\geq?\b", "≥", part)
+        part = re.sub(r"\\in\b", "∈", part)
+        if "为" in part:
+            prefix, suffix = part.rsplit("为", 1)
+            if len(normalized_answer_text(prefix)) <= 24 and re.search(r"[0-9=<>≤≥∈]", suffix):
+                part = suffix
+        part = re.sub(r"([a-z])\s*∈\s*\[\s*([^,，]+?)\s*[,，]\s*([^\]]+?)\s*\]", r"\2≤\1≤\3", part)
+        alternatives = tuple(sorted(filter(None, (normalized_answer_text(item) for item in re.split(r"(?:或者|或|\bor\b)", part)))))
+        if alternatives:
+            canonical.append((number, alternatives))
+    return tuple(canonical)
 
 
 def question_anchor(text: str) -> str | None:
@@ -102,9 +128,11 @@ def question_match_score(source: str, candidate: str) -> float:
 
 
 def cross_validate_reference(reference: VerifiedQuestionReference, independent_answer: str) -> dict[str, object]:
-    expected = normalized_answer_text(reference.answer_text)
-    actual = normalized_answer_text(independent_answer)
-    status = "consistent" if expected and actual and expected == actual else "conflict"
+    expected_parts = _canonical_answer_parts(reference.answer_text)
+    actual_parts = _canonical_answer_parts(independent_answer)
+    expected = json.dumps(expected_parts, ensure_ascii=False, separators=(",", ":"))
+    actual = json.dumps(actual_parts, ensure_ascii=False, separators=(",", ":"))
+    status = "consistent" if expected_parts and actual_parts and expected_parts == actual_parts else "conflict"
     return {
         "schema": "question-bank-cross-validation/v1",
         "status": status,

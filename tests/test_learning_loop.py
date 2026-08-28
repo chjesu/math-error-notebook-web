@@ -84,6 +84,31 @@ class LearningLoopTests(unittest.TestCase):
             self.store.commit_grade(user_id=self.user_id, candidate_id=candidate.candidate_id, expected_version=1)
         self.assertEqual(self.store.errors, {self.error_id: self.store.errors[self.error_id]})
 
+    def test_bank_cross_validation_canonicalizes_equivalent_structured_answers(self) -> None:
+        question = Question(
+            "4" * 32,
+            "已知圆C经过三点，求圆的方程、弦所在直线及参数范围。",
+            r"(1)$(x-2)^{2}+(y-3)^{2}=4$ (2)$3x-4y+1=0$或$x=1$； (3)$\sqrt{13}-2\le m\le \sqrt{13}+2$",
+            10,
+            4.0,
+            "授权题库",
+        )
+        self.store.add_question(question)
+        matched = self.store.find_verified_question(question_text=question.stem_text)
+        self.assertIsNotNone(matched)
+        assert matched is not None
+        answer = (
+            r"(1) 圆C的方程为 $(x-2)^2+(y-3)^2=4$；"
+            r"(2) 直线l的方程为 $x=1$ 或 $3x-4y+1=0$；"
+            r"(3) m的取值范围为 $m\in[\sqrt{13}-2,\sqrt{13}+2]$。"
+        )
+        validation = cross_validate_reference(matched, answer)
+        self.assertEqual(validation["status"], "consistent")
+        self.assertEqual(validation["reference_answer_sha256"], validation["independent_answer_sha256"])
+
+        changed_bound = answer.replace(r"\sqrt{13}+2", r"\sqrt{13}+3")
+        self.assertEqual(cross_validate_reference(matched, changed_bound)["status"], "conflict")
+
 
 if __name__ == "__main__":
     unittest.main()
