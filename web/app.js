@@ -340,14 +340,14 @@ function bindWorkbench() {
       diagnosis.cause_code && `主要错因：${causeLabels[diagnosis.cause_code] || diagnosis.cause_code}`,
       diagnosis.cause_evidence && `分析与点评：${diagnosis.cause_evidence}`,
     ].filter(Boolean).join("\n");
-    const final = [diagnosis.final_answer, diagnosis.prevention_cue && `小建议：${diagnosis.prevention_cue}`].filter(Boolean).join("\n");
+    const final = [diagnosis.final_answer, diagnosis.prevention_cue && `（小建议：${diagnosis.prevention_cue}）`].filter(Boolean).join("\n\n");
     for (const [label, value] of [
       ["1. 题目整理", activeIntake?.questionText],
       ["2. 学生作答还原", activeIntake?.answerText || "未识别或未作答"],
       ["3. 错因分析与点评", cause],
       ["4. 知识点梳理", diagnosis.knowledge_points?.join("\n")],
       ["5. 详细解析", diagnosis.correct_solution],
-      ["6. 最终答案及小建议", final],
+      ["6. 最终答案", final],
     ]) {
       if (!value) continue;
       const term = document.createElement("dt");

@@ -44,6 +44,7 @@ class FrontendContractTests(unittest.TestCase):
         plugin = (ROOT / "extensions" / "dsh-math-notebook-ui" / "lib" / "client.js").read_text(encoding="utf-8")
         host_plugin = (ROOT / "extensions" / "dsh-math-notebook-ui" / "lib" / "index.js").read_text(encoding="utf-8")
         patch = (ROOT / "config" / "deepseek-harness" / "web-product.patch.yml").read_text(encoding="utf-8")
+        runtime_config = (ROOT / "config" / "deepseek-harness" / "cordis.yml").read_text(encoding="utf-8")
         preset = (ROOT / "config" / "deepseek-harness" / "agent-presets" / "math-notebook" / "agent.cordis.yml").read_text(encoding="utf-8")
         dependencies = package["dependencies"]
         self.assertEqual(dependencies["@deepseek-ai/dsh"], "0.1.1-rc.2")
@@ -101,6 +102,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("@deepseek-ai/dsh-persona", preset)
         self.assertNotIn("dsh-tool-", preset)
         self.assertIn("confirm_error_notebook_entry", preset)
+        for prompt in (patch, preset, runtime_config):
+            self.assertIn('最终答案', prompt)
+            self.assertIn('*（小建议：……）*', prompt)
+            self.assertNotIn('最终答案及小建议', prompt)
 
     def test_harness_product_views_hide_the_legacy_sidebar(self) -> None:
         script = (WEB / "app.js").read_text(encoding="utf-8")
@@ -133,8 +138,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("await commitCurrent()", script)
         self.assertIn('localStorage.getItem("lzlm-device-id")', script)
         self.assertIn('"X-Device-ID": deviceId', script)
-        for heading in ("题目整理", "学生作答还原", "错因分析与点评", "知识点梳理", "详细解析", "最终答案及小建议", "错题本记录检查"):
+        for heading in ("题目整理", "学生作答还原", "错因分析与点评", "知识点梳理", "详细解析", "最终答案", "错题本记录检查"):
             self.assertIn(heading, script)
+        self.assertIn('（小建议：${diagnosis.prevention_cue}）', script)
+        self.assertNotIn('6. 最终答案及小建议', script)
 
     def test_mobile_layout_and_keyboard_focus_are_defined_for_product_pages(self) -> None:
         css = (WEB / "app.css").read_text(encoding="utf-8")
