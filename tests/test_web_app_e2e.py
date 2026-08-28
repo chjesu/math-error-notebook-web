@@ -80,10 +80,10 @@ class NotebookE2ETests(unittest.TestCase):
         home = self.call("/")
         self.assertEqual(home[0], 200)
         self.assertIn("李兆霖数学错题本".encode("utf-8"), home[2])
-        for route in ("/", "/login", "/register", "/legal/terms", "/legal/privacy", "/errors", "/practice", "/settings"):
+        for route in ("/", "/login", "/register", "/legal/terms", "/legal/privacy", "/errors", "/practice", "/progress", "/settings"):
             self.assertEqual(self.call(route)[0], 200)
         self.assertNotIn("/reviews", self.app.static_files)
-        self.assertNotIn("/progress", self.app.static_files)
+        self.assertIn("/progress", self.app.static_files)
         logo = self.call("/assets/branding/logo-symbol-color-64-v1.png")
         self.assertEqual(logo[1]["content-type"], "image/png")
         icons = self.call("/web/nav-icons.svg")

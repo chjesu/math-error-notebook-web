@@ -8,11 +8,13 @@ window.__ModuleLoader__.load({
     const productWorkspaceTitle = "错题会话";
     const navigationItems = [
       {path: "/errors", label: "错题本", icon: "errors"},
-      {path: "/practice", label: "练习 PDF", icon: "practice"}
+      {path: "/practice", label: "练习 PDF", icon: "practice"},
+      {path: "/progress", label: "学习进度", icon: "progress"}
     ];
     const navigationIcons = {
       errors: [["path", {d: "M5 4.5A2.5 2.5 0 0 1 7.5 2H19v18H7.5A2.5 2.5 0 0 0 5 22Z"}], ["path", {d: "M5 4.5v15M9 7h6M9 11h6M9 15h4"}]],
-      practice: [["path", {d: "M6 2h8l4 4v16H6Z"}], ["path", {d: "M14 2v5h5M9 12h6M9 16h6"}]]
+      practice: [["path", {d: "M6 2h8l4 4v16H6Z"}], ["path", {d: "M14 2v5h5M9 12h6M9 16h6"}]],
+      progress: [["path", {d: "M4 20V10M10 20V4M16 20v-7M22 20H2"}]]
     };
     let activeProductPath = null;
     let disposeProductSurface = null;

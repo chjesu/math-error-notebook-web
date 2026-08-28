@@ -12,6 +12,7 @@ class FrontendContractTests(unittest.TestCase):
         pages = {
             "errors.html": ('data-page="errors"', 'id="all-errors"'),
             "practice.html": ('data-page="practice"', 'id="practice-errors"'),
+            "progress.html": ('data-page="progress"', 'id="review-rule-heading"'),
             "settings.html": ('data-page="settings"', 'id="sensitive-form"'),
         }
         unique_markers = [marker for _, marker in pages.values()]
@@ -23,12 +24,11 @@ class FrontendContractTests(unittest.TestCase):
             self.assertIn('/web/vendor/katex/katex.min.js', html)
             self.assertIn('/web/vendor/katex/auto-render.min.js', html)
             self.assertIn('李兆霖数学错题本', html)
-            for route in ('href="/"', 'href="/errors"', 'href="/practice"', 'href="/settings"'):
+            for route in ('href="/"', 'href="/errors"', 'href="/practice"', 'href="/progress"', 'href="/settings"'):
                 self.assertIn(route, html)
-            for icon in ("errors", "practice", "settings"):
+            for icon in ("errors", "practice", "progress", "settings"):
                 self.assertIn(f'/web/nav-icons.svg#{icon}', html)
             self.assertNotIn('href="/reviews"', html)
-            self.assertNotIn('href="/progress"', html)
             self.assertNotIn('/web/nav-icons.svg#workbench', html)
             self.assertIn('aria-label="返回工作台"', html)
             self.assertIn('<span>设置</span>', html)
@@ -38,14 +38,16 @@ class FrontendContractTests(unittest.TestCase):
                 if other_marker != own_marker:
                     self.assertNotIn(other_marker, html)
         self.assertFalse((WEB / "reviews.html").exists())
-        self.assertFalse((WEB / "progress.html").exists())
+        self.assertTrue((WEB / "progress.html").exists())
 
-    def test_error_notebook_is_the_single_review_dashboard(self) -> None:
+    def test_error_notebook_focuses_on_today_and_error_records(self) -> None:
         html = (WEB / "errors.html").read_text(encoding="utf-8")
         script = (WEB / "app.js").read_text(encoding="utf-8")
-        for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "各复习阶段", "今日的复习计划", "全部错题"):
+        for text in ("今日的复习计划", "全部错题"):
             self.assertIn(text, html)
-        for marker in ("stage-count-1", "stage-count-6", "generate-review-pdf", "today-review-items", "selected-error-count"):
+        for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "各复习阶段"):
+            self.assertNotIn(text, html)
+        for marker in ("generate-review-pdf", "today-review-items", "selected-error-count"):
             self.assertIn(f'id="{marker}"', html)
         for contract in ('api("/v1/errors")', 'api("/v1/reviews/today")', 'api("/v1/progress")', 'api("/v1/practice-pdfs"'):
             self.assertIn(contract, script)
@@ -55,6 +57,16 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("$$('", script)
         self.assertIn("review_stage_counts", script)
         self.assertIn("today_needs_correction_count", script)
+
+    def test_learning_progress_owns_review_rules_and_stage_statistics(self) -> None:
+        html = (WEB / "progress.html").read_text(encoding="utf-8")
+        script = (WEB / "app.js").read_text(encoding="utf-8")
+        for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "各复习阶段"):
+            self.assertIn(text, html)
+        for marker in ("stage-count-1", "stage-count-6", "total-error-count", "review-accuracy", "refresh-progress"):
+            self.assertIn(f'id="{marker}"', html)
+        self.assertIn('function bindProgress()', script)
+        self.assertIn('const progress = await api("/v1/progress")', script)
 
     def test_workbench_is_the_official_deepseek_harness_surface(self) -> None:
         html = (WEB / "index.html").read_text(encoding="utf-8")
@@ -79,12 +91,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('李兆霖数学错题本', plugin)
         self.assertIn('id: "math-notebook-navigation"', plugin)
         self.assertIn('sidebar.footer.action', plugin)
-        for label, route in (("错题本", "/errors"), ("练习 PDF", "/practice")):
+        for label, route in (("错题本", "/errors"), ("练习 PDF", "/practice"), ("学习进度", "/progress")):
             self.assertIn(f'path: "{route}", label: "{label}"', plugin)
         self.assertNotIn('path: "/reviews"', plugin)
-        self.assertNotIn('path: "/progress"', plugin)
         self.assertNotIn("今日复习", plugin)
-        self.assertNotIn("学习进度", plugin)
         self.assertNotIn('path: "/", label: "工作台"', plugin)
         self.assertIn('ctx.slots.register({name: "conversation", priority: -1}, ProductSurface)', plugin)
         self.assertIn('data-lzlm-product-surface', plugin)
@@ -190,7 +200,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="logout"', settings)
         self.assertIn("退出当前账号", settings)
         self.assertIn('id="logout-all"', settings)
-        for filename in ("index.html", "errors.html", "practice.html"):
+        for filename in ("index.html", "errors.html", "practice.html", "progress.html"):
             self.assertNotIn('id="logout"', (WEB / filename).read_text(encoding="utf-8"))
 
     def test_login_and_register_are_separate_documents(self) -> None:

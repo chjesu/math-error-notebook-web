@@ -73,6 +73,7 @@ class NotebookAsgiApp:
             "/legal/privacy": (root / "web" / "privacy.html", "text/html; charset=utf-8", False),
             "/errors": (root / "web" / "errors.html", "text/html; charset=utf-8", False),
             "/practice": (root / "web" / "practice.html", "text/html; charset=utf-8", False),
+            "/progress": (root / "web" / "progress.html", "text/html; charset=utf-8", False),
             "/settings": (root / "web" / "settings.html", "text/html; charset=utf-8", False),
             "/web/app.css": (root / "web" / "app.css", "text/css; charset=utf-8", False),
             "/web/app.js": (root / "web" / "app.js", "text/javascript; charset=utf-8", False),

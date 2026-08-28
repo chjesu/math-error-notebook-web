@@ -1111,16 +1111,6 @@ function bindErrors() {
     return `第 ${item.review.stage} 阶段`;
   }
 
-  function renderStats() {
-    const counts = progress.review_stage_counts || {};
-    for (let stage = 1; stage <= 6; stage += 1) $(`#stage-count-${stage}`).textContent = counts[String(stage)] || 0;
-    $("#total-error-count").textContent = `${progress.error_count || 0} 道`;
-    $("#mastered-count").textContent = progress.mastered_count || 0;
-    $("#due-review-count").textContent = progress.due_review_count || 0;
-    $("#completed-review-count").textContent = progress.completed_review_count || 0;
-    $("#review-accuracy").textContent = `${progress.review_accuracy_percent || 0}%`;
-  }
-
   function setPlanStep(selector, done) {
     $(selector).classList.toggle("is-done", done);
   }
@@ -1185,7 +1175,6 @@ function bindErrors() {
         dueReviews.slice(0, 12).forEach(item => selectedErrorIds.add(item.error_id));
         selectionInitialized = true;
       }
-      renderStats();
       renderPlan();
       renderDueReviews();
       renderErrors();
@@ -1288,6 +1277,26 @@ function bindErrors() {
   loadDashboard();
 }
 
+function bindProgress() {
+  async function loadProgress() {
+    try {
+      const progress = await api("/v1/progress");
+      const counts = progress.review_stage_counts || {};
+      for (let stage = 1; stage <= 6; stage += 1) $(`#stage-count-${stage}`).textContent = counts[String(stage)] || 0;
+      $("#total-error-count").textContent = `${progress.error_count || 0} 道`;
+      $("#mastered-count").textContent = progress.mastered_count || 0;
+      $("#due-review-count").textContent = progress.due_review_count || 0;
+      $("#completed-review-count").textContent = progress.completed_review_count || 0;
+      $("#review-accuracy").textContent = `${progress.review_accuracy_percent || 0}%`;
+      status($("#progress-status"), "数据已更新。");
+    } catch (error) {
+      status($("#progress-status"), authError(error), true);
+    }
+  }
+  $("#refresh-progress").addEventListener("click", loadProgress);
+  loadProgress();
+}
+
 function bindPractice() {
   function selectedErrorIds() { return [...document.querySelectorAll('[name="practice-error"]:checked')].map(input => input.value); }
   function refreshCreateButton() { $("#create-pdf").disabled = selectedErrorIds().length === 0; }
@@ -1375,7 +1384,7 @@ function bindSettings() {
 
 async function init() {
   if (!await requireSession()) return;
-  ({workbench: bindWorkbench, errors: bindErrors, practice: bindPractice, settings: bindSettings})[page]();
+  ({workbench: bindWorkbench, errors: bindErrors, practice: bindPractice, progress: bindProgress, settings: bindSettings})[page]();
 }
 
 init();
