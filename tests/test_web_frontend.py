@@ -47,8 +47,10 @@ class FrontendContractTests(unittest.TestCase):
             self.assertIn(text, html)
         for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "各复习阶段"):
             self.assertNotIn(text, html)
-        for marker in ("generate-review-pdf", "today-review-items", "selected-error-count"):
+        for marker in ("generate-review-pdf", "selected-error-count"):
             self.assertIn(f'id="{marker}"', html)
+        self.assertNotIn('id="today-review-items"', html)
+        self.assertNotIn("renderDueReviews", script)
         for contract in ('api("/v1/errors")', 'api("/v1/reviews/today")', 'api("/v1/progress")', 'api("/v1/practice-pdfs"'):
             self.assertIn(contract, script)
         self.assertIn('name="today-error"', script)

@@ -1132,11 +1132,6 @@ function bindErrors() {
     setPlanStep("#plan-step-done", due === 0);
   }
 
-  function renderDueReviews() {
-    $("#today-review-items").innerHTML = dueReviews.length ? dueReviews.map(item => `<article class="today-review-card"><div class="review-card-heading"><span class="badge">第 ${item.stage} 阶段</span><small>到期 ${escapeHtml(new Date(item.due_at).toLocaleDateString("zh-CN"))}</small></div><p class="review-card-question">${escapeHtml(item.question_text)}</p><details><summary>核对上次错误原因</summary><p>${escapeHtml(item.first_error || "待整理错误原因")}</p></details><div class="review-result-actions" data-review-id="${escapeHtml(item.review_id)}" data-error-id="${escapeHtml(item.error_id)}"><button type="button" class="ghost" data-review-result="wrong">仍需改错</button><button type="button" class="ghost" data-review-result="partial">部分掌握</button><button type="button" data-review-result="correct">已独立做对</button></div></article>`).join("") : '<p class="empty today-complete-message">今天没有未完成的到期任务，可以手动勾选错题继续巩固。</p>';
-    renderMath($("#today-review-items"));
-  }
-
   function renderErrors() {
     $("#all-errors").innerHTML = errors.length ? errors.map(item => {
       const diagnosis = item.diagnosis || {};
@@ -1176,7 +1171,6 @@ function bindErrors() {
         selectionInitialized = true;
       }
       renderPlan();
-      renderDueReviews();
       renderErrors();
     } catch (error) {
       status($("#page-status"), authError(error), true);
@@ -1229,22 +1223,6 @@ function bindErrors() {
       }
       await loadDashboard();
       await showError(errorId);
-    } catch (error) {
-      status($("#page-status"), authError(error), true);
-    } finally {
-      event.target.disabled = false;
-    }
-  });
-  $("#today-review-items").addEventListener("click", async event => {
-    const result = event.target.dataset.reviewResult;
-    const actions = event.target.closest("[data-review-id]");
-    if (!result || !actions) return;
-    event.target.disabled = true;
-    try {
-      const completed = await api(`/v1/reviews/${actions.dataset.reviewId}/complete`, {method: "POST", body: JSON.stringify({result}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-      selectedErrorIds.delete(actions.dataset.errorId);
-      status($("#page-status"), result === "correct" ? (completed.mastered ? "本题六阶段复习已完成，已标记掌握。" : `本次已独立做对，下次进入第 ${completed.next_review.stage} 阶段。`) : "已记录为需改错，并安排下一次复习。", false);
-      await loadDashboard();
     } catch (error) {
       status($("#page-status"), authError(error), true);
     } finally {

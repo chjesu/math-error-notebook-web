@@ -321,17 +321,8 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .plan-steps li.is-done > span { background: #18794e; color: #fff; }
 .plan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .plan-actions .check { margin: 0; color: var(--muted); font-size: 13px; }
-.today-review-list { display: grid; gap: 10px; margin-top: 14px; }
-.today-review-card { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
-.review-card-heading,
 .error-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.review-card-heading small,
 .error-card-heading time { color: var(--muted); font-size: 12px; }
-.review-card-question { margin: 0; white-space: pre-wrap; }
-.today-review-card details { color: var(--muted); }
-.today-review-card details p { margin-bottom: 0; }
-.review-result-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.today-complete-message { padding: 16px; border-radius: 10px; background: var(--brand-soft); text-align: center; }
 .selection-hint { color: var(--muted); font-size: 12px; }
 .error-list { padding: 0; list-style: none; }
 .error-list > li { padding: 14px 0; border-top: 1px solid var(--line); }
@@ -538,5 +529,4 @@ textarea:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset
   .plan-steps { grid-template-columns: 1fr; }
   .stage-stat-grid { grid-template-columns: repeat(2, 1fr); }
   .error-card dl > div { grid-template-columns: 1fr; gap: 3px; }
-  .review-result-actions button { flex: 1 1 120px; }
 }
