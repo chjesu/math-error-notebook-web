@@ -1323,6 +1323,16 @@ function bindProgress() {
 function bindPractice() {
   function selectedErrorIds() { return [...document.querySelectorAll('[name="practice-error"]:checked')].map(input => input.value); }
   function refreshCreateButton() { $("#create-pdf").disabled = selectedErrorIds().length === 0; }
+  function loadPracticePdfs() {
+    return api("/v1/practice-pdfs").then(result => {
+      $("#practice-pdf-history").innerHTML = result.items.length ? result.items.map(item => {
+        const generated = item.generated_at ? new Date(item.generated_at).toLocaleString("zh-CN") : "已生成";
+        const details = `${generated} · ${item.question_count || 0} 道题${item.include_answers ? " · 含答案" : ""}`;
+        return `<article class="pdf-history-item"><div><strong>${escapeHtml(item.filename)}</strong><small>${escapeHtml(details)}</small></div><a class="pdf-download" href="${escapeHtml(item.download_url)}" download>下载</a></article>`;
+      }).join("") : '<p class="empty">还没有生成过练习 PDF。</p>';
+    }).catch(error => { $("#practice-pdf-history").innerHTML = `<p class="status error">${escapeHtml(authError(error))}</p>`; });
+  }
+  loadPracticePdfs();
   api("/v1/errors").then(result => {
     $("#practice-errors").innerHTML = result.items.length ? result.items.map(item => `<label class="check selection-item"><input name="practice-error" type="checkbox" value="${item.error_id}"> <span>${escapeHtml(item.question_text)}</span></label>`).join("") : '<p class="empty">还没有错题，请先在工作台录入。</p>';
     renderMath($("#practice-errors"));
@@ -1346,6 +1356,7 @@ function bindPractice() {
         link.textContent = "下载练习 PDF";
         link.setAttribute("download", "");
         $("#pdf-status").replaceChildren("已生成：", link);
+        await loadPracticePdfs();
       } else status($("#pdf-status"), `PDF 任务已受理：${result.task_id || result.resource_id || "处理中"}，请稍后刷新查看。`);
     } catch (error) {
       status($("#pdf-status"), authError(error), true);

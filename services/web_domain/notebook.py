@@ -524,6 +524,24 @@ class InMemoryNotebookStore:
         self.jobs[job_id] = completed
         return completed
 
+    def list_practice_pdfs(self, *, user_id: str) -> list[dict[str, Any]]:
+        items = []
+        for job in reversed(self.jobs.values()):
+            if job.user_id != user_id or job.job_type != "practice_pdf" or job.status != "completed" or not job.checkpoint:
+                continue
+            record = self.files.get(str(job.checkpoint.get("file_id", "")))
+            if not record or record.user_id != user_id or record.purpose != "practice_pdf" or record.status != "ready":
+                continue
+            items.append({
+                "task_id": job.job_id,
+                "filename": record.original_name,
+                "byte_size": record.byte_size,
+                "generated_at": None,
+                "question_count": int(job.checkpoint.get("question_count", 0)),
+                "include_answers": bool(job.checkpoint.get("include_answers", False)),
+            })
+        return items
+
     def create_export_job(self, *, user_id: str, idempotency_key: str, expires_at: datetime) -> Job:
         key = (user_id, "export", idempotency_key)
         existing = self._job_keys.get(key)

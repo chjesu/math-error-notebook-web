@@ -102,6 +102,14 @@ class DomainContractTests(unittest.TestCase):
         self.assertIn("WHERE user_id=%s", query)
         self.assertEqual(args, ("a" * 32,))
 
+    def test_practice_pdf_history_is_scoped_to_server_user(self) -> None:
+        connection = FakeConnection([[]])
+        items = MySqlDomainStore(lambda: connection).list_practice_pdfs(user_id="a" * 32)
+        query, args = connection.cursor_instance.executed[-1]
+        self.assertEqual(items, [])
+        self.assertIn("WHERE j.user_id=%s", query)
+        self.assertEqual(args, ("a" * 32,))
+
     def test_mysql_commit_rejects_correct_candidate(self) -> None:
         row = ("a" * 32, 1, "correct", None, "pending", "题目", "答案", None)
         connection = FakeConnection([row])

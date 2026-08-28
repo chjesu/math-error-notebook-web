@@ -325,6 +325,11 @@
       }
     },
     "/v1/practice-pdfs": {
+      "get": {
+        "operationId": "listPracticePdfs",
+        "security": [{"sessionCookie": []}],
+        "responses": {"200": {"$ref": "#/components/responses/PracticePdfList"}, "401": {"$ref": "#/components/responses/Error"}}
+      },
       "post": {
         "operationId": "createPracticePdf",
         "security": [{"sessionCookie": []}],
@@ -434,6 +439,7 @@
       "Progress": {"description": "当前用户学习进度", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Progress"}}}},
       "BankStatus": {"description": "本地题库同步状态", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BankStatus"}}}},
       "PracticeJob": {"description": "练习 PDF 任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PracticeJob"}}}},
+      "PracticePdfList": {"description": "当前账号已生成的练习 PDF", "content": {"application/json": {"schema": {"type": "object", "required": ["items", "count"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/PracticePdfItem"}}, "count": {"type": "integer", "minimum": 0}}}}}},
       "ExportJob": {"description": "当前用户的短时导出任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExportJob"}}}},
       "ExportCreated": {"description": "已创建并可立即下载的个人数据导出", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExportCreated"}}}},
       "RetryLater": {"description": "请求被限流；按 Retry-After 后重试", "headers": {"Retry-After": {"required": true, "schema": {"type": "integer", "minimum": 1}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
@@ -480,6 +486,7 @@
       "Progress": {"type": "object", "required": ["error_count", "mastered_count", "due_review_count", "recommendation_gap_count", "sample_sufficient", "completed_review_count", "correct_review_count", "partial_review_count", "wrong_review_count", "review_accuracy_percent", "review_stage_counts", "today_completed_review_count", "today_needs_correction_count"], "properties": {"error_count": {"type": "integer", "minimum": 0}, "mastered_count": {"type": "integer", "minimum": 0}, "due_review_count": {"type": "integer", "minimum": 0}, "recommendation_gap_count": {"type": "integer", "minimum": 0}, "completed_review_count": {"type": "integer", "minimum": 0}, "correct_review_count": {"type": "integer", "minimum": 0}, "partial_review_count": {"type": "integer", "minimum": 0}, "wrong_review_count": {"type": "integer", "minimum": 0}, "review_accuracy_percent": {"type": "number", "minimum": 0, "maximum": 100}, "review_stage_counts": {"type": "object", "additionalProperties": false, "required": ["1", "2", "3", "4", "5", "6"], "properties": {"1": {"type": "integer", "minimum": 0}, "2": {"type": "integer", "minimum": 0}, "3": {"type": "integer", "minimum": 0}, "4": {"type": "integer", "minimum": 0}, "5": {"type": "integer", "minimum": 0}, "6": {"type": "integer", "minimum": 0}}}, "today_completed_review_count": {"type": "integer", "minimum": 0}, "today_needs_correction_count": {"type": "integer", "minimum": 0}, "sample_sufficient": {"type": "boolean"}}},
       "BankStatus": {"type": "object", "required": ["question_count", "recommendable_count", "candidate_count"], "properties": {"question_count": {"type": "integer", "minimum": 0}, "recommendable_count": {"type": "integer", "minimum": 0}, "candidate_count": {"type": "integer", "minimum": 0}}},
       "PracticePdfRequest": {"type": "object", "additionalProperties": false, "required": ["error_ids"], "properties": {"error_ids": {"type": "array", "minItems": 1, "maxItems": 12, "uniqueItems": true, "items": {"$ref": "#/components/schemas/Id"}}, "include_answers": {"type": "boolean", "default": false}}},
+      "PracticePdfItem": {"type": "object", "additionalProperties": false, "required": ["task_id", "filename", "byte_size", "generated_at", "question_count", "include_answers", "download_url"], "properties": {"task_id": {"$ref": "#/components/schemas/Id"}, "filename": {"type": "string"}, "byte_size": {"type": "integer", "minimum": 0}, "generated_at": {"type": ["string", "null"], "format": "date-time"}, "question_count": {"type": "integer", "minimum": 0}, "include_answers": {"type": "boolean"}, "download_url": {"type": "string"}}},
       "PracticeJob": {"allOf": [{"$ref": "#/components/schemas/Task"}, {"type": "object", "properties": {"download_url": {"type": "string"}}}]},
       "ExportJob": {"type": "object", "additionalProperties": false, "required": ["job_id", "status", "expires_at"], "properties": {"job_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["queued", "running", "completed", "failed_final", "cancelled"]}, "expires_at": {"type": "string", "format": "date-time"}, "download_url": {"type": "string"}}},
       "ExportCreated": {"type": "object", "additionalProperties": false, "required": ["job_id", "download_url", "expires_at"], "properties": {"job_id": {"$ref": "#/components/schemas/Id"}, "download_url": {"type": "string"}, "expires_at": {"type": "string", "format": "date-time"}}},

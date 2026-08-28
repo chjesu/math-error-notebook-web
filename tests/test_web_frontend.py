@@ -186,6 +186,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("练习 PDF", html)
         self.assertIn("/v1/reviews/today", script)
         self.assertIn("/v1/practice-pdfs", script)
+        self.assertIn('id="practice-pdf-history"', html)
+        self.assertIn("已生成的 PDF", html)
         self.assertIn("/chat-turn", script)
         self.assertIn("await commitCurrent()", script)
         self.assertIn('localStorage.getItem("lzlm-device-id")', script)

@@ -1118,6 +1118,33 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def list_practice_pdfs(self, *, user_id: str) -> list[dict[str, Any]]:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT j.id,j.checkpoint_json,j.updated_at,f.original_name,f.byte_size "
+                "FROM web_jobs j JOIN web_files f ON f.id=JSON_UNQUOTE(JSON_EXTRACT(j.checkpoint_json,'$.file_id')) AND f.user_id=j.user_id "
+                "WHERE j.user_id=%s AND j.job_type='practice_pdf' AND j.status='completed' AND f.purpose='practice_pdf' AND f.status='ready' "
+                "ORDER BY j.updated_at DESC",
+                (user_id,),
+            )
+            items = []
+            for job_id, checkpoint_json, updated_at, original_name, byte_size in cursor.fetchall():
+                checkpoint = self._json(checkpoint_json) or {}
+                items.append({
+                    "task_id": str(job_id),
+                    "filename": str(original_name),
+                    "byte_size": int(byte_size),
+                    "generated_at": updated_at.replace(tzinfo=timezone.utc).isoformat(),
+                    "question_count": int(checkpoint.get("question_count", 0)),
+                    "include_answers": bool(checkpoint.get("include_answers", False)),
+                })
+            return items
+        finally:
+            cursor.close()
+            connection.close()
+
     def create_export_job(self, *, user_id: str, idempotency_key: str, expires_at: datetime) -> Job:
         key = _required(idempotency_key, "idempotency_key")
         now = _utcnow()

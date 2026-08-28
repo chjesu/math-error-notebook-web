@@ -540,6 +540,9 @@ class NotebookAsgiApp:
                 await self._json(send, 200, progress)
             elif path == "/v1/bank/status" and method == "GET":
                 await self._json(send, 200, await self._sync(self.notebook.store.bank_status))
+            elif path == "/v1/practice-pdfs" and method == "GET":
+                items = await self._sync(self.notebook.store.list_practice_pdfs, user_id=user.user_id)
+                await self._json(send, 200, {"items": [item | {"download_url": f"/v1/practice-pdfs/{item['task_id']}/download"} for item in items], "count": len(items)})
             elif path == "/v1/practice-pdfs" and method == "POST":
                 payload = await self._json_body(receive)
                 error_ids = payload.get("error_ids")
