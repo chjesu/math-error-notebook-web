@@ -2,6 +2,46 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>错题本｜李兆霖数学错题本</title><link rel="icon" href="/assets/branding/favicon-v1.ico"><link rel="stylesheet" href="/web/app.css"></head>
 <body class="is-authenticated" data-page="errors"><div class="app-shell">
   <aside class="sidebar" aria-label="主导航"><a class="brand" href="/" aria-label="返回工作台"><img src="/assets/branding/logo-symbol-color-64-v1.png" alt=""><span>李兆霖数学错题本</span></a><nav><a class="active" aria-current="page" href="/errors"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#errors"></use></svg><span>错题本</span></a><a href="/practice"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#practice"></use></svg><span>练习 PDF</span></a><a href="/settings"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#settings"></use></svg><span>设置</span></a></nav></aside>
-  <main id="main" tabindex="-1"><header class="page-header"><div><p class="eyebrow">个人错题本</p><h1>错题本</h1></div></header><section class="panel page-panel"><div class="panel-title"><h2>全部错题</h2><button id="refresh-errors" class="ghost" type="button">刷新</button></div><ol id="all-errors" class="error-list"><li class="empty">正在加载…</li></ol><article id="error-detail" class="error-detail" hidden></article><p id="page-status" class="status" role="status" aria-live="polite"></p></section></main>
+  <main id="main" tabindex="-1"><header class="page-header"><div><p class="eyebrow">个人错题本</p><h1>错题本与复习</h1><p class="page-intro">看清当前阶段，完成今天的重做与改错。</p></div><button id="refresh-errors" class="ghost" type="button">刷新数据</button></header>
+    <div class="page-panel error-dashboard">
+      <div class="dashboard-overview">
+        <section class="panel review-rule-panel" aria-labelledby="review-rule-heading">
+          <div class="panel-title"><div><p class="section-kicker">为什么这样复习</p><h2 id="review-rule-heading">六阶段复习规则</h2></div><span class="badge">答对才前进</span></div>
+          <p>每次先遮住答案独立重做，再核对并立即改错。连续答对时，间隔依次拉长；部分掌握停留在当前阶段，答错则回退一阶段，均在次日再次复习。</p>
+          <ol class="review-rule-stages" aria-label="六阶段复习间隔">
+            <li><strong>1</strong><span>入本当天</span></li><li><strong>2</strong><span>1 天后</span></li><li><strong>3</strong><span>3 天后</span></li><li><strong>4</strong><span>7 天后</span></li><li><strong>5</strong><span>14 天后</span></li><li><strong>6</strong><span>30 天后</span></li>
+          </ol>
+          <div class="memory-principles"><p><strong>主动提取</strong><span>不看答案重做，比重复阅读更能加固回忆路径。</span></p><p><strong>间隔效应</strong><span>在快要遗忘时再次提取，让记忆保持得更久。</span></p><p><strong>即时反馈</strong><span>立刻定位首错并改正，避免错误过程被重复强化。</span></p></div>
+        </section>
+        <section class="panel review-stats-panel" aria-labelledby="review-stats-heading">
+          <div class="panel-title"><div><p class="section-kicker">错题统计</p><h2 id="review-stats-heading">各复习阶段</h2></div><strong id="total-error-count" class="metric-total">— 道</strong></div>
+          <div class="stage-stat-grid">
+            <div><strong id="stage-count-1">—</strong><span>阶段 1</span></div><div><strong id="stage-count-2">—</strong><span>阶段 2</span></div><div><strong id="stage-count-3">—</strong><span>阶段 3</span></div><div><strong id="stage-count-4">—</strong><span>阶段 4</span></div><div><strong id="stage-count-5">—</strong><span>阶段 5</span></div><div><strong id="stage-count-6">—</strong><span>阶段 6</span></div><div class="is-mastered"><strong id="mastered-count">—</strong><span>已掌握</span></div>
+          </div>
+          <dl class="review-summary"><div><dt>今日待复习</dt><dd id="due-review-count">—</dd></div><div><dt>累计完成</dt><dd id="completed-review-count">—</dd></div><div><dt>独立做对率</dt><dd id="review-accuracy">—</dd></div></dl>
+        </section>
+      </div>
+
+      <section class="panel today-plan-panel" aria-labelledby="today-plan-heading">
+        <div class="panel-title"><div><p class="section-kicker">今日的复习计划</p><h2 id="today-plan-heading">按步骤完成</h2></div><span id="today-plan-state" class="badge">正在加载</span></div>
+        <ol class="plan-steps">
+          <li id="plan-step-select"><span>1</span><div><strong>选择复习题目</strong><small id="selected-error-count">待选择</small></div></li>
+          <li id="plan-step-pdf"><span>2</span><div><strong>生成推荐题 PDF</strong><small id="pdf-step-state">待生成</small></div></li>
+          <li id="plan-step-correct"><span>3</span><div><strong>完成重做与改错</strong><small id="correction-step-state">待开始</small></div></li>
+          <li id="plan-step-done"><span>4</span><div><strong>今日复习完成</strong><small id="completion-step-state">尚未完成</small></div></li>
+        </ol>
+        <div class="plan-actions"><button id="generate-review-pdf" type="button" disabled>生成今日复习推荐题 PDF</button><label class="check"><input id="review-pdf-answers" type="checkbox"> 在 PDF 末尾附推荐题答案</label></div>
+        <p id="today-pdf-status" class="status" role="status" aria-live="polite"></p>
+        <div id="today-review-items" class="today-review-list"><p class="empty">正在读取今日复习任务…</p></div>
+      </section>
+
+      <section class="panel all-errors-panel" aria-labelledby="all-errors-heading">
+        <div class="panel-title"><div><p class="section-kicker">题目档案</p><h2 id="all-errors-heading">全部错题</h2></div><span class="selection-hint">勾选后加入今日计划，最多 12 道</span></div>
+        <ul id="all-errors" class="error-list"><li class="empty">正在加载…</li></ul>
+        <article id="error-detail" class="error-detail" hidden></article>
+      </section>
+      <p id="page-status" class="status" role="status" aria-live="polite"></p>
+    </div>
+  </main>
   <nav class="bottom-nav" aria-label="移动端主导航"><a href="/">工作台</a><a class="active" aria-current="page" href="/errors">错题本</a><a href="/practice">练习</a><a href="/settings">更多</a></nav>
 </div><script src="/web/vendor/katex/katex.min.js" defer></script><script src="/web/vendor/katex/auto-render.min.js" defer></script><script src="/web/app.js" defer></script></body></html>

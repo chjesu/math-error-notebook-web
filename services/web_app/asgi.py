@@ -499,7 +499,9 @@ class NotebookAsgiApp:
                 await self._json(send, 200, self._candidate(candidate))
             elif path == "/v1/errors" and method == "GET":
                 items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
-                await self._json(send, 200, {"items": [self._error_entry(item) for item in items]})
+                reviews = await self._sync(self.notebook.store.list_active_reviews, user_id=user.user_id)
+                review_by_error = {item.error_id: item for item in reviews}
+                await self._json(send, 200, {"items": [self._error_entry(item) | {"review": self._review(review_by_error[item.error_id]) if item.error_id in review_by_error else None} for item in items]})
             elif path.startswith("/v1/errors/") and path.endswith("/master") and method == "POST":
                 entry = await self._sync(self.notebook.store.set_error_status, user_id=user.user_id, error_id=path.split("/")[-2], status="mastered")
                 await self._json(send, 200, self._error_entry(entry))

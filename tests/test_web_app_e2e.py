@@ -625,7 +625,8 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(committed[0], 201)
         self.assertEqual(committed[2]["diagnosis"]["knowledge_points"], ["一元一次方程", "等式性质与移项"])
         error_id = committed[2]["error_id"]
-        self.assertEqual(self.call("/v1/errors", cookie=cookie)[2]["items"][0]["error_id"], error_id)
+        listed_error = self.call("/v1/errors", cookie=cookie)[2]["items"][0]
+        self.assertEqual((listed_error["error_id"], listed_error["review"]["stage"]), (error_id, 1))
         error_detail = self.call(f"/v1/errors/{error_id}", cookie=cookie)
         self.assertEqual(error_detail[0], 200)
         self.assertEqual(error_detail[2]["diagnosis"]["final_answer"], "x=1")
@@ -640,6 +641,9 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(reviews[2]["count"], 1)
         completed_review = self.call(f"/v1/reviews/{reviews[2]['items'][0]['review_id']}/complete", method="POST", payload={"result": "correct"}, cookie=cookie, idempotency_key="review-0001")
         self.assertEqual(completed_review[2]["next_review"]["stage"], 2)
+        progress = self.call("/v1/progress", cookie=cookie)
+        self.assertEqual(progress[2]["review_stage_counts"]["2"], 1)
+        self.assertEqual((progress[2]["today_completed_review_count"], progress[2]["today_needs_correction_count"]), (1, 0))
         practice = self.call("/v1/practice-pdfs", method="POST", payload={"error_ids": [error_id]}, cookie=cookie, idempotency_key="practice-0001")
         self.assertEqual(practice[0], 201)
         downloaded = self.call(practice[2]["download_url"], cookie=cookie)

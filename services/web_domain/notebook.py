@@ -404,6 +404,12 @@ class InMemoryNotebookStore:
             key=lambda item: (item.due_at, item.error_id),
         )
 
+    def list_active_reviews(self, *, user_id: str) -> list[ReviewTask]:
+        return sorted(
+            (item for item in self.review_tasks.values() if item.user_id == user_id and item.status in {"pending", "ready"}),
+            key=lambda item: (item.due_at, item.error_id),
+        )
+
     def complete_review(self, *, user_id: str, task_id: str, result: str, idempotency_key: str, now: datetime | None = None) -> ReviewTask | None:
         key = (user_id, idempotency_key)
         if key in self.review_attempts:
@@ -431,17 +437,20 @@ class InMemoryNotebookStore:
             next_task = ReviewTask(next_id, user_id, task.error_id, stage, due_at, "ready" if due_at <= completed_at else "pending")
             self.review_tasks[next_id] = next_task
             self._review_keys[review_key] = next_id
-        self.review_attempts[key] = {"task_id": task_id, "result": result, "next_task_id": next_task.task_id if next_task else None}
+        self.review_attempts[key] = {"task_id": task_id, "result": result, "next_task_id": next_task.task_id if next_task else None, "completed_at": completed_at}
         return next_task
 
-    def progress(self, *, user_id: str, now: datetime | None = None) -> dict[str, int | bool]:
+    def progress(self, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
         current = now or _now()
         errors = [item for item in self.errors.values() if item.user_id == user_id and item.status != "removed"]
         due = self.list_due_reviews(user_id=user_id, now=current)
+        active_reviews = self.list_active_reviews(user_id=user_id)
+        stage_counts = {str(stage): sum(item.stage == stage for item in active_reviews) for stage in range(1, 7)}
         gaps = sum(not any(rec.user_id == user_id and rec.error_id == item.error_id and rec.status == "assigned" for rec in self.recommendations.values()) for item in errors)
         reviews = [item for (owner, _), item in self.review_attempts.items() if owner == user_id]
+        today_reviews = [item for item in reviews if item.get("completed_at") and item["completed_at"].date() == current.date()]
         correct = sum(item["result"] == "correct" for item in reviews)
-        return {"error_count": len(errors), "mastered_count": sum(item.status == "mastered" for item in errors), "due_review_count": len(due), "recommendation_gap_count": gaps, "completed_review_count": len(reviews), "correct_review_count": correct, "partial_review_count": sum(item["result"] == "partial" for item in reviews), "wrong_review_count": sum(item["result"] == "wrong" for item in reviews), "review_accuracy_percent": round(correct * 100 / len(reviews)) if reviews else 0, "sample_sufficient": len(errors) >= 3}
+        return {"error_count": len(errors), "mastered_count": sum(item.status == "mastered" for item in errors), "due_review_count": len(due), "recommendation_gap_count": gaps, "completed_review_count": len(reviews), "correct_review_count": correct, "partial_review_count": sum(item["result"] == "partial" for item in reviews), "wrong_review_count": sum(item["result"] == "wrong" for item in reviews), "review_accuracy_percent": round(correct * 100 / len(reviews)) if reviews else 0, "review_stage_counts": stage_counts, "today_completed_review_count": len(today_reviews), "today_needs_correction_count": sum(item["result"] in {"partial", "wrong"} for item in today_reviews), "sample_sufficient": len(errors) >= 3}
 
     def bank_status(self) -> dict[str, int]:
         recommendable = sum(self.question_rules.get(question_id) in {("verified", "open", True), ("verified", "user_authorized", True)} for question_id in self.questions)

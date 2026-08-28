@@ -40,6 +40,18 @@ class LearningLoopTests(unittest.TestCase):
         self.assertEqual((next_task.stage, next_task.due_at), (2, datetime(2026, 8, 24, 8, tzinfo=timezone.utc)))
         self.assertEqual(repeated.task_id, next_task.task_id)
         self.assertEqual(len(self.store.review_attempts), 1)
+        progress = self.store.progress(user_id=self.user_id, now=now)
+        self.assertEqual(progress["review_stage_counts"], {"1": 0, "2": 1, "3": 0, "4": 0, "5": 0, "6": 0})
+        self.assertEqual((progress["today_completed_review_count"], progress["today_needs_correction_count"]), (1, 0))
+
+    def test_partial_review_is_counted_as_today_needs_correction(self) -> None:
+        now = datetime(2026, 8, 23, 8, tzinfo=timezone.utc)
+        task = next(iter(self.store.review_tasks.values()))
+        self.store.review_tasks[task.task_id] = type(task)(task.task_id, task.user_id, task.error_id, task.stage, now, "ready")
+        next_task = self.store.complete_review(user_id=self.user_id, task_id=task.task_id, result="partial", idempotency_key="review-partial", now=now)
+        progress = self.store.progress(user_id=self.user_id, now=now)
+        self.assertEqual((next_task.stage, progress["review_stage_counts"]["1"]), (1, 1))
+        self.assertEqual((progress["today_completed_review_count"], progress["today_needs_correction_count"]), (1, 1))
 
     def test_pdf_is_default_questions_only_and_user_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

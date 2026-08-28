@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from typing import Any, Protocol
@@ -932,6 +932,16 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def list_active_reviews(self, *, user_id: str) -> list[ReviewTask]:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT id,error_id,stage,due_at,status FROM review_tasks WHERE user_id=%s AND status IN ('pending','ready') ORDER BY due_at,error_id", (user_id,))
+            return [ReviewTask(str(row[0]), user_id, str(row[1]), int(row[2]), row[3].replace(tzinfo=timezone.utc), str(row[4])) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            connection.close()
+
     def complete_review(self, *, user_id: str, task_id: str, result: str, idempotency_key: str, now: datetime | None = None) -> ReviewTask | None:
         key = _required(idempotency_key, "idempotency_key")
         completed_at = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
@@ -984,8 +994,10 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
-    def progress(self, *, user_id: str, now: datetime | None = None) -> dict[str, int | bool]:
+    def progress(self, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
         current = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
+        today_start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow = today_start + timedelta(days=1)
         connection = self._connect()
         cursor = connection.cursor()
         try:
@@ -997,10 +1009,16 @@ class MySqlDomainStore:
             gaps = cursor.fetchone() or (0,)
             cursor.execute("SELECT COUNT(*),SUM(result='correct'),SUM(result='partial'),SUM(result='wrong') FROM review_attempts WHERE user_id=%s", (user_id,))
             reviews = cursor.fetchone() or (0, 0, 0, 0)
+            cursor.execute("SELECT stage,COUNT(*) FROM review_tasks WHERE user_id=%s AND status IN ('pending','ready') GROUP BY stage", (user_id,))
+            stage_counts = {str(stage): 0 for stage in range(1, 7)}
+            for stage, total in cursor.fetchall():
+                stage_counts[str(int(stage))] = int(total)
+            cursor.execute("SELECT COUNT(*),SUM(result IN ('partial','wrong')) FROM review_attempts WHERE user_id=%s AND completed_at>=%s AND completed_at<%s", (user_id, today_start, tomorrow))
+            today_reviews = cursor.fetchone() or (0, 0)
             count = int(totals[0] or 0)
             completed = int(reviews[0] or 0)
             correct = int(reviews[1] or 0)
-            return {"error_count": count, "mastered_count": int(totals[1] or 0), "due_review_count": int(due[0]), "recommendation_gap_count": int(gaps[0]), "completed_review_count": completed, "correct_review_count": correct, "partial_review_count": int(reviews[2] or 0), "wrong_review_count": int(reviews[3] or 0), "review_accuracy_percent": round(correct * 100 / completed) if completed else 0, "sample_sufficient": count >= 3}
+            return {"error_count": count, "mastered_count": int(totals[1] or 0), "due_review_count": int(due[0]), "recommendation_gap_count": int(gaps[0]), "completed_review_count": completed, "correct_review_count": correct, "partial_review_count": int(reviews[2] or 0), "wrong_review_count": int(reviews[3] or 0), "review_accuracy_percent": round(correct * 100 / completed) if completed else 0, "review_stage_counts": stage_counts, "today_completed_review_count": int(today_reviews[0] or 0), "today_needs_correction_count": int(today_reviews[1] or 0), "sample_sufficient": count >= 3}
         finally:
             cursor.close()
             connection.close()

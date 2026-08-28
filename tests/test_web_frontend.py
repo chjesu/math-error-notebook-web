@@ -29,8 +29,6 @@ class FrontendContractTests(unittest.TestCase):
                 self.assertIn(f'/web/nav-icons.svg#{icon}', html)
             self.assertNotIn('href="/reviews"', html)
             self.assertNotIn('href="/progress"', html)
-            self.assertNotIn("今日复习", html)
-            self.assertNotIn("学习进度", html)
             self.assertNotIn('/web/nav-icons.svg#workbench', html)
             self.assertIn('aria-label="返回工作台"', html)
             self.assertIn('<span>设置</span>', html)
@@ -41,6 +39,19 @@ class FrontendContractTests(unittest.TestCase):
                     self.assertNotIn(other_marker, html)
         self.assertFalse((WEB / "reviews.html").exists())
         self.assertFalse((WEB / "progress.html").exists())
+
+    def test_error_notebook_is_the_single_review_dashboard(self) -> None:
+        html = (WEB / "errors.html").read_text(encoding="utf-8")
+        script = (WEB / "app.js").read_text(encoding="utf-8")
+        for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "各复习阶段", "今日的复习计划", "全部错题"):
+            self.assertIn(text, html)
+        for marker in ("stage-count-1", "stage-count-6", "generate-review-pdf", "today-review-items", "selected-error-count"):
+            self.assertIn(f'id="{marker}"', html)
+        for contract in ('api("/v1/errors")', 'api("/v1/reviews/today")', 'api("/v1/progress")', 'api("/v1/practice-pdfs"'):
+            self.assertIn(contract, script)
+        self.assertIn('name="today-error"', script)
+        self.assertIn("review_stage_counts", script)
+        self.assertIn("today_needs_correction_count", script)
 
     def test_workbench_is_the_official_deepseek_harness_surface(self) -> None:
         html = (WEB / "index.html").read_text(encoding="utf-8")

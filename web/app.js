@@ -1099,6 +1099,65 @@ function bindWorkbench() {
 
 function bindErrors() {
   let currentErrorId = null;
+  let errors = [];
+  let dueReviews = [];
+  let progress = {};
+  let selectionInitialized = false;
+  let pdfReady = false;
+  const selectedErrorIds = new Set();
+
+  function stageLabel(item) {
+    if (item.status === "mastered") return "已掌握";
+    if (!item.review) return "待安排";
+    return `第 ${item.review.stage} 阶段`;
+  }
+
+  function renderStats() {
+    const counts = progress.review_stage_counts || {};
+    for (let stage = 1; stage <= 6; stage += 1) $(`#stage-count-${stage}`).textContent = counts[String(stage)] || 0;
+    $("#total-error-count").textContent = `${progress.error_count || 0} 道`;
+    $("#mastered-count").textContent = progress.mastered_count || 0;
+    $("#due-review-count").textContent = progress.due_review_count || 0;
+    $("#completed-review-count").textContent = progress.completed_review_count || 0;
+    $("#review-accuracy").textContent = `${progress.review_accuracy_percent || 0}%`;
+  }
+
+  function setPlanStep(selector, done) {
+    $(selector).classList.toggle("is-done", done);
+  }
+
+  function renderPlan() {
+    const selected = selectedErrorIds.size;
+    const completedToday = progress.today_completed_review_count || 0;
+    const needsCorrection = progress.today_needs_correction_count || 0;
+    const due = dueReviews.length;
+    $("#selected-error-count").textContent = selected ? `已选 ${selected} 道` : due ? `有 ${due} 道到期，等待选择` : "今日无到期题";
+    $("#pdf-step-state").textContent = pdfReady ? "已生成" : selected ? "可以生成" : "待选择题目";
+    $("#correction-step-state").textContent = needsCorrection ? `已答 ${completedToday} 道，${needsCorrection} 道需继续改错` : completedToday ? `已核对 ${completedToday} 道，无待改错` : due ? "待完成重做" : "今日无到期题";
+    $("#completion-step-state").textContent = due ? `还有 ${due} 道待完成` : "今日任务已完成";
+    $("#today-plan-state").textContent = due ? `完成 ${completedToday} 道 · 待复习 ${due} 道` : "今日已完成";
+    $("#generate-review-pdf").disabled = selected === 0;
+    setPlanStep("#plan-step-select", selected > 0 || due === 0);
+    setPlanStep("#plan-step-pdf", pdfReady || due === 0);
+    setPlanStep("#plan-step-correct", completedToday > 0 || due === 0);
+    setPlanStep("#plan-step-done", due === 0);
+  }
+
+  function renderDueReviews() {
+    $("#today-review-items").innerHTML = dueReviews.length ? dueReviews.map(item => `<article class="today-review-card"><div class="review-card-heading"><span class="badge">第 ${item.stage} 阶段</span><small>到期 ${escapeHtml(new Date(item.due_at).toLocaleDateString("zh-CN"))}</small></div><p class="review-card-question">${escapeHtml(item.question_text)}</p><details><summary>核对上次错误原因</summary><p>${escapeHtml(item.first_error || "待整理错误原因")}</p></details><div class="review-result-actions" data-review-id="${escapeHtml(item.review_id)}" data-error-id="${escapeHtml(item.error_id)}"><button type="button" class="ghost" data-review-result="wrong">仍需改错</button><button type="button" class="ghost" data-review-result="partial">部分掌握</button><button type="button" data-review-result="correct">已独立做对</button></div></article>`).join("") : '<p class="empty today-complete-message">今天没有未完成的到期任务，可以手动勾选错题继续巩固。</p>';
+    renderMath($("#today-review-items"));
+  }
+
+  function renderErrors() {
+    $("#all-errors").innerHTML = errors.length ? errors.map(item => {
+      const diagnosis = item.diagnosis || {};
+      const points = Array.isArray(diagnosis.knowledge_points) && diagnosis.knowledge_points.length ? diagnosis.knowledge_points.map(point => `<span>${escapeHtml(point)}</span>`).join("") : '<span>知识点待整理</span>';
+      const checked = selectedErrorIds.has(item.error_id) ? " checked" : "";
+      return `<li class="error-card"><label class="error-select" title="加入今日复习"><input name="today-error" type="checkbox" value="${escapeHtml(item.error_id)}"${checked}><span class="sr-only">选择这道错题</span></label><article><div class="error-card-heading"><span class="badge">${escapeHtml(stageLabel(item))}</span><time datetime="${escapeHtml(item.created_at)}">${escapeHtml(new Date(item.created_at).toLocaleDateString("zh-CN"))}</time></div><h3>${escapeHtml(item.question_text)}</h3><dl><div><dt>错误原因</dt><dd><strong>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</strong>${escapeHtml(diagnosis.cause_evidence || item.first_error || "尚未记录")}</dd></div><div><dt>涉及知识点</dt><dd class="knowledge-tags">${points}</dd></div></dl><button class="text-button error-detail-trigger" type="button" data-error-id="${escapeHtml(item.error_id)}">查看完整解析与操作</button></article></li>`;
+    }).join("") : '<li class="empty">还没有错题。</li>';
+    renderMath($("#all-errors"));
+  }
+
   async function showError(id) {
     const [item, recommendations] = await Promise.all([api(`/v1/errors/${id}`), api(`/v1/errors/${id}/recommendations`)]);
     currentErrorId = id;
@@ -1108,18 +1167,41 @@ function bindErrors() {
     $("#error-detail").innerHTML = `<h2>错题详情</h2><dl class="diagnosis-list"><dt>原题</dt><dd>${escapeHtml(item.question_text)}</dd><dt>你的作答</dt><dd>${escapeHtml(item.answer_text || "未填写")}</dd><dt>第一处实质错误</dt><dd>${escapeHtml(item.first_error || "待整理")}</dd><dt>主要错因</dt><dd>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</dd><dt>判断依据</dt><dd>${escapeHtml(diagnosis.cause_evidence || "待整理")}</dd><dt>知识点梳理</dt><dd>${escapeHtml(diagnosis.knowledge_points?.join("\n") || "待整理")}</dd><dt>完整正确过程</dt><dd>${escapeHtml(diagnosis.correct_solution || "待整理")}</dd><dt>最终答案</dt><dd>${escapeHtml(diagnosis.final_answer || "待整理")}</dd><dt>防错提示</dt><dd>${escapeHtml(diagnosis.prevention_cue || "待整理")}</dd></dl><h3>已验证练习</h3><ol class="recommendation-list">${recommendationHtml}</ol><div class="actions"><button type="button" data-error-action="recommend" class="ghost">匹配练习</button><button type="button" data-error-action="master" class="ghost">标记已掌握</button><button type="button" data-error-action="remove" class="danger">移除错题</button></div>`;
     renderMath($("#error-detail"));
   }
-  async function loadErrors() {
+  async function loadDashboard() {
     try {
-      const result = await api("/v1/errors");
-      $("#all-errors").innerHTML = result.items.map(item => `<li><button class="text-button" data-error-id="${item.error_id}">${escapeHtml(item.question_text)}</button><br><small>${escapeHtml(item.first_error || "待整理错因")} · ${item.status === "mastered" ? "已掌握" : "复习中"}</small></li>`).join("") || '<li class="empty">还没有错题。</li>';
-      renderMath($("#all-errors"));
+      const [errorResult, reviewResult, progressResult] = await Promise.all([api("/v1/errors"), api("/v1/reviews/today"), api("/v1/progress")]);
+      errors = errorResult.items;
+      dueReviews = reviewResult.items;
+      progress = progressResult;
+      const available = new Set(errors.map(item => item.error_id));
+      for (const id of [...selectedErrorIds]) if (!available.has(id)) selectedErrorIds.delete(id);
+      if (!selectionInitialized) {
+        dueReviews.slice(0, 12).forEach(item => selectedErrorIds.add(item.error_id));
+        selectionInitialized = true;
+      }
+      renderStats();
+      renderPlan();
+      renderDueReviews();
+      renderErrors();
     } catch (error) {
       status($("#page-status"), authError(error), true);
     }
   }
-  $("#refresh-errors").addEventListener("click", loadErrors);
+  $("#refresh-errors").addEventListener("click", loadDashboard);
+  $("#all-errors").addEventListener("change", event => {
+    if (event.target.name !== "today-error") return;
+    if (event.target.checked && selectedErrorIds.size >= 12) {
+      event.target.checked = false;
+      return status($("#page-status"), "今日复习一次最多选择 12 道错题。", true);
+    }
+    if (event.target.checked) selectedErrorIds.add(event.target.value);
+    else selectedErrorIds.delete(event.target.value);
+    pdfReady = false;
+    status($("#today-pdf-status"), "题目选择已变化，请重新生成 PDF。", false);
+    renderPlan();
+  });
   $("#all-errors").addEventListener("click", async event => {
-    const id = event.target.dataset.errorId;
+    const id = event.target.closest("[data-error-id]")?.dataset.errorId;
     if (!id) return;
     try {
       await showError(id);
@@ -1139,52 +1221,57 @@ function bindErrors() {
         await api(`/v1/errors/${currentErrorId}`, {method: "DELETE"});
         currentErrorId = null;
         $("#error-detail").hidden = true;
-        await loadErrors();
+        await loadDashboard();
         return;
       }
       await showError(currentErrorId);
-      await loadErrors();
+      await loadDashboard();
     } catch (error) {
       status($("#page-status"), authError(error), true);
     } finally {
       event.target.disabled = false;
     }
   });
-  loadErrors();
-}
-
-function bindReviews() {
-  let dueReview = null;
-  async function loadReviews() {
-    try {
-      const result = await api("/v1/reviews/today");
-      dueReview = result.items[0] || null;
-      $("#review-stage").textContent = dueReview ? `第 ${dueReview.stage} 阶段` : "暂无任务";
-      if (dueReview) {
-        const practice = dueReview.recommendations.length ? `<h3>同类型练习</h3><ol>${dueReview.recommendations.map(item => `<li>${escapeHtml(item.stem_text)}<br><small>${escapeHtml(item.source)} · ${escapeHtml(item.reason)}</small></li>`).join("")}</ol>` : "";
-        $("#review-question").innerHTML = `<p><strong>先遮住解析，独立重做：</strong></p><div class="review-stem">${escapeHtml(dueReview.question_text)}</div><details><summary>需要时查看上次首错</summary><p>${escapeHtml(dueReview.first_error || "待整理")}</p></details>${practice}`;
-        renderMath($("#review-question"));
-      } else $("#review-question").textContent = "今天没有到期复习。";
-      $("#review-actions").hidden = !dueReview;
-    } catch (error) {
-      status($("#review-status"), authError(error), true);
-    }
-  }
-  $("#review-actions").addEventListener("click", async event => {
+  $("#today-review-items").addEventListener("click", async event => {
     const result = event.target.dataset.reviewResult;
-    if (!result || !dueReview) return;
+    const actions = event.target.closest("[data-review-id]");
+    if (!result || !actions) return;
     event.target.disabled = true;
     try {
-      const completed = await api(`/v1/reviews/${dueReview.review_id}/complete`, {method: "POST", body: JSON.stringify({result}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-      status($("#review-status"), completed.mastered ? "已完成全部复习阶段。" : `已记录，下次为第 ${completed.next_review.stage} 阶段。`);
-      await loadReviews();
+      const completed = await api(`/v1/reviews/${actions.dataset.reviewId}/complete`, {method: "POST", body: JSON.stringify({result}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+      selectedErrorIds.delete(actions.dataset.errorId);
+      status($("#page-status"), result === "correct" ? (completed.mastered ? "本题六阶段复习已完成，已标记掌握。" : `本次已独立做对，下次进入第 ${completed.next_review.stage} 阶段。`) : "已记录为需改错，并安排下一次复习。", false);
+      await loadDashboard();
     } catch (error) {
-      status($("#review-status"), authError(error), true);
+      status($("#page-status"), authError(error), true);
     } finally {
       event.target.disabled = false;
     }
   });
-  loadReviews();
+  $("#generate-review-pdf").addEventListener("click", async event => {
+    const ids = [...selectedErrorIds];
+    if (!ids.length) return;
+    event.currentTarget.disabled = true;
+    status($("#today-pdf-status"), "正在匹配已验证推荐题并生成 PDF…");
+    try {
+      await Promise.all(ids.map(id => api(`/v1/errors/${id}/recommendations`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}})));
+      const result = await api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: ids, include_answers: $("#review-pdf-answers").checked}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+      pdfReady = true;
+      if (result.download_url) {
+        const link = document.createElement("a");
+        link.href = result.download_url;
+        link.textContent = "下载今日复习推荐题 PDF";
+        link.setAttribute("download", "");
+        $("#today-pdf-status").replaceChildren("已生成：", link);
+      } else status($("#today-pdf-status"), "PDF 正在生成，请稍后刷新。");
+      renderPlan();
+    } catch (error) {
+      status($("#today-pdf-status"), authError(error), true);
+    } finally {
+      event.currentTarget.disabled = selectedErrorIds.size === 0;
+    }
+  });
+  loadDashboard();
 }
 
 function bindPractice() {
@@ -1220,20 +1307,6 @@ function bindPractice() {
       refreshCreateButton();
     }
   });
-}
-
-function bindProgress() {
-  Promise.all([api("/v1/progress"), api("/v1/bank/status")]).then(([result, bank]) => {
-    $("#progress-errors").textContent = result.error_count || 0;
-    $("#progress-mastered").textContent = result.mastered_count || 0;
-    $("#progress-reviews").textContent = result.completed_review_count || 0;
-    $("#progress-accuracy").textContent = `${result.review_accuracy_percent || 0}%`;
-    $("#progress-due").textContent = result.due_review_count || 0;
-    $("#progress-gaps").textContent = result.recommendation_gap_count || 0;
-    $("#bank-questions").textContent = bank.question_count || 0;
-    $("#bank-recommendable").textContent = bank.recommendable_count || 0;
-    $("#bank-candidates").textContent = bank.candidate_count || 0;
-  }).catch(error => status($("#page-status"), authError(error), true));
 }
 
 function bindSettings() {
@@ -1288,7 +1361,7 @@ function bindSettings() {
 
 async function init() {
   if (!await requireSession()) return;
-  ({workbench: bindWorkbench, errors: bindErrors, reviews: bindReviews, practice: bindPractice, progress: bindProgress, settings: bindSettings})[page]();
+  ({workbench: bindWorkbench, errors: bindErrors, practice: bindPractice, settings: bindSettings})[page]();
 }
 
 init();
