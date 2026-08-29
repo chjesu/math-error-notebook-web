@@ -141,7 +141,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('item.title === productWorkspaceTitle', plugin)
         self.assertIn('ctx.workspaces.connectWorkspace(workspace.workspaceId)', plugin)
         self.assertIn('ctx.sessions.open(sessionId)', plugin)
-        for plugin_id in ("ui-settings-models", "ui-settings-plugin-inventory", "ui-settings-plugins"):
+        for plugin_id in ("ui-settings-models", "ui-model-selection", "ui-settings-plugin-inventory", "ui-settings-plugins"):
             self.assertRegex(patch, rf"- id: {plugin_id}\s+disabled: true")
         self.assertIn('ctx.workspaceRegistry.create(workspacePath, "错题会话")', host_plugin)
         self.assertIn('LZLM_HARNESS_WORKSPACE_ROOT', host_plugin)
