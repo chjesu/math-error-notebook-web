@@ -535,6 +535,10 @@ class NotebookAsgiApp:
                 payload = await self._json_body(receive)
                 next_task = await self._sync(self.notebook.store.complete_review, user_id=user.user_id, task_id=path.split("/")[-2], result=str(payload["result"]), idempotency_key=self._key(headers))
                 await self._json(send, 200, {"completed": True, "next_review": self._review(next_task) if next_task else None, "mastered": next_task is None})
+            elif path == "/v1/progress/calendar" and method == "GET":
+                month = self._query(scope, allowed={"month"}).get("month", "")
+                calendar = await self._sync(self.notebook.store.review_calendar, user_id=user.user_id, month=month)
+                await self._json(send, 200, calendar)
             elif path == "/v1/progress" and method == "GET":
                 progress = await self._sync(self.notebook.store.progress, user_id=user.user_id)
                 await self._json(send, 200, progress)
@@ -734,12 +738,12 @@ class NotebookAsgiApp:
         return value
 
     @staticmethod
-    def _query(scope: dict[str, Any]) -> dict[str, str]:
+    def _query(scope: dict[str, Any], *, allowed: set[str] | None = None) -> dict[str, str]:
         raw = scope.get("query_string", b"")
         if not isinstance(raw, bytes) or len(raw) > 4096:
             raise ValueError("invalid query")
         values = parse_qs(raw.decode("ascii"), keep_blank_values=True, max_num_fields=4)
-        if set(values) - {"cursor"} or any(len(items) != 1 for items in values.values()):
+        if set(values) - (allowed or {"cursor"}) or any(len(items) != 1 for items in values.values()):
             raise ValueError("invalid query")
         return {key: items[0] for key, items in values.items()}
 

@@ -53,6 +53,32 @@ class LearningLoopTests(unittest.TestCase):
         self.assertEqual((next_task.stage, progress["review_stage_counts"]["1"]), (1, 1))
         self.assertEqual((progress["today_completed_review_count"], progress["today_needs_correction_count"]), (1, 1))
 
+    def test_review_calendar_combines_new_due_completed_and_knowledge_events(self) -> None:
+        created_at = datetime(2026, 8, 22, 20, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 23, 8, tzinfo=timezone.utc)
+        error = self.store.errors[self.error_id]
+        self.store.errors[self.error_id] = ErrorEntry(
+            error.error_id, error.user_id, error.attempt_id, error.question_text, error.answer_text,
+            error.first_error, error.status, created_at,
+            json.dumps({"schema": "math-error-diagnosis/v1", "knowledge_points": ["一元一次方程"]}),
+        )
+        task = next(iter(self.store.review_tasks.values()))
+        self.store.review_tasks[task.task_id] = type(task)(task.task_id, task.user_id, task.error_id, 1, now, "ready")
+        self.store.complete_review(user_id=self.user_id, task_id=task.task_id, result="correct", idempotency_key="calendar-review", now=now)
+
+        calendar = self.store.review_calendar(user_id=self.user_id, month="2026-08", now=now)
+
+        self.assertEqual(calendar["total_error_count"], 1)
+        self.assertEqual(calendar["summary"]["new_error_count"], 1)
+        self.assertEqual(calendar["summary"]["due_review_count"], 2)
+        self.assertEqual(calendar["summary"]["completed_review_count"], 1)
+        self.assertEqual(calendar["summary"]["review_accuracy_percent"], 100)
+        day = next(item for item in calendar["days"] if item["date"] == "2026-08-23")
+        self.assertEqual((day["new_error_count"], day["due_review_count"], day["completed_review_count"]), (1, 1, 1))
+        self.assertIn("一元一次方程", day["items"][0]["knowledge_points"])
+        with self.assertRaisesRegex(ValueError, "invalid calendar month"):
+            self.store.review_calendar(user_id=self.user_id, month="2026-13", now=now)
+
     def test_pdf_is_default_questions_only_and_user_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             service = NotebookService(self.store, Path(directory))

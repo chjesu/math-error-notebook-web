@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 import hashlib
 import json
@@ -58,6 +58,7 @@ class ReviewTask:
 
 _STOP_HAN = set("的一是了在和与或若求已知则为中有其")
 _SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
+_CHINA_TIMEZONE = timezone(timedelta(hours=8))
 
 
 def _normalized_math_source(text: str) -> str:
@@ -219,3 +220,111 @@ def next_review(stage: int, result: str, completed_at: datetime) -> tuple[int, d
     else:
         target, delay_days = max(1, stage - 1), 1
     return target, completed_at + timedelta(days=delay_days)
+
+
+def calendar_month_range(month: str) -> tuple[datetime, datetime]:
+    if re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", month) is None:
+        raise ValueError("invalid calendar month")
+    year, month_number = map(int, month.split("-"))
+    start = datetime(year, month_number, 1, tzinfo=_CHINA_TIMEZONE)
+    end = datetime(year + (month_number == 12), 1 if month_number == 12 else month_number + 1, 1, tzinfo=_CHINA_TIMEZONE)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
+def build_review_calendar(
+    month: str,
+    *,
+    errors: list[dict[str, object]],
+    review_tasks: list[dict[str, object]],
+    review_attempts: list[dict[str, object]],
+    total_error_count: int,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    start, end = calendar_month_range(month)
+    current = _aware_utc(now or datetime.now(timezone.utc))
+    days: dict[str, dict[str, object]] = {}
+    summary = {
+        "new_error_count": 0,
+        "due_review_count": 0,
+        "due_completed_count": 0,
+        "completed_review_count": 0,
+        "correct_review_count": 0,
+        "needs_correction_count": 0,
+        "overdue_review_count": 0,
+    }
+
+    def add_event(kind: str, when: datetime, record: dict[str, object]) -> None:
+        moment = _aware_utc(when)
+        if not start <= moment < end:
+            return
+        day_key = moment.astimezone(_CHINA_TIMEZONE).date().isoformat()
+        day = days.setdefault(day_key, {
+            "date": day_key,
+            "new_error_count": 0,
+            "due_review_count": 0,
+            "completed_review_count": 0,
+            "needs_correction_count": 0,
+            "overdue_review_count": 0,
+            "stage_counts": {str(stage): 0 for stage in range(1, 7)},
+            "items": [],
+        })
+        day["items"].append({
+            "type": kind,
+            "error_id": str(record["error_id"]),
+            "question_text": str(record.get("question_text") or "未命名题目"),
+            "first_error": record.get("first_error"),
+            "knowledge_points": _knowledge_points(record.get("evidence")),
+            "stage": record.get("stage"),
+            "result": record.get("result"),
+            "status": record.get("status"),
+            "overdue": kind == "due" and record.get("status") in {"pending", "ready"} and moment < current,
+        })
+        if kind == "new":
+            day["new_error_count"] += 1
+            summary["new_error_count"] += 1
+        elif kind == "due":
+            day["due_review_count"] += 1
+            summary["due_review_count"] += 1
+            stage = str(record.get("stage"))
+            if stage in day["stage_counts"]:
+                day["stage_counts"][stage] += 1
+            if record.get("status") == "completed":
+                summary["due_completed_count"] += 1
+            if record.get("status") in {"pending", "ready"} and moment < current:
+                day["overdue_review_count"] += 1
+                summary["overdue_review_count"] += 1
+        else:
+            day["completed_review_count"] += 1
+            summary["completed_review_count"] += 1
+            if record.get("result") == "correct":
+                summary["correct_review_count"] += 1
+            elif record.get("result") in {"partial", "wrong"}:
+                day["needs_correction_count"] += 1
+                summary["needs_correction_count"] += 1
+
+    for item in errors:
+        add_event("new", item["created_at"], item)
+    for item in review_tasks:
+        if item.get("status") != "cancelled":
+            add_event("due", item["due_at"], item)
+    for item in review_attempts:
+        add_event("completed", item["completed_at"], item)
+
+    summary["planned_completion_percent"] = round(summary["due_completed_count"] * 100 / summary["due_review_count"]) if summary["due_review_count"] else 0
+    summary["review_accuracy_percent"] = round(summary["correct_review_count"] * 100 / summary["completed_review_count"]) if summary["completed_review_count"] else 0
+    return {"month": month, "total_error_count": total_error_count, "summary": summary, "days": [days[key] for key in sorted(days)]}
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _knowledge_points(value: object) -> list[str]:
+    if not value:
+        return []
+    try:
+        payload = json.loads(value) if isinstance(value, str) else value
+    except json.JSONDecodeError:
+        return []
+    points = payload.get("knowledge_points") if isinstance(payload, dict) else None
+    return [str(item) for item in points if isinstance(item, str) and item.strip()][:8] if isinstance(points, list) else []

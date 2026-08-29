@@ -59,19 +59,20 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("$$('", script)
         self.assertIn("today_needs_correction_count", script)
 
-    def test_learning_progress_owns_review_rules_and_monthly_error_calendar(self) -> None:
+    def test_learning_progress_owns_review_rules_and_activity_calendar(self) -> None:
         html = (WEB / "progress.html").read_text(encoding="utf-8")
         script = (WEB / "app.js").read_text(encoding="utf-8")
-        for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "错题月份表"):
+        for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "错题与复习日历", "新增错题", "应复习", "需改错", "逾期", "复习正确率"):
             self.assertIn(text, html)
         self.assertNotIn("各复习阶段", html)
-        for marker in ("review-calendar", "calendar-month", "calendar-prev", "calendar-next", "calendar-summary", "refresh-progress"):
+        for marker in ("review-calendar", "calendar-month", "calendar-prev", "calendar-next", "calendar-summary", "calendar-stats", "calendar-filters", "calendar-day-detail", "calendar-day-items", "refresh-progress"):
             self.assertIn(f'id="{marker}"', html)
         self.assertNotIn('id="stage-count-1"', html)
         self.assertIn('function bindProgress()', script)
-        self.assertIn('api("/v1/progress")', script)
-        self.assertIn('api("/v1/errors")', script)
-        self.assertIn('item.review?.stage', script)
+        self.assertIn('api(`/v1/progress/calendar?month=${monthKey()}`)', script)
+        self.assertIn('data-calendar-filter', html)
+        self.assertIn('data-calendar-date', script)
+        self.assertIn('knowledge_points', script)
 
     def test_workbench_is_the_official_deepseek_harness_surface(self) -> None:
         html = (WEB / "index.html").read_text(encoding="utf-8")

@@ -72,6 +72,13 @@ class WebOpenApiContractTests(unittest.TestCase):
         self.assertIn("knowledge_points", self.document["components"]["schemas"]["Diagnosis"]["properties"])
         self.assertIn("200", self.operation("/v1/bank/status", "get")["responses"])
 
+    def test_review_calendar_documents_month_and_activity_payload(self) -> None:
+        operation = self.operation("/v1/progress/calendar", "get")
+        self.assertEqual(operation["parameters"][0]["name"], "month")
+        self.assertEqual(operation["responses"]["200"]["$ref"], "#/components/responses/ReviewCalendar")
+        schema = self.document["components"]["schemas"]["ReviewCalendar"]
+        self.assertEqual(set(schema["required"]), {"month", "total_error_count", "summary", "days"})
+
     def test_model_extraction_returns_all_questions_in_one_file(self) -> None:
         operation = self.operation("/v1/intakes/{intake_id}/model-candidate", "post")
         self.assertEqual(operation["responses"]["201"]["$ref"], "#/components/responses/IntakeBatch")

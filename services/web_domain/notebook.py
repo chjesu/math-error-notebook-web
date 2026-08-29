@@ -17,6 +17,7 @@ from .learning import (
     Recommendation,
     ReviewTask,
     VerifiedQuestionReference,
+    build_review_calendar,
     next_review,
     question_match_score,
     rank_questions,
@@ -451,6 +452,43 @@ class InMemoryNotebookStore:
         today_reviews = [item for item in reviews if item.get("completed_at") and item["completed_at"].date() == current.date()]
         correct = sum(item["result"] == "correct" for item in reviews)
         return {"error_count": len(errors), "mastered_count": sum(item.status == "mastered" for item in errors), "due_review_count": len(due), "recommendation_gap_count": gaps, "completed_review_count": len(reviews), "correct_review_count": correct, "partial_review_count": sum(item["result"] == "partial" for item in reviews), "wrong_review_count": sum(item["result"] == "wrong" for item in reviews), "review_accuracy_percent": round(correct * 100 / len(reviews)) if reviews else 0, "review_stage_counts": stage_counts, "today_completed_review_count": len(today_reviews), "today_needs_correction_count": sum(item["result"] in {"partial", "wrong"} for item in today_reviews), "sample_sufficient": len(errors) >= 3}
+
+    def review_calendar(self, *, user_id: str, month: str, now: datetime | None = None) -> dict[str, object]:
+        errors = [item for item in self.errors.values() if item.user_id == user_id and item.status != "removed"]
+
+        def details(error: ErrorEntry) -> dict[str, object]:
+            return {
+                "error_id": error.error_id,
+                "question_text": error.question_text,
+                "first_error": error.first_error,
+                "evidence": error.evidence,
+            }
+
+        error_by_id = {item.error_id: item for item in errors}
+        tasks = [
+            details(error_by_id[item.error_id]) | {"stage": item.stage, "due_at": item.due_at, "status": item.status}
+            for item in self.review_tasks.values()
+            if item.user_id == user_id and item.error_id in error_by_id
+        ]
+        attempts = []
+        for (owner, _), item in self.review_attempts.items():
+            task = self.review_tasks.get(str(item.get("task_id")))
+            if owner != user_id or task is None or task.error_id not in error_by_id:
+                continue
+            attempts.append(details(error_by_id[task.error_id]) | {
+                "stage": task.stage,
+                "result": item["result"],
+                "completed_at": item["completed_at"],
+                "status": "completed",
+            })
+        return build_review_calendar(
+            month,
+            errors=[details(item) | {"created_at": item.created_at, "status": item.status} for item in errors],
+            review_tasks=tasks,
+            review_attempts=attempts,
+            total_error_count=len(errors),
+            now=now,
+        )
 
     def bank_status(self) -> dict[str, int]:
         recommendable = sum(self.question_rules.get(question_id) in {("verified", "open", True), ("verified", "user_authorized", True)} for question_id in self.questions)

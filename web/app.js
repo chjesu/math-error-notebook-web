@@ -1258,18 +1258,67 @@ function bindErrors() {
 function bindProgress() {
   let monthCursor = new Date();
   monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
-  let errors = [];
-  let progress = {};
+  let calendar = {days: [], summary: {}, total_error_count: 0};
+  let activeFilter = "all";
+  let selectedDate = "";
+  const filterLabels = {all: "全部活动", new: "新增错题", due: "待复习", completed: "已完成", correction: "需改错"};
 
-  function stageLabel(item) {
-    if (item.status === "mastered") return "已掌握";
-    const stage = Number(item.review?.stage);
-    return Number.isInteger(stage) && stage >= 1 && stage <= 6 ? `第 ${stage} 阶段` : "待安排";
+  function monthKey() {
+    return `${monthCursor.getFullYear()}-${String(monthCursor.getMonth() + 1).padStart(2, "0")}`;
   }
 
-  function localDateKey(value) {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? "" : `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  function filteredItems(day) {
+    if (activeFilter === "new") return day.items.filter(item => item.type === "new");
+    if (activeFilter === "due") return day.items.filter(item => item.type === "due");
+    if (activeFilter === "completed") return day.items.filter(item => item.type === "completed");
+    if (activeFilter === "correction") return day.items.filter(item => item.type === "completed" && ["partial", "wrong"].includes(item.result));
+    return day.items;
+  }
+
+  function metric(label, value, className) {
+    return value ? `<span class="${className}">${label}<strong>${value}</strong></span>` : "";
+  }
+
+  function renderStats() {
+    const summary = calendar.summary || {};
+    $("#calendar-stat-new").textContent = summary.new_error_count || 0;
+    $("#calendar-stat-due").textContent = summary.due_review_count || 0;
+    $("#calendar-stat-completed").textContent = summary.completed_review_count || 0;
+    $("#calendar-stat-correction").textContent = summary.needs_correction_count || 0;
+    $("#calendar-stat-overdue").textContent = summary.overdue_review_count || 0;
+    $("#calendar-stat-rate").textContent = `${summary.planned_completion_percent || 0}%`;
+    $("#calendar-stat-accuracy").textContent = `${summary.review_accuracy_percent || 0}%`;
+  }
+
+  function renderDayDetail() {
+    const detail = $("#calendar-day-detail");
+    const day = calendar.days.find(item => item.date === selectedDate);
+    const items = day ? filteredItems(day) : [];
+    if (!selectedDate || !items.length) {
+      detail.hidden = true;
+      return;
+    }
+    const groups = new Map();
+    items.forEach(item => {
+      if (!groups.has(item.error_id)) groups.set(item.error_id, {item, labels: [], knowledge: new Set()});
+      const group = groups.get(item.error_id);
+      (item.knowledge_points || []).forEach(point => group.knowledge.add(point));
+      if (item.type === "new") group.labels.push({text: "新增错题", className: ""});
+      else if (item.type === "due") group.labels.push({text: `S${item.stage} ${item.overdue ? "已逾期" : item.status === "completed" ? "已完成计划" : "应复习"}`, className: item.overdue ? "is-correction" : ""});
+      else {
+        const result = {correct: "正确", partial: "部分掌握", wrong: "错误"}[item.result] || "已完成";
+        group.labels.push({text: `S${item.stage} 复习${result}`, className: item.result === "correct" ? "is-completed" : "is-correction"});
+      }
+    });
+    $("#calendar-day-title").textContent = `${selectedDate.replaceAll("-", " 年 ").replace(/ 年 (\d{2}) 年 /, " 年 $1 月 ")} 日 · ${filterLabels[activeFilter]}`;
+    $("#calendar-day-items").innerHTML = [...groups.values()].map(group => {
+      const labels = group.labels.map(label => `<span class="${label.className}">${escapeHtml(label.text)}</span>`).join("");
+      const cause = group.item.first_error ? `<p><strong>错误原因：</strong>${escapeHtml(group.item.first_error)}</p>` : "";
+      const knowledge = group.knowledge.size ? `<p><strong>知识点：</strong>${[...group.knowledge].map(escapeHtml).join("、")}</p>` : "";
+      return `<article class="calendar-detail-item"><div class="calendar-event-labels">${labels}</div><h4>${escapeHtml(group.item.question_text)}</h4>${cause}${knowledge}</article>`;
+    }).join("");
+    detail.hidden = false;
+    renderMath($("#calendar-day-items"));
   }
 
   function renderCalendar() {
@@ -1277,45 +1326,61 @@ function bindProgress() {
     const month = monthCursor.getMonth();
     const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
     const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const byDay = new Map();
-    errors.forEach(item => {
-      const key = localDateKey(item.created_at);
-      if (!key) return;
-      if (!byDay.has(key)) byDay.set(key, []);
-      byDay.get(key).push(item);
-    });
-    const monthItems = errors.filter(item => {
-      const date = new Date(item.created_at);
-      return !Number.isNaN(date.getTime()) && date.getFullYear() === year && date.getMonth() === month;
-    });
+    const byDay = new Map(calendar.days.map(item => [item.date, item]));
     const today = new Date();
     const cells = Array.from({length: firstWeekday}, () => '<div class="calendar-day is-empty" aria-hidden="true"></div>');
     for (let day = 1; day <= daysInMonth; day += 1) {
-      const items = byDay.get(`${year}-${month}-${day}`) || [];
+      const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      const record = byDay.get(dateKey) || {items: [], stage_counts: {}};
+      const items = filteredItems(record);
       const isToday = today.getFullYear() === year && today.getMonth() === month && today.getDate() === day;
-      const questions = items.length ? `<ul class="calendar-question-list">${items.map(item => `<li class="calendar-question"><span class="calendar-stage">${stageLabel(item)}</span><span class="calendar-question-text">${escapeHtml(item.question_text || "未命名题目")}</span></li>`).join("")}</ul>` : "";
-      cells.push(`<div class="calendar-day${isToday ? " is-today" : ""}" aria-label="${year}年${month + 1}月${day}日，${items.length}道错题"><div class="calendar-day-heading"><strong>${day}</strong>${items.length ? `<span>${items.length} 道</span>` : ""}</div>${questions}</div>`);
+      const metrics = [
+        activeFilter === "all" || activeFilter === "new" ? metric("新增", record.new_error_count, "is-new") : "",
+        activeFilter === "all" || activeFilter === "due" ? metric("应复习", record.due_review_count, "is-due") : "",
+        activeFilter === "all" || activeFilter === "completed" ? metric("已复习", record.completed_review_count, "is-completed") : "",
+        activeFilter === "all" || activeFilter === "correction" ? metric("需改错", record.needs_correction_count, "is-correction") : "",
+        activeFilter === "all" || activeFilter === "due" ? metric("逾期", record.overdue_review_count, "is-overdue") : "",
+      ].join("");
+      const stages = activeFilter === "all" || activeFilter === "due" ? Object.entries(record.stage_counts || {}).filter(([, count]) => count).map(([stage, count]) => `<span>S${stage}×${count}</span>`).join("") : "";
+      const classes = `calendar-day${isToday ? " is-today" : ""}${selectedDate === dateKey ? " is-selected" : ""}`;
+      const content = `<div class="calendar-day-heading"><strong>${day}</strong>${items.length ? `<span>${items.length} 项</span>` : ""}</div>${metrics ? `<div class="calendar-day-metrics">${metrics}</div>` : ""}${stages ? `<div class="calendar-stages">${stages}</div>` : ""}`;
+      cells.push(items.length ? `<button type="button" class="${classes}" data-calendar-date="${dateKey}" aria-label="${year}年${month + 1}月${day}日，${items.length}项${filterLabels[activeFilter]}">${content}</button>` : `<div class="${classes}" aria-label="${year}年${month + 1}月${day}日，无${filterLabels[activeFilter]}">${content}</div>`);
     }
     while (cells.length % 7) cells.push('<div class="calendar-day is-empty" aria-hidden="true"></div>');
     $("#calendar-month").textContent = `${year} 年 ${month + 1} 月`;
-    $("#calendar-summary").textContent = monthItems.length ? `本月新增 ${monthItems.length} 道错题，累计 ${progress.error_count || errors.length} 道。日期格内显示每道题的当前复习阶段。` : `本月没有新增错题，累计 ${progress.error_count || errors.length} 道。`;
+    const activeDays = calendar.days.filter(day => filteredItems(day).length).length;
+    $("#calendar-summary").textContent = `${filterLabels[activeFilter]}：${activeDays} 天有记录；累计 ${calendar.total_error_count || 0} 道错题。`;
     $("#review-calendar").innerHTML = cells.join("");
-    renderMath($("#review-calendar"));
+    renderDayDetail();
   }
 
   async function loadProgress() {
+    status($("#progress-status"), "正在读取学习记录…");
     try {
-      const [errorsResult, progressResult] = await Promise.all([api("/v1/errors"), api("/v1/progress")]);
-      errors = errorsResult.items || [];
-      progress = progressResult;
+      calendar = await api(`/v1/progress/calendar?month=${monthKey()}`);
+      renderStats();
       renderCalendar();
       status($("#progress-status"), "数据已更新。");
     } catch (error) {
       status($("#progress-status"), authError(error), true);
     }
   }
-  $("#calendar-prev").addEventListener("click", () => { monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1); renderCalendar(); });
-  $("#calendar-next").addEventListener("click", () => { monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1); renderCalendar(); });
+  $("#calendar-prev").addEventListener("click", () => { monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1); selectedDate = ""; loadProgress(); });
+  $("#calendar-next").addEventListener("click", () => { monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1); selectedDate = ""; loadProgress(); });
+  $("#calendar-filters").addEventListener("click", event => {
+    const button = event.target.closest("[data-calendar-filter]");
+    if (!button) return;
+    activeFilter = button.dataset.calendarFilter;
+    $("#calendar-filters").querySelectorAll("button").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+    renderCalendar();
+  });
+  $("#review-calendar").addEventListener("click", event => {
+    const button = event.target.closest("[data-calendar-date]");
+    if (!button) return;
+    selectedDate = button.dataset.calendarDate;
+    renderCalendar();
+  });
+  $("#calendar-day-close").addEventListener("click", () => { selectedDate = ""; renderCalendar(); });
   $("#refresh-progress").addEventListener("click", loadProgress);
   loadProgress();
 }

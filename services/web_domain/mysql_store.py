@@ -15,6 +15,8 @@ from .learning import (
     Recommendation,
     ReviewTask,
     VerifiedQuestionReference,
+    build_review_calendar,
+    calendar_month_range,
     next_review,
     question_anchor,
     question_match_score,
@@ -1019,6 +1021,51 @@ class MySqlDomainStore:
             completed = int(reviews[0] or 0)
             correct = int(reviews[1] or 0)
             return {"error_count": count, "mastered_count": int(totals[1] or 0), "due_review_count": int(due[0]), "recommendation_gap_count": int(gaps[0]), "completed_review_count": completed, "correct_review_count": correct, "partial_review_count": int(reviews[2] or 0), "wrong_review_count": int(reviews[3] or 0), "review_accuracy_percent": round(correct * 100 / completed) if completed else 0, "review_stage_counts": stage_counts, "today_completed_review_count": int(today_reviews[0] or 0), "today_needs_correction_count": int(today_reviews[1] or 0), "sample_sufficient": count >= 3}
+        finally:
+            cursor.close()
+            connection.close()
+
+    def review_calendar(self, *, user_id: str, month: str, now: datetime | None = None) -> dict[str, object]:
+        start, end = calendar_month_range(month)
+        start_db, end_db = start.replace(tzinfo=None), end.replace(tzinfo=None)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT COUNT(*) FROM error_notebook_entries WHERE user_id=%s AND status<>'removed'", (user_id,))
+            total_error_count = int((cursor.fetchone() or (0,))[0])
+            cursor.execute(
+                "SELECT e.id,e.question_text,e.first_error,c.evidence_text,e.created_at,e.status "
+                "FROM error_notebook_entries e JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id "
+                "WHERE e.user_id=%s AND e.status<>'removed' AND e.created_at>=%s AND e.created_at<%s ORDER BY e.created_at,e.id",
+                (user_id, start_db, end_db),
+            )
+            errors = [
+                {"error_id": str(row[0]), "question_text": str(row[1]), "first_error": row[2], "evidence": row[3], "created_at": row[4], "status": str(row[5])}
+                for row in cursor.fetchall()
+            ]
+            cursor.execute(
+                "SELECT t.error_id,e.question_text,e.first_error,c.evidence_text,t.stage,t.due_at,t.status "
+                "FROM review_tasks t JOIN error_notebook_entries e ON e.id=t.error_id AND e.user_id=t.user_id "
+                "JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id "
+                "WHERE t.user_id=%s AND e.status<>'removed' AND t.status<>'cancelled' AND t.due_at>=%s AND t.due_at<%s ORDER BY t.due_at,t.id",
+                (user_id, start_db, end_db),
+            )
+            tasks = [
+                {"error_id": str(row[0]), "question_text": str(row[1]), "first_error": row[2], "evidence": row[3], "stage": int(row[4]), "due_at": row[5], "status": str(row[6])}
+                for row in cursor.fetchall()
+            ]
+            cursor.execute(
+                "SELECT a.error_id,e.question_text,e.first_error,c.evidence_text,a.stage,a.result,a.completed_at "
+                "FROM review_attempts a JOIN error_notebook_entries e ON e.id=a.error_id AND e.user_id=a.user_id "
+                "JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id "
+                "WHERE a.user_id=%s AND e.status<>'removed' AND a.completed_at>=%s AND a.completed_at<%s ORDER BY a.completed_at,a.id",
+                (user_id, start_db, end_db),
+            )
+            attempts = [
+                {"error_id": str(row[0]), "question_text": str(row[1]), "first_error": row[2], "evidence": row[3], "stage": int(row[4]), "result": str(row[5]), "completed_at": row[6], "status": "completed"}
+                for row in cursor.fetchall()
+            ]
+            return build_review_calendar(month, errors=errors, review_tasks=tasks, review_attempts=attempts, total_error_count=total_error_count, now=now)
         finally:
             cursor.close()
             connection.close()
