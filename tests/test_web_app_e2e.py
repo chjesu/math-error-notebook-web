@@ -587,7 +587,7 @@ class NotebookE2ETests(unittest.TestCase):
         usage = self.call("/v1/learning-usage", cookie=cookie)
         other = self.call("/v1/learning-usage", cookie=other_cookie)
         self.assertEqual((usage[0], usage[2]["grade"]["count"], usage[2]["grade"]["target"], usage[2]["grade"]["limit"]), (200, 1, 12, 20))
-        self.assertEqual((usage[2]["recommendation"]["target"], usage[2]["recommendation"]["limit"]), (6, 10))
+        self.assertEqual((usage[2]["recommendation"]["target"], usage[2]["recommendation"]["limit"]), (12, 24))
         self.assertEqual(other[2]["grade"]["count"], 0)
 
     @staticmethod

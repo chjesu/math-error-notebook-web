@@ -53,14 +53,14 @@ class LearningLoopTests(unittest.TestCase):
         self.store.reserve_grade_batch(user_id=self.user_id, intake_ids=["f" * 32], now=now)
         self.store.finish_grade_usage(user_id=self.user_id, intake_id="f" * 32, counted=False, now=now)
         self.assertEqual(self.store.learning_usage(user_id=self.user_id, now=now)["grade"]["count"], 0)
-        for index in range(10):
+        for index in range(24):
             resource = f"{index:064x}"
             self.store.learning_usage_events[(self.user_id, "2026-08-29", "recommendation", resource)] = {"kind": "recommendation", "status": "counted", "created_at": now}
         self.store.add_question(Question("9" * 32, "解方程 x+3=6", "x=3", 10, 2.0, "授权题库"))
         items, gap = self.store.assign_recommendations(user_id=self.user_id, error_id=self.error_id)
         self.assertEqual(items, [])
         self.assertTrue(gap)
-        self.assertEqual(self.store.learning_usage(user_id=self.user_id, now=now)["recommendation"]["count"], 10)
+        self.assertEqual(self.store.learning_usage(user_id=self.user_id, now=now)["recommendation"]["count"], 24)
 
     def test_review_completion_is_idempotent_and_schedules_from_completion(self) -> None:
         now = datetime(2026, 8, 23, 8, tzinfo=timezone.utc)
