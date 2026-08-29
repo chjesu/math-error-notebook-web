@@ -1144,7 +1144,7 @@ function bindErrors() {
     const needsCorrection = progress.today_needs_correction_count || 0;
     const due = dueReviews.length;
     $("#selected-error-count").textContent = selected ? `已选 ${selected} 道` : due ? `有 ${due} 道到期，等待选择` : "今日无到期题";
-    $("#pdf-step-state").textContent = pdfReady ? "已生成" : selected ? "可以生成" : "待选择题目";
+    $("#pdf-step-state").textContent = pdfReady ? "今日已生成" : selected ? "可以生成" : "待选择题目";
     $("#correction-step-state").textContent = needsCorrection ? `已答 ${completedToday} 道，${needsCorrection} 道需继续改错` : completedToday ? `已核对 ${completedToday} 道，无待改错` : due ? "待完成重做" : "今日无到期题";
     $("#completion-step-state").textContent = due ? `还有 ${due} 道待完成` : "今日任务已完成";
     $("#today-plan-state").textContent = due ? `完成 ${completedToday} 道 · 待复习 ${due} 道` : "今日已完成";
@@ -1183,10 +1183,12 @@ function bindErrors() {
   }
   async function loadDashboard() {
     try {
-      const [errorResult, reviewResult, progressResult] = await Promise.all([api("/v1/errors"), api("/v1/reviews/today"), api("/v1/progress")]);
+      const [errorResult, reviewResult, progressResult, pdfResult] = await Promise.all([api("/v1/errors"), api("/v1/reviews/today"), api("/v1/progress"), api("/v1/practice-pdfs")]);
       errors = errorResult.items;
       dueReviews = reviewResult.items;
       progress = progressResult;
+      const today = new Date().toLocaleDateString("zh-CN", {timeZone: "Asia/Shanghai"});
+      pdfReady = pdfResult.items.some(item => item.generated_at && new Date(item.generated_at).toLocaleDateString("zh-CN", {timeZone: "Asia/Shanghai"}) === today);
       const available = new Set(errors.map(item => item.error_id));
       for (const id of [...selectedErrorIds]) if (!available.has(id)) selectedErrorIds.delete(id);
       if (!selectionInitialized) {
