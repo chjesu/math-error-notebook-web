@@ -1392,7 +1392,7 @@ function bindPractice() {
     return api("/v1/practice-pdfs").then(result => {
       $("#practice-pdf-history").innerHTML = result.items.length ? result.items.map(item => {
         const generated = item.generated_at ? new Date(item.generated_at).toLocaleString("zh-CN") : "已生成";
-        const details = `${generated} · ${item.question_count || 0} 道题${item.include_answers ? " · 含答案" : ""}`;
+        const details = item.source === "desktop_skill" ? `${generated} · Skill 历史文件` : `${generated} · ${item.question_count || 0} 道题${item.include_answers ? " · 含答案" : ""}`;
         return `<article class="pdf-history-item"><div><strong>${escapeHtml(item.filename)}</strong><small>${escapeHtml(details)}</small></div><a class="pdf-download" href="${escapeHtml(item.download_url)}" download>下载</a></article>`;
       }).join("") : '<p class="empty">还没有生成过练习 PDF。</p>';
     }).catch(error => { $("#practice-pdf-history").innerHTML = `<p class="status error">${escapeHtml(authError(error))}</p>`; });

@@ -17,6 +17,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FILE_ROOT = ROOT / "data" / "runtime" / "quarantine"
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_PDF_BYTES = 25 * 1024 * 1024
 
 
 def _stable_id(kind: str, user_id: str, source_id: str) -> str:
@@ -71,6 +72,23 @@ def _portable_item(item: dict[str, Any]) -> dict[str, Any]:
     if image:
         portable["image"] = {key: value for key, value in image.items() if key != "local_path"}
     return portable
+
+
+def _pdf_metadata(path: Path) -> dict[str, Any]:
+    content = path.read_bytes()
+    if not content or len(content) > MAX_PDF_BYTES or path.suffix.lower() != ".pdf" or not content.startswith(b"%PDF-"):
+        raise RuntimeError(f"invalid source PDF: {path.name}")
+    return {
+        "local_path": str(path.resolve()),
+        "original_name": path.name,
+        "byte_size": len(content),
+        "content_sha256": hashlib.sha256(content).hexdigest(),
+        "modified_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
+    }
+
+
+def _portable_pdf(item: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in item.items() if key != "local_path"}
 
 
 def _item_digest(item: dict[str, Any]) -> str:
@@ -135,11 +153,17 @@ def extract(source_root: Path) -> dict[str, Any]:
             errors.append(item)
     finally:
         connection.close()
-    digest = hashlib.sha256(_canonical([_portable_item(item) for item in errors]).encode("utf-8")).hexdigest()
+    pdf_root = source_root / "output" / "pdf"
+    pdfs = [_pdf_metadata(path) for path in sorted(pdf_root.glob("*.pdf"), key=lambda value: value.name)] if pdf_root.is_dir() else []
+    digest = hashlib.sha256(_canonical({
+        "errors": [_portable_item(item) for item in errors],
+        "pdfs": [_portable_pdf(item) for item in pdfs],
+    }).encode("utf-8")).hexdigest()
     return {
         "source": str(database.resolve()),
         "source_sha256": digest,
         "errors": errors,
+        "pdfs": pdfs,
         "counts": {
             "errors": len(errors),
             "knowledge_links": sum(len(item["knowledge_points"]) for item in errors),
@@ -149,6 +173,8 @@ def extract(source_root: Path) -> dict[str, Any]:
             "unique_images": len({item["image"]["content_sha256"] for item in errors if item["image"]}),
             "attempts": sum(len(item["attempts"]) for item in errors),
             "review_packet_items": sum(len(item["review_packet_items"]) for item in errors),
+            "pdfs": len(pdfs),
+            "unique_pdfs": len({item["content_sha256"] for item in pdfs}),
         },
     }
 
@@ -276,7 +302,18 @@ def inspect_target(plan: dict[str, Any], phone_last4: str) -> dict[str, Any]:
             linked = int(cursor.fetchone()[0])
         else:
             linked = 0
-        return {"account_last4": phone_last4, "existing_errors": existing, "mapped_questions": linked}
+        cursor.execute("SELECT COUNT(*) FROM web_jobs WHERE user_id=%s AND job_type='practice_pdf' AND status='completed'", (user_id,))
+        existing_pdfs = int(cursor.fetchone()[0])
+        pdf_job_ids = [_stable_id("pdf-job", user_id, item["original_name"]) for item in plan["pdfs"]]
+        if pdf_job_ids:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM web_jobs WHERE user_id=%s AND id IN ({_placeholders(pdf_job_ids)})",
+                (user_id, *pdf_job_ids),
+            )
+            matched_pdfs = int(cursor.fetchone()[0])
+        else:
+            matched_pdfs = 0
+        return {"account_last4": phone_last4, "existing_errors": existing, "mapped_questions": linked, "existing_pdfs": existing_pdfs, "matched_pdfs": matched_pdfs}
     finally:
         cursor.close()
         connection.close()
@@ -297,6 +334,7 @@ def commit(plan: dict[str, Any], phone_last4: str, file_root: Path = DEFAULT_FIL
     imported_reviews = 0
     imported_recommendations = 0
     skipped_recommendations = 0
+    pdf_records: dict[str, str] = {}
     try:
         connection.begin()
         user_id = _resolve_user(cursor, phone_last4)
@@ -457,6 +495,62 @@ def commit(plan: dict[str, Any], phone_last4: str, file_root: Path = DEFAULT_FIL
                     (recommendation_id, user_id, error_id, target_question_id, recommendation["reason"], recommendation_status, _as_datetime(recommendation["assigned_at"])),
                 )
                 imported_recommendations += 1
+        for pdf in plan["pdfs"]:
+            source_pdf = Path(str(pdf["local_path"]))
+            content = source_pdf.read_bytes()
+            pdf_sha256 = str(pdf["content_sha256"])
+            if len(content) != int(pdf["byte_size"]) or hashlib.sha256(content).hexdigest() != pdf_sha256:
+                raise RuntimeError(f"source PDF changed after dry-run: {source_pdf.name}")
+            file_id = pdf_records.get(pdf_sha256)
+            if not file_id:
+                cursor.execute(
+                    "SELECT id,object_key,status FROM web_files WHERE user_id=%s AND purpose='practice_pdf' AND content_sha256=%s FOR UPDATE",
+                    (user_id, pdf_sha256),
+                )
+                existing_file = cursor.fetchone()
+                stored = False
+                if existing_file and str(existing_file[2]) == "ready":
+                    try:
+                        stored = hashlib.sha256(files.read(str(existing_file[1]))).hexdigest() == pdf_sha256
+                    except (LookupError, OSError):
+                        stored = False
+                if stored:
+                    file_id = str(existing_file[0])
+                else:
+                    candidate = files.quarantine(user_id=user_id, original_name=str(pdf["original_name"]), content=content)
+                    staged_paths.add(candidate.local_path)
+                    modified_at = _as_datetime(str(pdf["modified_at"]))
+                    if existing_file:
+                        file_id = str(existing_file[0])
+                        retired_keys.add(str(existing_file[1]))
+                        cursor.execute(
+                            "UPDATE web_files SET original_name=%s,object_key=%s,media_type='application/pdf',byte_size=%s,status='ready',updated_at=%s WHERE id=%s AND user_id=%s",
+                            (candidate.original_name, candidate.object_key, candidate.byte_size, now, file_id, user_id),
+                        )
+                    else:
+                        file_id = _stable_id("pdf-file", user_id, pdf_sha256)
+                        cursor.execute(
+                            "INSERT INTO web_files (id,user_id,purpose,original_name,object_key,content_sha256,media_type,byte_size,status,created_at,updated_at) VALUES (%s,%s,'practice_pdf',%s,%s,%s,'application/pdf',%s,'ready',%s,%s)",
+                            (file_id, user_id, candidate.original_name, candidate.object_key, pdf_sha256, candidate.byte_size, modified_at, now),
+                        )
+                pdf_records[pdf_sha256] = file_id
+            job_id = _stable_id("pdf-job", user_id, str(pdf["original_name"]))
+            idempotency_key = "desktop-pdf-" + _stable_id("pdf-key", user_id, str(pdf["original_name"]))
+            checkpoint = _canonical({
+                "file_id": file_id,
+                "question_count": 0,
+                "recommendation_gap_count": 0,
+                "include_answers": False,
+                "source": "desktop_skill",
+                "filename": pdf["original_name"],
+            })
+            modified_at = _as_datetime(str(pdf["modified_at"]))
+            cursor.execute(
+                "INSERT INTO web_jobs (id,user_id,job_type,resource_type,resource_id,idempotency_key,input_sha256,status,checkpoint_json,result_json,created_at,updated_at) "
+                "VALUES (%s,%s,'practice_pdf','file',%s,%s,%s,'completed',%s,%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE resource_type='file',resource_id=VALUES(resource_id),input_sha256=VALUES(input_sha256),status='completed',checkpoint_json=VALUES(checkpoint_json),result_json=VALUES(result_json),last_error_code=NULL,updated_at=VALUES(updated_at)",
+                (job_id, user_id, file_id, idempotency_key, pdf_sha256, checkpoint, checkpoint, modified_at, modified_at),
+            )
         if legacy_file_ids:
             cursor.execute(
                 f"DELETE FROM web_files WHERE user_id=%s AND id IN ({_placeholders(legacy_file_ids)})",
@@ -483,6 +577,8 @@ def commit(plan: dict[str, Any], phone_last4: str, file_root: Path = DEFAULT_FIL
             "synchronized_recommendations": imported_recommendations,
             "skipped_recommendations": skipped_recommendations,
             "ready_images": len(image_records),
+            "ready_pdfs": len(plan["pdfs"]),
+            "unique_ready_pdfs": len(pdf_records),
         }
     except Exception:
         connection.rollback()

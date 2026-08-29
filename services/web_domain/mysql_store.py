@@ -1179,13 +1179,15 @@ class MySqlDomainStore:
             items = []
             for job_id, checkpoint_json, updated_at, original_name, byte_size in cursor.fetchall():
                 checkpoint = self._json(checkpoint_json) or {}
+                filename = checkpoint.get("filename") if isinstance(checkpoint.get("filename"), str) else original_name
                 items.append({
                     "task_id": str(job_id),
-                    "filename": str(original_name),
+                    "filename": str(filename),
                     "byte_size": int(byte_size),
                     "generated_at": updated_at.replace(tzinfo=timezone.utc).isoformat(),
                     "question_count": int(checkpoint.get("question_count", 0)),
                     "include_answers": bool(checkpoint.get("include_answers", False)),
+                    "source": str(checkpoint.get("source", "generated")),
                 })
             return items
         finally:

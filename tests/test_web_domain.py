@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -109,6 +110,12 @@ class DomainContractTests(unittest.TestCase):
         self.assertEqual(items, [])
         self.assertIn("WHERE j.user_id=%s", query)
         self.assertEqual(args, ("a" * 32,))
+
+    def test_practice_pdf_history_uses_imported_filename(self) -> None:
+        checkpoint = '{"file_id":"file","filename":"历史练习.pdf","question_count":0,"source":"desktop_skill"}'
+        connection = FakeConnection([[("j" * 32, checkpoint, datetime(2026, 8, 29), "stored.pdf", 12)]])
+        item = MySqlDomainStore(lambda: connection).list_practice_pdfs(user_id="a" * 32)[0]
+        self.assertEqual((item["filename"], item["source"]), ("历史练习.pdf", "desktop_skill"))
 
     def test_mysql_commit_rejects_correct_candidate(self) -> None:
         row = ("a" * 32, 1, "correct", None, "pending", "题目", "答案", None)

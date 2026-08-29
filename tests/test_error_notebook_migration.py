@@ -19,6 +19,10 @@ class ErrorNotebookMigrationTests(unittest.TestCase):
         skill.parent.mkdir(parents=True)
         skill.write_text("skill", encoding="utf-8")
         image.write_bytes(b"\xff\xd8\xfftest-image")
+        pdf_root = root / "output" / "pdf"
+        pdf_root.mkdir(parents=True)
+        (pdf_root / "历史练习.pdf").write_bytes(b"%PDF-1.4\n%%EOF")
+        (pdf_root / "历史练习-别名.pdf").write_bytes(b"%PDF-1.4\n%%EOF")
         connection = sqlite3.connect(database)
         connection.executescript(
             """
@@ -62,12 +66,13 @@ class ErrorNotebookMigrationTests(unittest.TestCase):
             first = migrate_error_notebook.extract(root)
             second = migrate_error_notebook.extract(root)
         self.assertEqual(first["source_sha256"], second["source_sha256"])
-        self.assertEqual(first["counts"], {"errors": 1, "knowledge_links": 1, "completed_reviews": 1, "recommendations": 1, "images": 1, "unique_images": 1, "attempts": 1, "review_packet_items": 1})
+        self.assertEqual(first["counts"], {"errors": 1, "knowledge_links": 1, "completed_reviews": 1, "recommendations": 1, "images": 1, "unique_images": 1, "attempts": 1, "review_packet_items": 1, "pdfs": 2, "unique_pdfs": 1})
         self.assertEqual(first["errors"][0]["knowledge_points"], ["直线与圆"])
         self.assertEqual(len(first["errors"][0]["reviews"]), 2)
         self.assertEqual(first["errors"][0]["image"]["media_type"], "image/jpeg")
         self.assertEqual(first["errors"][0]["attempts"][0]["id"], "attempt-1")
         self.assertEqual(first["errors"][0]["review_packet_items"][0]["packet_sha256"], "packet-sha")
+        self.assertEqual([item["original_name"] for item in first["pdfs"]], ["历史练习-别名.pdf", "历史练习.pdf"])
 
     def test_ids_are_stable_and_scoped_to_target_user(self) -> None:
         first = migrate_error_notebook._stable_id("error", "user-a", "source-1")
@@ -161,11 +166,14 @@ class ErrorNotebookMigrationTests(unittest.TestCase):
                 result = migrate_error_notebook.commit(plan, "2970", root / "target-files")
             stored = list((root / "target-files").rglob("*.jpg"))
             self.assertEqual(len(stored), 1)
+            self.assertEqual(len(list((root / "target-files").rglob("*.pdf"))), 1)
         sql = "\n".join(statement for statement, _ in connection.cursor_instance.executed)
         self.assertTrue(connection.committed)
         self.assertFalse(connection.rolled_back)
         self.assertEqual((result["inserted_errors"], result["ready_images"], result["synchronized_completed_reviews"]), (1, 1, 1))
+        self.assertEqual((result["ready_pdfs"], result["unique_ready_pdfs"]), (2, 1))
         self.assertIn("DELETE FROM recommendations", sql)
+        self.assertIn("'practice_pdf','file'", sql)
         self.assertIn("ON DUPLICATE KEY UPDATE", sql)
         self.assertNotIn("INSERT IGNORE", sql)
 
