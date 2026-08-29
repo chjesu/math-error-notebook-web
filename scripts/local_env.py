@@ -11,6 +11,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -49,6 +50,7 @@ MIGRATIONS = (
     ROOT / "services" / "web_domain" / "migrations" / "0009_file_upload_idempotency.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0010_codex_harness.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0011_daily_learning_usage.sql",
+    ROOT / "services" / "web_auth" / "migrations" / "0012_operations_admin.sql",
 )
 HARNESS_WEB_HOME = ROOT / "data" / "runtime" / "deepseek-harness-web-home"
 HARNESS_PRODUCT_WORKSPACE = HARNESS_WEB_HOME / "math-notebook-workspace"
@@ -440,6 +442,8 @@ def _clear_test_data() -> None:
     cursor = connection.cursor()
     try:
         for table in (
+            "operations_audit_events",
+            "admin_operators",
             "account_deletions",
             "file_upload_idempotency",
             "daily_learning_usage",
@@ -477,6 +481,43 @@ def _existing_user_count() -> int:
     return int(_run_sql("SELECT COUNT(*) FROM web_users;", root=False, database=True, label="local user count"))
 
 
+def grant_admin(phone_last4: str, role: str) -> dict[str, str]:
+    """Grant a local-only operator role without accepting or displaying a full phone number."""
+
+    if not re.fullmatch(r"\d{4}", phone_last4):
+        raise ValueError("phone_last4 must contain exactly four digits")
+    if role not in {"operations", "reviewer", "security", "administrator"}:
+        raise ValueError("invalid operator role")
+    start()
+    _apply_migrations()
+    connection = _connection_factory()()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT id FROM web_users WHERE phone_last4=%s AND status='active' ORDER BY created_at",
+            (phone_last4,),
+        )
+        rows = cursor.fetchall()
+        if len(rows) != 1:
+            raise ValueError("phone_last4 must match exactly one active local account")
+        user_id = str(rows[0][0])
+        connection.begin()
+        cursor.execute(
+            "INSERT INTO admin_operators (user_id,role,status,granted_by,created_at,updated_at) "
+            "VALUES (%s,%s,'active',NULL,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)) "
+            "ON DUPLICATE KEY UPDATE role=VALUES(role),status='active',updated_at=UTC_TIMESTAMP(6)",
+            (user_id, role),
+        )
+        connection.commit()
+        return {"status": "ok", "operator": f"用户 ····{phone_last4}", "role": role}
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def _clear_smoke_auth(service: Any, phones: list[str], user_ids: list[str]) -> None:
     """Remove only identities created by smoke; never touch existing local users."""
 
@@ -489,6 +530,8 @@ def _clear_smoke_auth(service: Any, phones: list[str], user_ids: list[str]) -> N
         connection.begin()
         if users:
             placeholders = ",".join(["%s"] * len(users))
+            cursor.execute(f"DELETE FROM operations_audit_events WHERE operator_user_id IN ({placeholders})", tuple(users))
+            cursor.execute(f"DELETE FROM admin_operators WHERE user_id IN ({placeholders}) OR granted_by IN ({placeholders})", tuple(users + users))
             for table in ("account_deletions", "auth_agreement_acceptances", "auth_password_credentials", "auth_sessions"):
                 cursor.execute(f"DELETE FROM `{table}` WHERE user_id IN ({placeholders})", tuple(users))
             cursor.execute(f"DELETE FROM web_users WHERE id IN ({placeholders})", tuple(users))
@@ -534,7 +577,8 @@ def _live_schema_ready() -> bool:
         required = _run_sql(
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() "
             "AND table_name IN ('web_users','auth_password_credentials',"
-            "'auth_agreement_acceptances','web_jobs','account_deletions','file_upload_idempotency');",
+            "'auth_agreement_acceptances','web_jobs','account_deletions','file_upload_idempotency',"
+            "'admin_operators','operations_audit_events');",
             root=False,
             database=True,
             label="live schema table check",
@@ -546,7 +590,7 @@ def _live_schema_ready() -> bool:
             database=True,
             label="live privacy recovery schema check",
         )
-        return required.strip() == "6" and recovery_columns.strip() == "3"
+        return required.strip() == "8" and recovery_columns.strip() == "3"
     except RuntimeError:
         return False
 
@@ -1045,6 +1089,7 @@ def serve(
         RegistrationService,
     )
     from services.web_domain import MySqlDomainStore, NotebookService
+    from services.web_ops import MySqlOperationsStore, OperationsService
     import uvicorn
 
     sender = ConsoleSmsSender()
@@ -1056,6 +1101,7 @@ def serve(
         config=AuthConfig(captcha_after_phone_day=99, captcha_after_ip_hour=99),
     )
     notebook = NotebookService(MySqlDomainStore(_connection_factory()), RUNTIME / "quarantine")
+    operations = OperationsService(MySqlOperationsStore(_connection_factory()))
     harness_internal_token = secrets.token_urlsafe(32) if enable_harness_ui else None
     if enable_codex_model and enable_harness_model:
         raise RuntimeError("choose either the Harness model or the legacy Codex model")
@@ -1078,6 +1124,7 @@ def serve(
         require_https=False,
         model_runner=model_runner,
         harness_internal_token=harness_internal_token,
+        operations=operations,
     )
     app.resume_pending_deletions()
     harness_web = _start_harness_web(harness_internal_token) if harness_internal_token else None
@@ -1119,6 +1166,9 @@ def main() -> int:
     serve_parser.add_argument("--enable-codex-model", action="store_true")
     serve_parser.add_argument("--enable-harness-model", action="store_true")
     serve_parser.add_argument("--enable-harness-ui", action="store_true")
+    grant_admin_parser = sub.add_parser("grant-admin")
+    grant_admin_parser.add_argument("--phone-last4", required=True)
+    grant_admin_parser.add_argument("--role", choices=("operations", "reviewer", "security", "administrator"), default="administrator")
     args = parser.parse_args()
     try:
         if args.command == "init":
@@ -1147,6 +1197,8 @@ def main() -> int:
                 enable_harness_ui=args.enable_harness_ui,
             )
             return 0
+        elif args.command == "grant-admin":
+            result = grant_admin(args.phone_last4, args.role)
         else:
             result = doctor()
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))

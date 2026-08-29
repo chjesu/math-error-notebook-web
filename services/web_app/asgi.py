@@ -49,6 +49,7 @@ class NotebookAsgiApp:
         max_upload_bytes: int = 26 * 1024 * 1024,
         model_runner: Any | None = None,
         harness_internal_token: str | None = None,
+        operations: Any | None = None,
     ) -> None:
         self.auth = AuthAsgiApp(auth_service, allowed_hosts=allowed_hosts, require_https=require_https, session_cookie=session_cookie)
         self.auth_service = auth_service
@@ -59,6 +60,7 @@ class NotebookAsgiApp:
         self.max_upload_bytes = max_upload_bytes
         self.model_runner = model_runner
         self.harness_internal_token = harness_internal_token
+        self.operations = operations
         self.harness_origins = {f"http://{host}:3080" for host in self.allowed_hosts}
         self._harness_sessions: dict[str, str] = {}
         self._harness_sessions_lock = Lock()
@@ -78,6 +80,7 @@ class NotebookAsgiApp:
             "/web/app.css": (root / "web" / "app.css", "text/css; charset=utf-8", False),
             "/web/app.js": (root / "web" / "app.js", "text/javascript; charset=utf-8", False),
             "/web/auth.js": (root / "web" / "auth.js", "text/javascript; charset=utf-8", False),
+            "/web/admin.js": (root / "web" / "admin.js", "text/javascript; charset=utf-8", False),
             "/web/nav-icons.svg": (root / "web" / "nav-icons.svg", "image/svg+xml", False),
             "/web/vendor/katex/katex.min.js": (root / "web" / "vendor" / "katex" / "katex.min.js", "text/javascript; charset=utf-8", False),
             "/web/vendor/katex/auto-render.min.js": (root / "web" / "vendor" / "katex" / "auto-render.min.js", "text/javascript; charset=utf-8", False),
@@ -85,6 +88,7 @@ class NotebookAsgiApp:
             "/assets/branding/logo-symbol-color-64-v1.png": (root / "assets" / "branding" / "logo-symbol-color-64-v1.png", "image/png", True),
             "/assets/branding/logo-symbol-color-128-v1.png": (root / "assets" / "branding" / "logo-symbol-color-128-v1.png", "image/png", True),
         }
+        self.admin_page = (root / "web" / "admin.html", "text/html; charset=utf-8", False)
 
     def resume_pending_deletions(self) -> int:
         """Complete only accounts whose authoritative auth state is disabled."""
@@ -150,13 +154,30 @@ class NotebookAsgiApp:
         if user is None:
             await self._error(send, 401, "authentication_required")
             return
+        if path == "/admin" and method == "GET":
+            if self.operations is None:
+                await self._error(send, 404, "not_found")
+                return
+            try:
+                await self._sync(self.operations.session, user_id=user.user_id)
+            except PermissionError:
+                await self._error(send, 403, "forbidden")
+                return
+            await self._asset(send, *self.admin_page)
+            return
         if method in {"POST", "PATCH", "PUT", "DELETE"}:
             expected_origin = f"{scope.get('scheme', 'https')}://{headers.get('host', '')}"
             if headers.get("origin") != expected_origin and not (path == "/v1/harness/sessions/bind" and harness_origin):
                 await self._error(send, 403, "forbidden")
                 return
         try:
-            if path == "/v1/harness/sessions/bind" and method == "POST":
+            if path == "/v1/admin/dashboard" and method == "GET":
+                if self.operations is None:
+                    raise LookupError
+                raw_limit = self._query(scope, allowed={"limit"}).get("limit", "30")
+                result = await self._sync(self.operations.dashboard, user_id=user.user_id, limit=int(raw_limit))
+                await self._json(send, 200, result)
+            elif path == "/v1/harness/sessions/bind" and method == "POST":
                 payload = await self._json_body(receive)
                 session_id = self._harness_session_id(payload)
                 with self._harness_sessions_lock:

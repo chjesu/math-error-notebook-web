@@ -404,16 +404,16 @@
 
 ## 18. 实现差异
 
-v0.4.0 本地候选已完成独立 login/register 页面、挑战用途和 API、密码凭据与协议记录、user_id 授权边界、候选/正式质量门、推荐/复习/PDF、敏感导出和注销。真实 MySQL smoke、166 项测试、官方 Codex app-server 连续会话与数学候选实测及浏览器全流程已通过。
+v0.4.0 本地候选已完成独立 login/register 页面、挑战用途和 API、密码凭据与协议记录、user_id 授权边界、候选/正式质量门、推荐/复习/PDF、敏感导出、注销及只读脱敏运营后台。真实 MySQL smoke、230 项测试、官方 Codex app-server 连续会话与数学候选实测及浏览器学习流程已通过。
 
-仍未达到生产目标的部分：真实短信/CAPTCHA/KMS/OSS、生产异步 OCR/AI Worker、PDF/DOCX 自动解析、PWA、运营后台、压测/灾备/观测和生产恢复。
+仍未达到生产目标的部分：真实短信/CAPTCHA/KMS/OSS、生产异步 OCR/AI Worker、PDF/DOCX 自动解析、PWA、后台人工复核与敏感操作治理、压测/灾备/观测和生产恢复。
 
 ## 19. 后续产物
 
 进入前端实现前还需形成：
 
 - 页面线框与视觉规范：已形成，见 10-UX-UI-INTERACTION-DESIGN.md；
-- OpenAPI 契约和稳定错误码：已形成，见 `openapi/web-v1.json`（36 paths）；
+- OpenAPI 契约和稳定错误码：已形成，见 `openapi/web-v1.json`（44 paths）；
 - user_id 隔离测试表：已形成并纳入回归；
 - 复习阶段和数学领域规则：本地手工闭环已实现；
 - 内容审核规范与固定基准集；

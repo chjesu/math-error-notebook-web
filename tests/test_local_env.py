@@ -73,6 +73,7 @@ class LocalEnvironmentTests(unittest.TestCase):
                 "0009_file_upload_idempotency.sql",
                 "0010_codex_harness.sql",
                 "0011_daily_learning_usage.sql",
+                "0012_operations_admin.sql",
             ],
         )
         self.assertTrue(all(path.is_file() for path in local_env.MIGRATIONS))
@@ -105,11 +106,11 @@ class LocalEnvironmentTests(unittest.TestCase):
             for path in local_env.MIGRATIONS
         )
         with mock.patch.object(local_env, "_is_running", return_value=True), mock.patch.object(
-            local_env, "_run_sql", side_effect=[ledger, "6", "3"]
+            local_env, "_run_sql", side_effect=[ledger, "8", "3"]
         ):
             self.assertTrue(local_env._live_schema_ready())
         with mock.patch.object(local_env, "_is_running", return_value=True), mock.patch.object(
-            local_env, "_run_sql", side_effect=[ledger, "5", "3"]
+            local_env, "_run_sql", side_effect=[ledger, "7", "3"]
         ):
             self.assertFalse(local_env._live_schema_ready())
 

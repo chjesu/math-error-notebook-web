@@ -127,6 +127,14 @@ class WebOpenApiContractTests(unittest.TestCase):
         self.assertIn("不删除已入本错题", operation["description"])
         self.assertTrue({"204", "401", "403"}.issubset(operation["responses"]))
 
+    def test_operations_dashboard_is_read_only_role_scoped_and_audited(self) -> None:
+        operation = self.operation("/v1/admin/dashboard", "get")
+        self.assertEqual(operation["operationId"], "getOperationsDashboard")
+        self.assertIn("只读", operation["description"])
+        self.assertIn("访问审计", operation["description"])
+        self.assertTrue({"401", "403"}.issubset(operation["responses"]))
+        self.assertEqual(operation["parameters"][0]["schema"]["maximum"], 100)
+
 
 if __name__ == "__main__":
     unittest.main()

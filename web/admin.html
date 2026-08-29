@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>运营后台｜李兆霖数学错题本</title>
+  <link rel="icon" href="/assets/branding/favicon-v1.ico">
+  <link rel="stylesheet" href="/web/app.css">
+</head>
+<body class="is-authenticated admin-page" data-page="admin">
+  <div class="app-shell">
+    <aside class="sidebar admin-sidebar" aria-label="运营后台导航">
+      <a class="brand" href="/admin"><img src="/assets/branding/logo-symbol-color-64-v1.png" alt=""><span>错题本运营后台</span></a>
+      <nav id="admin-navigation">
+        <a href="#overview" class="active"><span>运营概览</span></a>
+        <a href="#tasks" data-section-link="tasks"><span>失败任务</span></a>
+        <a href="#content" data-section-link="content"><span>内容质量</span></a>
+        <a href="#risk" data-section-link="risk"><span>短信与风控</span></a>
+        <a href="#privacy" data-section-link="privacy"><span>隐私工单</span></a>
+        <a href="#audit" data-section-link="audit"><span>访问审计</span></a>
+        <a href="/"><span>返回用户端</span></a>
+      </nav>
+    </aside>
+    <main id="main" tabindex="-1">
+      <header class="page-header admin-header">
+        <div><p class="eyebrow">运营与质量治理</p><h1>后台管理</h1><p class="page-intro">只展示脱敏状态，不在这里直接修改用户数据或正式判题。</p></div>
+        <div class="admin-header-actions"><span id="operator-role" class="badge">正在验证权限</span><button id="refresh-admin" class="ghost" type="button">刷新数据</button></div>
+      </header>
+      <div class="page-panel admin-dashboard">
+        <p id="admin-status" class="status" role="status" aria-live="polite">正在加载运营数据…</p>
+        <section id="overview" class="admin-section" aria-labelledby="overview-heading">
+          <div class="panel-title"><div><p class="section-kicker">当前状态</p><h2 id="overview-heading">运营概览</h2></div><small id="generated-at"></small></div>
+          <div id="admin-metrics" class="admin-metrics"></div>
+        </section>
+        <section id="tasks" class="admin-section" data-admin-section="tasks" aria-labelledby="tasks-heading">
+          <div class="panel-title"><div><p class="section-kicker">需关注</p><h2 id="tasks-heading">失败与等待任务</h2></div></div>
+          <div class="admin-table-wrap"><table><thead><tr><th>任务</th><th>用户</th><th>类型</th><th>状态</th><th>错误分类</th><th>更新时间</th></tr></thead><tbody id="admin-tasks"></tbody></table></div>
+        </section>
+        <section id="content" class="admin-section" data-admin-section="content" aria-labelledby="content-heading">
+          <div class="panel-title"><div><p class="section-kicker">质量门</p><h2 id="content-heading">候选题与待复核内容</h2></div></div>
+          <div class="admin-table-wrap"><table><thead><tr><th>题目</th><th>状态</th><th>验证</th><th>版本</th><th>授权</th><th>更新时间</th></tr></thead><tbody id="admin-content"></tbody></table></div>
+        </section>
+        <section id="risk" class="admin-section" data-admin-section="risk" aria-labelledby="risk-heading">
+          <div class="panel-title"><div><p class="section-kicker">今日聚合</p><h2 id="risk-heading">短信与风控</h2></div></div>
+          <div id="risk-metrics" class="admin-metrics compact"></div>
+          <p class="admin-note">为防止账号枚举，本视图不支持按手机号查询。</p>
+        </section>
+        <section id="privacy" class="admin-section" data-admin-section="privacy" aria-labelledby="privacy-heading">
+          <div class="panel-title"><div><p class="section-kicker">数据权利</p><h2 id="privacy-heading">注销工单</h2></div></div>
+          <div class="admin-table-wrap"><table><thead><tr><th>用户</th><th>状态</th><th>申请时间</th><th>更新时间</th><th>错误分类</th></tr></thead><tbody id="admin-privacy"></tbody></table></div>
+        </section>
+        <section id="audit" class="admin-section" data-admin-section="audit" aria-labelledby="audit-heading">
+          <div class="panel-title"><div><p class="section-kicker">可追溯</p><h2 id="audit-heading">后台访问审计</h2></div></div>
+          <div class="admin-table-wrap"><table><thead><tr><th>操作者</th><th>角色</th><th>事件</th><th>时间</th></tr></thead><tbody id="admin-audit"></tbody></table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script src="/web/admin.js" defer></script>
+</body>
+</html>
