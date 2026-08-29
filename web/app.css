@@ -285,6 +285,12 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .panel-title a { color: var(--brand); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .page-intro { margin: 6px 0 0; color: var(--muted); }
+.learning-usage-strip { display: flex; max-width: 1100px; align-items: center; gap: 18px; margin: -12px auto 18px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); color: var(--muted); font-size: 13px; }
+.learning-usage-strip strong { color: var(--ink); }
+.learning-usage-strip span { display: flex; align-items: baseline; gap: 5px; }
+.learning-usage-strip b { color: var(--ink); font-size: 15px; }
+.learning-usage-strip small { color: var(--muted); }
+.learning-usage-strip.is-limit { border-color: #f2c94c; background: #fffbeb; }
 .error-dashboard { display: grid; max-width: 1120px; gap: 18px; }
 .dashboard-overview { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(340px, .9fr); gap: 18px; }
 .progress-dashboard .dashboard-overview { grid-template-columns: minmax(0, 1fr); }
@@ -412,6 +418,7 @@ body.is-embedded[data-page="settings"] .settings-panel {
   width: min(100%, 680px);
 }
 body.is-embedded .page-header { margin-bottom: 20px; }
+body.is-embedded .learning-usage-strip { margin-top: -8px; }
 body.is-embedded .page-header h1 {
   margin-top: 2px;
   font-size: 24px;

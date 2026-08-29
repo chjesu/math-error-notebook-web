@@ -416,15 +416,24 @@ class NotebookAsgiApp:
                 attempt_id = path.split("/")[-2]
                 payload = await self._json_body(receive)
                 verdict, first_error, evidence = self._grade_values(payload, evidence_key="evidence")
-                candidate = await self._sync(
-                    self.notebook.store.record_grade_candidate,
-                    user_id=user.user_id,
-                    attempt_id=attempt_id,
-                    input_version=int(payload["input_version"]),
-                    verdict=verdict,
-                    first_error=first_error,
-                    evidence=evidence,
-                )
+                attempt = await self._sync(self.notebook.store.get_attempt, user_id=user.user_id, attempt_id=attempt_id)
+                if not attempt:
+                    raise LookupError
+                await self._sync(self.notebook.store.reserve_grade_batch, user_id=user.user_id, intake_ids=[attempt.intake_id])
+                counted = False
+                try:
+                    candidate = await self._sync(
+                        self.notebook.store.record_grade_candidate,
+                        user_id=user.user_id,
+                        attempt_id=attempt_id,
+                        input_version=int(payload["input_version"]),
+                        verdict=verdict,
+                        first_error=first_error,
+                        evidence=evidence,
+                    )
+                    counted = candidate.verdict != "unclear"
+                finally:
+                    await self._sync(self.notebook.store.finish_grade_usage, user_id=user.user_id, intake_id=attempt.intake_id, counted=counted)
                 await self._json(send, 201, self._candidate(candidate))
             elif path.startswith("/v1/attempts/") and path.endswith("/model-grade") and method == "POST":
                 if self.model_runner is None:
@@ -444,49 +453,55 @@ class NotebookAsgiApp:
                 file_record = await self._sync(self.notebook.store.get_file, user_id=user.user_id, file_id=intake.file_id)
                 if not file_record or file_record.media_type not in {"image/png", "image/jpeg"}:
                     raise ModelUnavailableError("grading requires the original PNG or JPEG")
-                reference = await self._sync(
-                    self.notebook.store.find_verified_question,
-                    question_text=attempt.question_text,
-                )
-                thread_owner_id, thread_id = await self._sync(self._intake_thread, user.user_id, intake)
-                with self.notebook.files.model_preview(file_record.object_key, file_record.content_sha256) as image_path:
-                    result = await self._sync(
-                        self.model_runner.grade, attempt=attempt, image_path=image_path, thread_id=thread_id, reference=reference,
+                await self._sync(self.notebook.store.reserve_grade_batch, user_id=user.user_id, intake_ids=[intake.intake_id])
+                counted = False
+                try:
+                    reference = await self._sync(
+                        self.notebook.store.find_verified_question,
+                        question_text=attempt.question_text,
                     )
-                await self._sync(
-                    self.notebook.store.save_codex_thread,
-                    user_id=user.user_id,
-                    conversation_id=thread_owner_id,
-                    thread_id=result["thread_id"],
-                )
-                if result.get("attempt_id") != attempt.attempt_id or result.get("input_version") != attempt.input_version:
-                    raise ModelUnavailableError("model response does not match the frozen attempt")
-                verdict, first_error, evidence = self._grade_values(
-                    result,
-                    evidence_key="cause_evidence",
-                    cross_validation=result.get("cross_validation"),
-                )
-                confidence = result.get("confidence")
-                if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
-                    raise ModelUnavailableError("model returned invalid confidence")
-                candidate = await self._sync(
-                    self.notebook.store.record_grade_candidate,
-                    user_id=user.user_id,
-                    attempt_id=attempt_id,
-                    input_version=attempt.input_version,
-                    verdict=verdict,
-                    first_error=first_error,
-                    evidence=evidence,
-                    confidence=float(confidence),
-                )
-                validation = self._diagnosis(candidate.evidence).get("cross_validation")
-                if isinstance(validation, dict) and validation.get("status") == "consistent":
+                    thread_owner_id, thread_id = await self._sync(self._intake_thread, user.user_id, intake)
+                    with self.notebook.files.model_preview(file_record.object_key, file_record.content_sha256) as image_path:
+                        result = await self._sync(
+                            self.model_runner.grade, attempt=attempt, image_path=image_path, thread_id=thread_id, reference=reference,
+                        )
                     await self._sync(
-                        self.notebook.store.link_attempt_question,
+                        self.notebook.store.save_codex_thread,
+                        user_id=user.user_id,
+                        conversation_id=thread_owner_id,
+                        thread_id=result["thread_id"],
+                    )
+                    if result.get("attempt_id") != attempt.attempt_id or result.get("input_version") != attempt.input_version:
+                        raise ModelUnavailableError("model response does not match the frozen attempt")
+                    verdict, first_error, evidence = self._grade_values(
+                        result,
+                        evidence_key="cause_evidence",
+                        cross_validation=result.get("cross_validation"),
+                    )
+                    confidence = result.get("confidence")
+                    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
+                        raise ModelUnavailableError("model returned invalid confidence")
+                    candidate = await self._sync(
+                        self.notebook.store.record_grade_candidate,
                         user_id=user.user_id,
                         attempt_id=attempt_id,
-                        question_id=str(validation["question_id"]),
+                        input_version=attempt.input_version,
+                        verdict=verdict,
+                        first_error=first_error,
+                        evidence=evidence,
+                        confidence=float(confidence),
                     )
+                    counted = candidate.verdict != "unclear"
+                    validation = self._diagnosis(candidate.evidence).get("cross_validation")
+                    if isinstance(validation, dict) and validation.get("status") == "consistent":
+                        await self._sync(
+                            self.notebook.store.link_attempt_question,
+                            user_id=user.user_id,
+                            attempt_id=attempt_id,
+                            question_id=str(validation["question_id"]),
+                        )
+                finally:
+                    await self._sync(self.notebook.store.finish_grade_usage, user_id=user.user_id, intake_id=intake.intake_id, counted=counted)
                 await self._json(send, 201, self._candidate(candidate) | {"model": result.get("route")})
             elif path.startswith("/v1/grade-results/") and path.endswith("/commit") and method == "POST":
                 candidate_id = path.split("/")[-2]
@@ -503,6 +518,8 @@ class NotebookAsgiApp:
                 reviews = await self._sync(self.notebook.store.list_active_reviews, user_id=user.user_id)
                 review_by_error = {item.error_id: item for item in reviews}
                 await self._json(send, 200, {"items": [self._error_entry(item) | {"review": self._review(review_by_error[item.error_id]) if item.error_id in review_by_error else None} for item in items]})
+            elif path == "/v1/learning-usage" and method == "GET":
+                await self._json(send, 200, await self._sync(self.notebook.store.learning_usage, user_id=user.user_id))
             elif path.startswith("/v1/errors/") and path.endswith("/master") and method == "POST":
                 entry = await self._sync(self.notebook.store.set_error_status, user_id=user.user_id, error_id=path.split("/")[-2], status="mastered")
                 await self._json(send, 200, self._error_entry(entry))
@@ -514,7 +531,8 @@ class NotebookAsgiApp:
                 else:
                     recommendations = await self._sync(self.notebook.store.list_recommendations, user_id=user.user_id, error_id=error_id)
                     gap = len(recommendations) < 2
-                await self._json(send, 200, {"items": [self._recommendation(item) for item in recommendations], "gap": gap})
+                usage = await self._sync(self.notebook.store.learning_usage, user_id=user.user_id)
+                await self._json(send, 200, {"items": [self._recommendation(item) for item in recommendations], "gap": gap, "usage": usage})
             elif path.startswith("/v1/errors/") and method == "DELETE":
                 entry = await self._sync(self.notebook.store.set_error_status, user_id=user.user_id, error_id=path.rsplit("/", 1)[1], status="removed")
                 await self._json(send, 200, self._error_entry(entry))
@@ -577,8 +595,8 @@ class NotebookAsgiApp:
         except ModelUnavailableError as exc:
             await self._error(send, 503, exc.code)
         except RuntimeError as exc:
-            code = str(exc) if str(exc) in {"input_version_changed", "waiting_confirmation", "failed_final", "reference_conflict", "conflict"} else "conflict"
-            await self._error(send, 422 if code == "failed_final" else 409, code)
+            code = str(exc) if str(exc) in {"input_version_changed", "waiting_confirmation", "failed_final", "reference_conflict", "conflict", "daily_grade_limit", "daily_recommendation_limit"} else "conflict"
+            await self._error(send, 429 if code.startswith("daily_") else 422 if code == "failed_final" else 409, code)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
 
@@ -653,10 +671,16 @@ class NotebookAsgiApp:
                 evidence_key="cause_evidence",
                 cross_validation=prior_validation if isinstance(prior_validation, dict) else None,
             )
-            candidate = self.notebook.store.record_grade_candidate(
-                user_id=user_id, attempt_id=attempt_id, input_version=attempt.input_version,
-                verdict=verdict, first_error=first_error, evidence=evidence, confidence=float(result["confidence"]),
-            )
+            self.notebook.store.reserve_grade_batch(user_id=user_id, intake_ids=[intake.intake_id])
+            counted = False
+            try:
+                candidate = self.notebook.store.record_grade_candidate(
+                    user_id=user_id, attempt_id=attempt_id, input_version=attempt.input_version,
+                    verdict=verdict, first_error=first_error, evidence=evidence, confidence=float(result["confidence"]),
+                )
+                counted = candidate.verdict != "unclear"
+            finally:
+                self.notebook.store.finish_grade_usage(user_id=user_id, intake_id=intake.intake_id, counted=counted)
         return {
             "assistant_message": result["assistant_message"], "action": result["action"],
             "stage": "grade", "candidate": self._candidate(candidate) if candidate else None, "model": result.get("route"),
@@ -900,6 +924,9 @@ class NotebookAsgiApp:
         if not self._internal_harness_allowed(scope, headers):
             await self._error(send, 403, "forbidden")
             return
+        user_id: str | None = None
+        reserved_intakes: list[str] = []
+        completed_intakes: set[str] = set()
         try:
             payload = await self._json_body(receive, max_bytes=self.max_upload_bytes * 2)
             if set(payload) != {"session_id", "attachment", "items"}:
@@ -995,6 +1022,8 @@ class NotebookAsgiApp:
                     else:
                         raise RuntimeError("conflict")
 
+            reserved_intakes = [intake.intake_id for intake in intakes]
+            await self._sync(self.notebook.store.reserve_grade_batch, user_id=user_id, intake_ids=reserved_intakes)
             results = []
             for intake, item in zip(intakes, raw_items, strict=True):
                 attempt_id, _ = await self._sync(
@@ -1022,6 +1051,13 @@ class NotebookAsgiApp:
                     evidence=evidence,
                     confidence=float(item["confidence"]),
                 )
+                await self._sync(
+                    self.notebook.store.finish_grade_usage,
+                    user_id=user_id,
+                    intake_id=intake.intake_id,
+                    counted=candidate.verdict != "unclear",
+                )
+                completed_intakes.add(intake.intake_id)
                 if isinstance(validation, dict) and validation.get("status") == "consistent":
                     await self._sync(
                         self.notebook.store.link_attempt_question,
@@ -1059,18 +1095,23 @@ class NotebookAsgiApp:
                         "reference_solution": reference.solution_text or "",
                     }
                 results.append(result_item)
-            await self._json(send, 200, {"results": results})
+            usage = await self._sync(self.notebook.store.learning_usage, user_id=user_id)
+            await self._json(send, 200, {"results": results, "usage": usage})
         except LookupError:
             await self._error(send, 404, "not_found")
         except PermissionError:
             await self._error(send, 403, "forbidden")
         except RuntimeError as exc:
-            code = str(exc) if str(exc) in {"input_version_changed", "reference_conflict", "conflict"} else "conflict"
-            await self._error(send, 409, code)
+            code = str(exc) if str(exc) in {"input_version_changed", "reference_conflict", "conflict", "daily_grade_limit"} else "conflict"
+            await self._error(send, 429 if code == "daily_grade_limit" else 409, code)
         except RequestTooLarge:
             await self._error(send, 413, "request_too_large")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
+        finally:
+            for intake_id in reserved_intakes if user_id is not None else []:
+                if intake_id not in completed_intakes:
+                    await self._sync(self.notebook.store.finish_grade_usage, user_id=user_id, intake_id=intake_id, counted=False)
 
     async def _internal_harness_commit(
         self,

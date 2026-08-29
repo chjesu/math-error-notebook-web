@@ -48,8 +48,8 @@ class PrivacyStoreTests(unittest.TestCase):
         connection = Connection()
         user_id = "a" * 32
         data = MySqlDomainStore(lambda: connection).export_data(user_id=user_id)
-        self.assertEqual(set(data), {"schema_version", "files", "intakes", "attempts", "grade_candidates", "errors", "recommendations", "review_tasks", "review_attempts", "jobs"})
-        self.assertEqual(len(connection.cursor_instance.executed), 9)
+        self.assertEqual(set(data), {"schema_version", "files", "intakes", "attempts", "grade_candidates", "errors", "recommendations", "learning_usage", "review_tasks", "review_attempts", "jobs"})
+        self.assertEqual(len(connection.cursor_instance.executed), 10)
         for query, args in connection.cursor_instance.executed:
             self.assertIn("WHERE user_id=%s", query)
             self.assertEqual(args, (user_id,))

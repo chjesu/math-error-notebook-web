@@ -577,6 +577,19 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(verified[0], 200)
         return verified[1]["set-cookie"].split(";", 1)[0]
 
+    def test_daily_learning_usage_is_account_scoped_and_reports_targets(self) -> None:
+        cookie = self.login("13900139000")
+        other_cookie = self.login("13900139001")
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        assert user is not None
+        self.domain_store.reserve_grade_batch(user_id=user.user_id, intake_ids=["a" * 32])
+        self.domain_store.finish_grade_usage(user_id=user.user_id, intake_id="a" * 32, counted=True)
+        usage = self.call("/v1/learning-usage", cookie=cookie)
+        other = self.call("/v1/learning-usage", cookie=other_cookie)
+        self.assertEqual((usage[0], usage[2]["grade"]["count"], usage[2]["grade"]["target"], usage[2]["grade"]["limit"]), (200, 1, 12, 20))
+        self.assertEqual((usage[2]["recommendation"]["target"], usage[2]["recommendation"]["limit"]), (6, 10))
+        self.assertEqual(other[2]["grade"]["count"], 0)
+
     @staticmethod
     def multipart(filename: str, content: bytes, purpose: str = "question_image") -> tuple[str, bytes]:
         boundary = "lzlm-test-boundary"

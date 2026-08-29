@@ -108,6 +108,9 @@ function processResultText(value) {
       lines.push(...referenceReviewText(item), "");
     }
   }
+  if (value.usage) {
+    lines.push(`今日学习负荷：已判题 ${value.usage.grade.count}/${value.usage.grade.limit}（建议 ${value.usage.grade.target}）；已生成推荐题 ${value.usage.recommendation.count}/${value.usage.recommendation.limit}（建议 ${value.usage.recommendation.target}）。`, "");
+  }
   lines.push(nextStepText(value.results));
   return [{type: "text", text: lines.join("\n").trim()}];
 }
@@ -175,7 +178,8 @@ function processAttachmentsTool(ctx) {
         type: "object", additionalProperties: false, required: ["schema", "results"],
         properties: {
           schema: {type: "string", const: "math-notebook-process-result/v1"},
-          results: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(resultProperties), properties: resultProperties}}
+          results: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(resultProperties), properties: resultProperties}},
+          usage: {type: "object"}
         }
       },
       render: (_args, value) => processResultText(value)
@@ -188,6 +192,7 @@ function processAttachmentsTool(ctx) {
         throw new Error("A result refers to an attachment outside the latest user message");
       }
       const results = [];
+      let usage = null;
       for (let attachmentIndex = 1; attachmentIndex <= images.length; attachmentIndex += 1) {
         const items = args.items.filter((item) => item.attachment_index === attachmentIndex);
         if (items.length === 0) throw new Error(`No result supplied for attachment ${attachmentIndex}`);
@@ -208,10 +213,15 @@ function processAttachmentsTool(ctx) {
           signal: exec.signal
         });
         const payload = await response.json();
-        if (!response.ok || !Array.isArray(payload.results)) throw new Error(`Notebook processing failed (${response.status})`);
+        if (!response.ok || !Array.isArray(payload.results)) {
+          const code = payload.error?.code;
+          if (code === "daily_grade_limit") throw new Error("今天已完成 20 道判题，请先复习和订正；新图片可明日继续处理。");
+          throw new Error(`Notebook processing failed (${response.status})`);
+        }
+        usage = payload.usage || usage;
         results.push(...payload.results.map((item) => ({...item, attachment_index: attachmentIndex})));
       }
-      return {schema: "math-notebook-process-result/v1", results};
+      return {schema: "math-notebook-process-result/v1", results, ...(usage ? {usage} : {})};
     },
     presentCall: () => ({card: "generic", title: "整理并记录错题", kind: "other", rawInput: null})
   };

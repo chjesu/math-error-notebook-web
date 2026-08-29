@@ -13,11 +13,15 @@ import uuid
 from services.web_files import FileIntake
 
 from .learning import (
+    DAILY_GRADE_LIMIT,
+    DAILY_RECOMMENDATION_LIMIT,
     Question,
     Recommendation,
     ReviewTask,
     VerifiedQuestionReference,
     build_review_calendar,
+    learning_day,
+    learning_usage_payload,
     next_review,
     question_match_score,
     rank_questions,
@@ -68,6 +72,45 @@ class InMemoryNotebookStore:
         self._attempt_keys: dict[tuple[str, str], str] = {}
         self._review_keys: dict[tuple[str, str, int], str] = {}
         self._practice_inputs: dict[tuple[str, str, str], str] = {}
+        self.learning_usage_events: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+
+    def learning_usage(self, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
+        day = learning_day(now)
+        events = [value for (owner, event_day, _kind, _resource), value in self.learning_usage_events.items() if owner == user_id and event_day == day]
+        return learning_usage_payload(
+            day,
+            sum(value["kind"] == "grade" and value["status"] == "counted" for value in events),
+            sum(value["kind"] == "recommendation" and value["status"] == "counted" for value in events),
+            sum(value["kind"] == "grade" and value["status"] == "reserved" for value in events),
+        )
+
+    def reserve_grade_batch(self, *, user_id: str, intake_ids: list[str], now: datetime | None = None) -> None:
+        current = now or _now()
+        day = learning_day(current)
+        resources = list(dict.fromkeys(intake_ids))
+        if not resources:
+            raise ValueError("intake_ids is required")
+        stale_before = current - timedelta(hours=1)
+        for key, value in list(self.learning_usage_events.items()):
+            if key[0] == user_id and key[1] == day and value["status"] == "reserved" and value["created_at"] < stale_before:
+                self.learning_usage_events.pop(key)
+        new_resources = [resource for resource in resources if (user_id, day, "grade", resource) not in self.learning_usage_events]
+        active = sum(owner == user_id and event_day == day and kind == "grade" for owner, event_day, kind, _resource in self.learning_usage_events)
+        if new_resources and active >= DAILY_GRADE_LIMIT:
+            raise RuntimeError("daily_grade_limit")
+        for resource in new_resources:
+            self.learning_usage_events[(user_id, day, "grade", resource)] = {"kind": "grade", "status": "reserved", "created_at": current}
+
+    def finish_grade_usage(self, *, user_id: str, intake_id: str, counted: bool, now: datetime | None = None) -> None:
+        day = learning_day(now)
+        key = (user_id, day, "grade", intake_id)
+        event = self.learning_usage_events.get(key)
+        if event is None or event["status"] == "counted":
+            return
+        if counted:
+            event["status"] = "counted"
+        else:
+            self.learning_usage_events.pop(key, None)
 
     def get_codex_thread(self, *, user_id: str, conversation_id: str) -> str | None:
         return self.codex_threads.get((user_id, conversation_id))
@@ -382,11 +425,23 @@ class InMemoryNotebookStore:
             if self.question_rules.get(question_id) in {("verified", "open", True), ("verified", "user_authorized", True)}
             and not any(attempt.user_id == user_id and getattr(attempt, "question_id", None) == question_id for attempt in self.attempts.values())
         ]
-        for question, reason in rank_questions(error.question_text, eligible, limit):
+        ranked = rank_questions(error.question_text, eligible, limit)
+        day = learning_day()
+        current = self.learning_usage(user_id=user_id)["recommendation"]["count"]
+        new_ranked = [
+            (question, reason) for question, reason in ranked
+            if not any(item.user_id == user_id and item.error_id == error_id and item.question.question_id == question.question_id for item in self.recommendations.values())
+        ]
+        if new_ranked and current >= DAILY_RECOMMENDATION_LIMIT:
+            items = self.list_recommendations(user_id=user_id, error_id=error_id)
+            return items[:limit], True
+        for question, reason in new_ranked[: max(0, DAILY_RECOMMENDATION_LIMIT - current)]:
             existing = next((item for item in self.recommendations.values() if item.user_id == user_id and item.error_id == error_id and item.question.question_id == question.question_id), None)
             if not existing:
                 existing = Recommendation(uuid.uuid4().hex, user_id, error_id, question, reason, "assigned")
                 self.recommendations[existing.recommendation_id] = existing
+                resource = hashlib.sha256(f"{error_id}:{question.question_id}".encode("ascii")).hexdigest()
+                self.learning_usage_events[(user_id, day, "recommendation", resource)] = {"kind": "recommendation", "status": "counted", "created_at": _now()}
         items = self.list_recommendations(user_id=user_id, error_id=error_id)
         return items[:limit], len(items) < limit
 
@@ -614,10 +669,14 @@ class InMemoryNotebookStore:
         candidates = [self._candidate_export(item) for item in self.candidates.values() if (attempt := self.attempts.get(item.attempt_id)) and attempt.user_id == user_id]
         errors = [self._error_export(item) for item in self.errors.values() if item.user_id == user_id]
         recommendations = [self._recommendation_export(item) for item in self.recommendations.values() if item.user_id == user_id]
+        learning_usage = [
+            {"date": day, "kind": kind, "resource_id": resource, "status": value["status"], "created_at": value["created_at"]}
+            for (owner, day, kind, resource), value in self.learning_usage_events.items() if owner == user_id
+        ]
         reviews = [self._review_export(item) for item in self.review_tasks.values() if item.user_id == user_id]
         review_attempts = [dict(item) for (owner, _), item in self.review_attempts.items() if owner == user_id]
         jobs = [self._job_export(item) for item in self.jobs.values() if item.user_id == user_id and item.job_type != "export"]
-        return {"schema_version": 2, "files": files, "intakes": intakes, "attempts": attempts, "grade_candidates": candidates, "errors": errors, "recommendations": recommendations, "review_tasks": reviews, "review_attempts": review_attempts, "jobs": jobs}
+        return {"schema_version": 2, "files": files, "intakes": intakes, "attempts": attempts, "grade_candidates": candidates, "errors": errors, "recommendations": recommendations, "learning_usage": learning_usage, "review_tasks": reviews, "review_attempts": review_attempts, "jobs": jobs}
 
     def deactivate_user_data(self, *, user_id: str) -> None:
         for file_id, item in list(self.files.items()):

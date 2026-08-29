@@ -140,7 +140,7 @@ class PrivacyHttpTests(unittest.TestCase):
         self.store.errors["o" * 32] = ErrorEntry("o" * 32, other_id, "x" * 32, "别人的题", "别人的作答", None, "open", self.sensitive_at)
 
         data = self.store.export_data(user_id=user_id)
-        self.assertEqual(set(data), {"schema_version", "files", "intakes", "attempts", "grade_candidates", "errors", "recommendations", "review_tasks", "review_attempts", "jobs"})
+        self.assertEqual(set(data), {"schema_version", "files", "intakes", "attempts", "grade_candidates", "errors", "recommendations", "learning_usage", "review_tasks", "review_attempts", "jobs"})
         self.assertTrue(all(data[name] for name in set(data) - {"schema_version"}))
         encoded = json.dumps(self.notebook._export_value(data), ensure_ascii=False)
         self.assertIn("用户题目", encoded)

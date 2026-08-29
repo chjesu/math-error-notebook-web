@@ -31,6 +31,37 @@ class LearningLoopTests(unittest.TestCase):
         self.store.question_rules[good.question_id] = ("retired", "open", True)
         self.assertEqual(self.store.list_recommendations(user_id=self.user_id, error_id=self.error_id), [])
 
+    def test_daily_grade_quota_counts_unique_successes_and_keeps_a_started_batch(self) -> None:
+        now = datetime(2026, 8, 29, 4, tzinfo=timezone.utc)
+        first = [f"{index:032x}" for index in range(19)]
+        self.store.reserve_grade_batch(user_id=self.user_id, intake_ids=first, now=now)
+        for intake_id in first:
+            self.store.finish_grade_usage(user_id=self.user_id, intake_id=intake_id, counted=True, now=now)
+        final_batch = ["f" * 32, "e" * 32]
+        self.store.reserve_grade_batch(user_id=self.user_id, intake_ids=final_batch, now=now)
+        for intake_id in final_batch:
+            self.store.finish_grade_usage(user_id=self.user_id, intake_id=intake_id, counted=True, now=now)
+        usage = self.store.learning_usage(user_id=self.user_id, now=now)
+        self.assertEqual((usage["grade"]["count"], usage["grade"]["target"], usage["grade"]["limit"]), (21, 12, 20))
+        self.store.reserve_grade_batch(user_id=self.user_id, intake_ids=[first[0]], now=now)
+        with self.assertRaisesRegex(RuntimeError, "daily_grade_limit"):
+            self.store.reserve_grade_batch(user_id=self.user_id, intake_ids=["d" * 32], now=now)
+        self.assertEqual(self.store.learning_usage(user_id=self.user_id, now=datetime(2026, 8, 29, 16, tzinfo=timezone.utc))["grade"]["count"], 0)
+
+    def test_unclear_grade_reservation_and_recommendation_overflow_do_not_count(self) -> None:
+        now = datetime(2026, 8, 29, 4, tzinfo=timezone.utc)
+        self.store.reserve_grade_batch(user_id=self.user_id, intake_ids=["f" * 32], now=now)
+        self.store.finish_grade_usage(user_id=self.user_id, intake_id="f" * 32, counted=False, now=now)
+        self.assertEqual(self.store.learning_usage(user_id=self.user_id, now=now)["grade"]["count"], 0)
+        for index in range(10):
+            resource = f"{index:064x}"
+            self.store.learning_usage_events[(self.user_id, "2026-08-29", "recommendation", resource)] = {"kind": "recommendation", "status": "counted", "created_at": now}
+        self.store.add_question(Question("9" * 32, "解方程 x+3=6", "x=3", 10, 2.0, "授权题库"))
+        items, gap = self.store.assign_recommendations(user_id=self.user_id, error_id=self.error_id)
+        self.assertEqual(items, [])
+        self.assertTrue(gap)
+        self.assertEqual(self.store.learning_usage(user_id=self.user_id, now=now)["recommendation"]["count"], 10)
+
     def test_review_completion_is_idempotent_and_schedules_from_completion(self) -> None:
         now = datetime(2026, 8, 23, 8, tzinfo=timezone.utc)
         task = next(iter(self.store.review_tasks.values()))

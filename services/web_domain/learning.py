@@ -59,6 +59,34 @@ class ReviewTask:
 _STOP_HAN = set("的一是了在和与或若求已知则为中有其")
 _SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 _CHINA_TIMEZONE = timezone(timedelta(hours=8))
+DAILY_GRADE_TARGET = 12
+DAILY_GRADE_LIMIT = 20
+DAILY_RECOMMENDATION_TARGET = 6
+DAILY_RECOMMENDATION_LIMIT = 10
+
+
+def learning_day(now: datetime | None = None) -> str:
+    """Return the account quota date in the product's fixed China timezone."""
+    return (now or datetime.now(timezone.utc)).astimezone(_CHINA_TIMEZONE).date().isoformat()
+
+
+def learning_usage_payload(day: str, grade_count: int, recommendation_count: int, pending_grade_count: int = 0) -> dict:
+    def item(count: int, target: int, limit: int) -> dict:
+        return {
+            "count": count,
+            "target": target,
+            "limit": limit,
+            "remaining": max(0, limit - count),
+            "target_reached": count >= target,
+            "limit_reached": count >= limit,
+        }
+
+    return {
+        "date": day,
+        "timezone": "Asia/Shanghai",
+        "grade": item(grade_count, DAILY_GRADE_TARGET, DAILY_GRADE_LIMIT) | {"pending": pending_grade_count, "batch_grace": True},
+        "recommendation": item(recommendation_count, DAILY_RECOMMENDATION_TARGET, DAILY_RECOMMENDATION_LIMIT),
+    }
 
 
 def _normalized_math_source(text: str) -> str:

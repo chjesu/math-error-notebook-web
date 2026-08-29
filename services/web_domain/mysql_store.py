@@ -11,12 +11,16 @@ from typing import Any, Protocol
 import uuid
 
 from .learning import (
+    DAILY_GRADE_LIMIT,
+    DAILY_RECOMMENDATION_LIMIT,
     Question,
     Recommendation,
     ReviewTask,
     VerifiedQuestionReference,
     build_review_calendar,
     calendar_month_range,
+    learning_day,
+    learning_usage_payload,
     next_review,
     question_anchor,
     question_match_score,
@@ -136,6 +140,92 @@ class MySqlDomainStore:
 
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self._connect = connection_factory
+
+    def learning_usage(self, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
+        day = learning_day(now)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT kind,status,COUNT(*) FROM daily_learning_usage WHERE user_id=%s AND usage_date=%s GROUP BY kind,status",
+                (user_id, day),
+            )
+            counts = {(str(kind), str(status)): int(count) for kind, status, count in cursor.fetchall()}
+            return learning_usage_payload(
+                day,
+                counts.get(("grade", "counted"), 0),
+                counts.get(("recommendation", "counted"), 0),
+                counts.get(("grade", "reserved"), 0),
+            )
+        finally:
+            cursor.close()
+            connection.close()
+
+    def reserve_grade_batch(self, *, user_id: str, intake_ids: list[str], now: datetime | None = None) -> None:
+        resources = list(dict.fromkeys(intake_ids))
+        if not resources:
+            raise ValueError("intake_ids is required")
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
+        day = learning_day(now)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute("SELECT id FROM web_users WHERE id=%s FOR UPDATE", (user_id,))
+            if not cursor.fetchone():
+                raise LookupError("user not found")
+            cursor.execute(
+                "DELETE FROM daily_learning_usage WHERE user_id=%s AND usage_date=%s AND kind='grade' AND status='reserved' AND created_at<%s",
+                (user_id, day, current - timedelta(hours=1)),
+            )
+            placeholders = ",".join(["%s"] * len(resources))
+            cursor.execute(
+                f"SELECT resource_id FROM daily_learning_usage WHERE user_id=%s AND usage_date=%s AND kind='grade' AND resource_id IN ({placeholders})",
+                (user_id, day, *resources),
+            )
+            existing = {str(row[0]) for row in cursor.fetchall()}
+            new_resources = [resource for resource in resources if resource not in existing]
+            cursor.execute("SELECT COUNT(*) FROM daily_learning_usage WHERE user_id=%s AND usage_date=%s AND kind='grade'", (user_id, day))
+            active = int((cursor.fetchone() or (0,))[0])
+            if new_resources and active >= DAILY_GRADE_LIMIT:
+                raise RuntimeError("daily_grade_limit")
+            for resource in new_resources:
+                cursor.execute(
+                    "INSERT INTO daily_learning_usage (user_id,usage_date,kind,resource_id,status,created_at,updated_at) VALUES (%s,%s,'grade',%s,'reserved',%s,%s)",
+                    (user_id, day, resource, current, current),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def finish_grade_usage(self, *, user_id: str, intake_id: str, counted: bool, now: datetime | None = None) -> None:
+        day = learning_day(now)
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            if counted:
+                cursor.execute(
+                    "UPDATE daily_learning_usage SET status='counted',updated_at=%s WHERE user_id=%s AND usage_date=%s AND kind='grade' AND resource_id=%s AND status='reserved'",
+                    (current, user_id, day, intake_id),
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM daily_learning_usage WHERE user_id=%s AND usage_date=%s AND kind='grade' AND resource_id=%s AND status='reserved'",
+                    (user_id, day, intake_id),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
 
     def get_codex_thread(self, *, user_id: str, conversation_id: str) -> str | None:
         user = _required(user_id, "user_id", 32)
@@ -870,8 +960,9 @@ class MySqlDomainStore:
                 "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
                 "WHERE q.status='verified' AND s.license_status IN ('open','user_authorized') "
                 "AND EXISTS (SELECT 1 FROM question_verifications x WHERE x.question_version_id=v.id AND x.verdict='verified') "
-                "AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.user_id=%s AND a.question_id=q.id) LIMIT 200",
-                (user_id,),
+                "AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.user_id=%s AND a.question_id=q.id) "
+                "AND NOT EXISTS (SELECT 1 FROM recommendations r WHERE r.user_id=%s AND r.error_id=%s AND r.question_id=q.id) LIMIT 200",
+                (user_id, user_id, error_id),
             )
             candidates = [Question(str(row[0]), str(row[1]), row[2], int(row[3]) if row[3] is not None else None, float(row[4]) if row[4] is not None else None, str(row[5])) for row in cursor.fetchall()]
         finally:
@@ -880,15 +971,31 @@ class MySqlDomainStore:
         ranked = rank_questions(error.question_text, candidates, limit)
         if ranked:
             now = _utcnow()
+            day = learning_day()
             connection = self._connect()
             cursor = connection.cursor()
             try:
                 connection.begin()
-                for question, reason in ranked:
+                cursor.execute("SELECT id FROM web_users WHERE id=%s FOR UPDATE", (user_id,))
+                if not cursor.fetchone():
+                    raise LookupError("user not found")
+                cursor.execute("SELECT COUNT(*) FROM daily_learning_usage WHERE user_id=%s AND usage_date=%s AND kind='recommendation' AND status='counted'", (user_id, day))
+                used = int((cursor.fetchone() or (0,))[0])
+                if used >= DAILY_RECOMMENDATION_LIMIT:
+                    connection.commit()
+                    items = self.list_recommendations(user_id=user_id, error_id=error_id)
+                    return items[:limit], True
+                for question, reason in ranked[: DAILY_RECOMMENDATION_LIMIT - used]:
+                    recommendation_id = uuid.uuid4().hex
+                    resource_id = hashlib.sha256(f"{error_id}:{question.question_id}".encode("ascii")).hexdigest()
                     cursor.execute(
                         "INSERT INTO recommendations (id,user_id,error_id,question_id,reason,status,created_at) "
-                        "VALUES (%s,%s,%s,%s,%s,'assigned',%s) ON DUPLICATE KEY UPDATE reason=VALUES(reason),status='assigned'",
-                        (uuid.uuid4().hex, user_id, error_id, question.question_id, reason, now),
+                        "VALUES (%s,%s,%s,%s,%s,'assigned',%s)",
+                        (recommendation_id, user_id, error_id, question.question_id, reason, now),
+                    )
+                    cursor.execute(
+                        "INSERT INTO daily_learning_usage (user_id,usage_date,kind,resource_id,status,created_at,updated_at) VALUES (%s,%s,'recommendation',%s,'counted',%s,%s)",
+                        (user_id, day, resource_id, now, now),
                     )
                 connection.commit()
             except Exception:
@@ -1290,13 +1397,18 @@ class MySqlDomainStore:
             attempts = [dict(zip(("attempt_id", "intake_id", "input_version", "question_text", "answer_text", "status", "created_at", "updated_at"), row)) for row in cursor.fetchall()]
             cursor.execute("SELECT id,error_id,question_id,reason,status,created_at FROM recommendations WHERE user_id=%s ORDER BY created_at,id", (user_id,))
             recommendations = [dict(zip(("recommendation_id", "error_id", "question_id", "reason", "status", "created_at"), row)) for row in cursor.fetchall()]
+            cursor.execute("SELECT usage_date,kind,resource_id,status,created_at FROM daily_learning_usage WHERE user_id=%s ORDER BY usage_date,kind,resource_id", (user_id,))
+            learning_usage = [
+                {"date": row[0].isoformat(), "kind": str(row[1]), "resource_id": str(row[2]), "status": str(row[3]), "created_at": row[4]}
+                for row in cursor.fetchall()
+            ]
             cursor.execute("SELECT id,error_id,stage,due_at,status,created_at FROM review_tasks WHERE user_id=%s ORDER BY created_at,id", (user_id,))
             reviews = [dict(zip(("review_id", "error_id", "stage", "due_at", "status", "created_at"), row)) for row in cursor.fetchall()]
             cursor.execute("SELECT id,review_task_id,error_id,stage,result,completed_at FROM review_attempts WHERE user_id=%s ORDER BY completed_at,id", (user_id,))
             review_attempts = [dict(zip(("review_attempt_id", "review_id", "error_id", "stage", "result", "completed_at"), row)) for row in cursor.fetchall()]
             cursor.execute("SELECT id,job_type,resource_type,resource_id,status,created_at,updated_at FROM web_jobs WHERE user_id=%s AND job_type<>'export' ORDER BY created_at,id", (user_id,))
             jobs = [dict(zip(("job_id", "job_type", "resource_type", "resource_id", "status", "created_at", "updated_at"), row)) for row in cursor.fetchall()]
-            return {"schema_version": 2, "files": files, "intakes": intakes, "attempts": attempts, "grade_candidates": grade_candidates, "errors": errors, "recommendations": recommendations, "review_tasks": reviews, "review_attempts": review_attempts, "jobs": jobs}
+            return {"schema_version": 2, "files": files, "intakes": intakes, "attempts": attempts, "grade_candidates": grade_candidates, "errors": errors, "recommendations": recommendations, "learning_usage": learning_usage, "review_tasks": reviews, "review_attempts": review_attempts, "jobs": jobs}
         finally:
             cursor.close()
             connection.close()

@@ -59,6 +59,15 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("$$('", script)
         self.assertIn("today_needs_correction_count", script)
 
+    def test_product_pages_show_deterministic_daily_learning_usage(self) -> None:
+        script = (WEB / "app.js").read_text(encoding="utf-8")
+        style = (WEB / "app.css").read_text(encoding="utf-8")
+        self.assertIn('api("/v1/learning-usage")', script)
+        self.assertIn("今日学习负荷", script)
+        self.assertIn("grade.count", script)
+        self.assertIn("recommendation.count", script)
+        self.assertIn(".learning-usage-strip", style)
+
     def test_learning_progress_owns_review_rules_and_activity_calendar(self) -> None:
         html = (WEB / "progress.html").read_text(encoding="utf-8")
         script = (WEB / "app.js").read_text(encoding="utf-8")

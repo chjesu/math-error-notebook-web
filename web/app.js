@@ -51,8 +51,31 @@ function authError(error) {
     model_network_error: "智能处理网络连接失败，系统已自动重试；请稍后再次发送。",
     model_rate_limited: "智能处理请求较多，请稍后重试。",
     model_authentication_error: "智能处理登录状态失效，请重新启动本地服务。",
+    daily_grade_limit: "今天已完成 20 道判题，请先复习和订正；新图片可明日继续处理。",
+    daily_recommendation_limit: "今天已生成 10 道推荐题，请先完成已有练习。",
     network_error: "网络异常，请检查网络后重试。"
   })[error.message] || "操作失败，请稍后重试。";
+}
+
+async function loadLearningUsage() {
+  if (!["errors", "practice", "progress"].includes(page)) return;
+  let strip = $("#learning-usage");
+  if (!strip) {
+    strip = document.createElement("section");
+    strip.id = "learning-usage";
+    strip.className = "learning-usage-strip";
+    strip.setAttribute("aria-label", "今日学习负荷");
+    $(".page-header").insertAdjacentElement("afterend", strip);
+  }
+  try {
+    const usage = await api("/v1/learning-usage");
+    const grade = usage.grade;
+    const recommendation = usage.recommendation;
+    strip.innerHTML = `<strong>今日学习负荷</strong><span>判题 <b>${grade.count}/${grade.limit}</b><small>建议 ${grade.target}</small></span><span>推荐题 <b>${recommendation.count}/${recommendation.limit}</b><small>建议 ${recommendation.target}</small></span>`;
+    strip.classList.toggle("is-limit", grade.limit_reached || recommendation.limit_reached);
+  } catch {
+    strip.remove();
+  }
 }
 
 function status(target, message, error = false) {
@@ -1221,7 +1244,7 @@ function bindErrors() {
         await loadDashboard();
         return;
       }
-      await loadDashboard();
+      await Promise.all([loadDashboard(), loadLearningUsage()]);
       await showError(errorId);
     } catch (error) {
       status($("#page-status"), authError(error), true);
@@ -1246,6 +1269,7 @@ function bindErrors() {
         $("#today-pdf-status").replaceChildren("已生成：", link);
       } else status($("#today-pdf-status"), "PDF 正在生成，请稍后刷新。");
       renderPlan();
+      await loadLearningUsage();
     } catch (error) {
       status($("#today-pdf-status"), authError(error), true);
     } finally {
@@ -1483,6 +1507,7 @@ function bindSettings() {
 
 async function init() {
   if (!await requireSession()) return;
+  loadLearningUsage();
   ({workbench: bindWorkbench, errors: bindErrors, practice: bindPractice, progress: bindProgress, settings: bindSettings})[page]();
 }
 
