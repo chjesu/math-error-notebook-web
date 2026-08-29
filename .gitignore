@@ -15,4 +15,5 @@ data/review-results/
 data/runtime/deepseek-harness/
 data/runtime/deepseek-harness-home/
 data/runtime/deepseek-harness-projection/
+data/runtime/quarantine/
 !data/workflows/.gitkeep

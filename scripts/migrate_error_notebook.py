@@ -15,7 +15,10 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_FILE_ROOT = ROOT / "data" / "runtime" / "quarantine"
+# Must match the quarantine root that local_env.serve passes to NotebookService
+# (local_env.RUNTIME / "quarantine"); otherwise migrated files are written where the
+# running Web app cannot read them, turning downloads into JSON error responses.
+DEFAULT_FILE_ROOT = ROOT / ".runtime" / "local-mysql" / "quarantine"
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_PDF_BYTES = 25 * 1024 * 1024
 
