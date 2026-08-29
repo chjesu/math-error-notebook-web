@@ -75,6 +75,9 @@ window.__ModuleLoader__.load({
           button[aria-label="New session"]:has(svg) {
             display: none !important;
           }
+          [data-lzlm-student-hidden] {
+            display: none !important;
+          }
           [data-lzlm-product-nav] {
             display: flex;
             width: 100%;
@@ -164,6 +167,25 @@ window.__ModuleLoader__.load({
         document.head.appendChild(style);
         return () => style.remove();
       }, "math-notebook: student surface");
+    }
+
+    function restrictStudentSettings(ctx) {
+      ctx.effect(() => {
+        const filter = () => {
+          document.querySelectorAll('[role="dialog"] nav button').forEach((button) => {
+            button.toggleAttribute("data-lzlm-student-hidden", button.textContent.trim() !== "账号与隐私");
+          });
+          document.querySelectorAll('[role="dialog"] button').forEach((button) => {
+            if (["打开配置文件", "Open configuration file"].includes(button.textContent.trim())) {
+              button.dataset.lzlmStudentHidden = "";
+            }
+          });
+        };
+        const observer = new MutationObserver(filter);
+        observer.observe(document.body, {childList: true, subtree: true});
+        filter();
+        return () => observer.disconnect();
+      }, "math-notebook: student settings");
     }
 
     function openProductWorkspace(ctx) {
@@ -356,6 +378,7 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       pluginContext = ctx;
       installStudentSurface(ctx);
+      restrictStudentSettings(ctx);
       openProductWorkspace(ctx);
       bindProductSession(ctx);
       closeProductOnSessionClick(ctx);
@@ -385,7 +408,7 @@ window.__ModuleLoader__.load({
       ctx.slots.inject("settings.section", () => ctx.slots.register({
         name: "settings.section",
         id: "account-privacy",
-        order: 20,
+        order: -10,
         label: "账号与隐私"
       }, AccountPrivacySettings));
     }

@@ -100,6 +100,12 @@
   disabled: true
 - id: ui-agent-preset
   disabled: true
+- id: ui-settings-models
+  disabled: true
+- id: ui-settings-plugin-inventory
+  disabled: true
+- id: ui-settings-plugins
+  disabled: true
 - id: ui-plan
   disabled: true
 - id: ui-subagent
