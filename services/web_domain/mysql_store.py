@@ -141,6 +141,73 @@ class MySqlDomainStore:
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self._connect = connection_factory
 
+    def bind_model_session(self, *, user_id: str, session_id: str, now: datetime | None = None) -> None:
+        session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute("SELECT user_id FROM model_usage_sessions WHERE session_hash=%s FOR UPDATE", (session_hash,))
+            row = cursor.fetchone()
+            if row is not None and str(row[0]) != user_id:
+                raise PermissionError("model session already belongs to another user")
+            if row is None:
+                cursor.execute(
+                    "INSERT INTO model_usage_sessions "
+                    "(session_hash,user_id,uncached_input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,created_at,updated_at) "
+                    "VALUES (%s,%s,0,0,0,0,%s,%s)",
+                    (session_hash, user_id, current, current),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def record_model_session_usage(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        uncached_input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+        now: datetime | None = None,
+    ) -> None:
+        values = (uncached_input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values):
+            raise ValueError("invalid model token usage")
+        session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute("SELECT user_id FROM model_usage_sessions WHERE session_hash=%s FOR UPDATE", (session_hash,))
+            row = cursor.fetchone()
+            if row is None or str(row[0]) != user_id:
+                raise PermissionError("unbound model session")
+            cursor.execute(
+                "UPDATE model_usage_sessions SET "
+                "uncached_input_tokens=GREATEST(uncached_input_tokens,%s),"
+                "output_tokens=GREATEST(output_tokens,%s),"
+                "cache_read_tokens=GREATEST(cache_read_tokens,%s),"
+                "cache_write_tokens=GREATEST(cache_write_tokens,%s),updated_at=%s "
+                "WHERE session_hash=%s AND user_id=%s",
+                (*values, current, session_hash, user_id),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
     def learning_usage(self, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
         day = learning_day(now)
         connection = self._connect()

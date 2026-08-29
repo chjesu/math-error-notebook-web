@@ -73,6 +73,45 @@ class InMemoryNotebookStore:
         self._review_keys: dict[tuple[str, str, int], str] = {}
         self._practice_inputs: dict[tuple[str, str, str], str] = {}
         self.learning_usage_events: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        self.model_usage_sessions: dict[str, dict[str, Any]] = {}
+
+    def bind_model_session(self, *, user_id: str, session_id: str, now: datetime | None = None) -> None:
+        session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        existing = self.model_usage_sessions.get(session_hash)
+        if existing is not None and existing["user_id"] != user_id:
+            raise PermissionError("model session already belongs to another user")
+        current = now or _now()
+        self.model_usage_sessions.setdefault(session_hash, {
+            "user_id": user_id,
+            "uncached_input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "created_at": current,
+            "updated_at": current,
+        })
+
+    def record_model_session_usage(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        uncached_input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+        now: datetime | None = None,
+    ) -> None:
+        values = (uncached_input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values):
+            raise ValueError("invalid model token usage")
+        session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        record = self.model_usage_sessions.get(session_hash)
+        if record is None or record["user_id"] != user_id:
+            raise PermissionError("unbound model session")
+        for key, value in zip(("uncached_input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"), values, strict=True):
+            record[key] = max(record[key], value)
+        record["updated_at"] = now or _now()
 
     def learning_usage(self, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
         day = learning_day(now)

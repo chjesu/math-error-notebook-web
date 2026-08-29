@@ -7,10 +7,10 @@ from typing import Any, Protocol
 
 
 ROLE_SECTIONS = {
-    "operations": ("overview", "tasks", "risk"),
+    "operations": ("overview", "users", "behavior", "usage", "tasks", "risk"),
     "reviewer": ("overview", "tasks", "content"),
     "security": ("overview", "risk", "privacy", "audit"),
-    "administrator": ("overview", "tasks", "content", "risk", "privacy", "audit"),
+    "administrator": ("overview", "users", "behavior", "usage", "tasks", "content", "risk", "privacy", "audit"),
 }
 
 
@@ -80,4 +80,8 @@ def _empty_section(name: str) -> Any:
         return {"active_users": 0, "attention_tasks": 0, "candidate_questions": 0, "pending_privacy_cases": 0}
     if name == "risk":
         return {"sms_requested_today": 0, "sms_sent_today": 0, "sms_failed_today": 0, "rate_limited_today": 0}
+    if name == "behavior":
+        return {"range_days": 7, "totals": {}, "daily": []}
+    if name == "usage":
+        return {"summary": {}, "users": []}
     return []

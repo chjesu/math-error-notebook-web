@@ -63,6 +63,94 @@ class MySqlOperationsStore:
                     "candidate_questions": int(row[2] or 0),
                     "pending_privacy_cases": int(row[3] or 0),
                 }
+            if "users" in sections:
+                cursor.execute(
+                    "SELECT u.phone_last4,u.status,u.created_at,"
+                    "GREATEST(u.updated_at,"
+                    "COALESCE((SELECT MAX(s.created_at) FROM auth_sessions s WHERE s.user_id=u.id),u.created_at),"
+                    "COALESCE((SELECT MAX(a.occurred_at) FROM domain_audit_events a WHERE a.user_id=u.id),u.created_at)) last_active_at,"
+                    "(SELECT COUNT(*) FROM auth_sessions s2 WHERE s2.user_id=u.id AND s2.revoked_at IS NULL AND s2.expires_at>UTC_TIMESTAMP()),"
+                    "(SELECT COUNT(*) FROM error_notebook_entries e WHERE e.user_id=u.id AND e.status<>'removed'),"
+                    "(SELECT COUNT(*) FROM review_attempts r WHERE r.user_id=u.id),"
+                    "(SELECT COUNT(*) FROM web_jobs j WHERE j.user_id=u.id AND j.job_type='practice_pdf' AND j.status='completed'),"
+                    "COALESCE((SELECT SUM(m.uncached_input_tokens+m.output_tokens+m.cache_read_tokens+m.cache_write_tokens) "
+                    "FROM model_usage_sessions m WHERE m.user_id=u.id),0) "
+                    "FROM web_users u ORDER BY last_active_at DESC,u.id DESC LIMIT %s",
+                    (limit,),
+                )
+                result["users"] = [
+                    {
+                        "user_ref": f"用户 ····{row[0]}", "status": str(row[1]),
+                        "created_at": _iso(row[2]), "last_active_at": _iso(row[3]),
+                        "active_sessions": int(row[4] or 0), "error_count": int(row[5] or 0),
+                        "review_count": int(row[6] or 0), "pdf_count": int(row[7] or 0),
+                        "total_tokens": int(row[8] or 0),
+                    }
+                    for row in cursor.fetchall()
+                ]
+            if "behavior" in sections:
+                cursor.execute(
+                    "SELECT DATE(event_at),COUNT(DISTINCT user_id),"
+                    "SUM(kind='register'),SUM(kind='upload'),SUM(kind='intake'),SUM(kind='grade'),"
+                    "SUM(kind='error'),SUM(kind='review'),SUM(kind='pdf') FROM ("
+                    "SELECT created_at event_at,id user_id,'register' kind FROM web_users WHERE created_at>=UTC_DATE()-INTERVAL 6 DAY UNION ALL "
+                    "SELECT created_at,user_id,'upload' FROM web_files WHERE created_at>=UTC_DATE()-INTERVAL 6 DAY UNION ALL "
+                    "SELECT created_at,user_id,'intake' FROM intake_items WHERE created_at>=UTC_DATE()-INTERVAL 6 DAY UNION ALL "
+                    "SELECT created_at,user_id,'grade' FROM grade_candidates WHERE created_at>=UTC_DATE()-INTERVAL 6 DAY UNION ALL "
+                    "SELECT created_at,user_id,'error' FROM error_notebook_entries WHERE created_at>=UTC_DATE()-INTERVAL 6 DAY UNION ALL "
+                    "SELECT completed_at,user_id,'review' FROM review_attempts WHERE completed_at>=UTC_DATE()-INTERVAL 6 DAY UNION ALL "
+                    "SELECT updated_at,user_id,'pdf' FROM web_jobs WHERE job_type='practice_pdf' AND status='completed' AND updated_at>=UTC_DATE()-INTERVAL 6 DAY"
+                    ") events GROUP BY DATE(event_at) ORDER BY DATE(event_at)"
+                )
+                daily = [
+                    {
+                        "date": str(row[0]), "active_users": int(row[1] or 0),
+                        "registrations": int(row[2] or 0), "uploads": int(row[3] or 0),
+                        "intakes": int(row[4] or 0), "grades": int(row[5] or 0),
+                        "errors_added": int(row[6] or 0), "reviews_completed": int(row[7] or 0),
+                        "pdfs_generated": int(row[8] or 0),
+                    }
+                    for row in cursor.fetchall()
+                ]
+                result["behavior"] = {
+                    "range_days": 7,
+                    "totals": {
+                        key: sum(item[key] for item in daily)
+                        for key in ("registrations", "uploads", "intakes", "grades", "errors_added", "reviews_completed", "pdfs_generated")
+                    },
+                    "daily": daily,
+                }
+            if "usage" in sections:
+                cursor.execute(
+                    "SELECT COUNT(*),COUNT(DISTINCT user_id),SUM(uncached_input_tokens),SUM(output_tokens),"
+                    "SUM(cache_read_tokens),SUM(cache_write_tokens),MAX(updated_at) FROM model_usage_sessions"
+                )
+                usage = cursor.fetchone() or (0, 0, 0, 0, 0, 0, None)
+                cursor.execute(
+                    "SELECT u.phone_last4,COUNT(*),SUM(m.uncached_input_tokens),SUM(m.output_tokens),"
+                    "SUM(m.cache_read_tokens),SUM(m.cache_write_tokens),MAX(m.updated_at) "
+                    "FROM model_usage_sessions m JOIN web_users u ON u.id=m.user_id "
+                    "GROUP BY m.user_id,u.phone_last4 ORDER BY "
+                    "SUM(m.uncached_input_tokens+m.output_tokens+m.cache_read_tokens+m.cache_write_tokens) DESC LIMIT %s",
+                    (limit,),
+                )
+                result["usage"] = {
+                    "summary": {
+                        "session_count": int(usage[0] or 0), "user_count": int(usage[1] or 0),
+                        "uncached_input_tokens": int(usage[2] or 0), "output_tokens": int(usage[3] or 0),
+                        "cache_read_tokens": int(usage[4] or 0), "cache_write_tokens": int(usage[5] or 0),
+                        "total_tokens": sum(int(value or 0) for value in usage[2:6]), "updated_at": _iso(usage[6]),
+                    },
+                    "users": [
+                        {
+                            "user_ref": f"用户 ····{row[0]}", "session_count": int(row[1] or 0),
+                            "uncached_input_tokens": int(row[2] or 0), "output_tokens": int(row[3] or 0),
+                            "cache_read_tokens": int(row[4] or 0), "cache_write_tokens": int(row[5] or 0),
+                            "total_tokens": sum(int(value or 0) for value in row[2:6]), "updated_at": _iso(row[6]),
+                        }
+                        for row in cursor.fetchall()
+                    ],
+                }
             if "tasks" in sections:
                 cursor.execute(
                     "SELECT j.id,u.phone_last4,j.job_type,j.status,"

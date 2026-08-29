@@ -124,13 +124,14 @@ class NotebookAsgiApp:
         method = str(scope.get("method", ""))
         origin = headers.get("origin", "")
         harness_origin = origin if origin in self.harness_origins else None
-        if path == "/v1/harness/sessions/bind" and method == "OPTIONS":
+        harness_session_routes = {"/v1/harness/sessions/bind", "/v1/harness/sessions/usage"}
+        if path in harness_session_routes and method == "OPTIONS":
             if harness_origin is None:
                 await self._error(send, 403, "forbidden")
             else:
                 await self._json(send, 200, {"status": "ok"}, extra_headers=self._harness_cors(harness_origin))
             return
-        if path == "/v1/harness/sessions/bind" and method == "POST" and harness_origin is None:
+        if path in harness_session_routes and method == "POST" and harness_origin is None:
             await self._error(send, 403, "forbidden")
             return
         if path == "/v1/internal/harness/intakes/process" and method == "POST":
@@ -167,7 +168,7 @@ class NotebookAsgiApp:
             return
         if method in {"POST", "PATCH", "PUT", "DELETE"}:
             expected_origin = f"{scope.get('scheme', 'https')}://{headers.get('host', '')}"
-            if headers.get("origin") != expected_origin and not (path == "/v1/harness/sessions/bind" and harness_origin):
+            if headers.get("origin") != expected_origin and not (path in harness_session_routes and harness_origin):
                 await self._error(send, 403, "forbidden")
                 return
         try:
@@ -180,12 +181,43 @@ class NotebookAsgiApp:
             elif path == "/v1/harness/sessions/bind" and method == "POST":
                 payload = await self._json_body(receive)
                 session_id = self._harness_session_id(payload)
+                await self._sync(self.notebook.store.bind_model_session, user_id=user.user_id, session_id=session_id)
                 with self._harness_sessions_lock:
+                    existing_user = self._harness_sessions.get(session_id)
+                    if existing_user is not None and existing_user != user.user_id:
+                        raise PermissionError("model session already belongs to another user")
                     self._harness_sessions[session_id] = user.user_id
                 await self._json(
                     send,
                     200,
                     {"status": "bound"},
+                    extra_headers=self._harness_cors(harness_origin),
+                )
+            elif path == "/v1/harness/sessions/usage" and method == "POST":
+                payload = await self._json_body(receive)
+                expected = {
+                    "session_id", "uncached_input_tokens", "output_tokens",
+                    "cache_read_tokens", "cache_write_tokens",
+                }
+                if set(payload) != expected:
+                    raise ValueError("invalid model usage request")
+                session_id = self._harness_session_id(payload)
+                with self._harness_sessions_lock:
+                    if self._harness_sessions.get(session_id) != user.user_id:
+                        raise PermissionError("unbound model session")
+                await self._sync(
+                    self.notebook.store.record_model_session_usage,
+                    user_id=user.user_id,
+                    session_id=session_id,
+                    uncached_input_tokens=payload["uncached_input_tokens"],
+                    output_tokens=payload["output_tokens"],
+                    cache_read_tokens=payload["cache_read_tokens"],
+                    cache_write_tokens=payload["cache_write_tokens"],
+                )
+                await self._json(
+                    send,
+                    200,
+                    {"status": "recorded"},
                     extra_headers=self._harness_cors(harness_origin),
                 )
             elif path == "/v1/intakes" and method == "GET":

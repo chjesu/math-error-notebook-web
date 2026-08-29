@@ -13,6 +13,9 @@
       <a class="brand" href="/admin"><img src="/assets/branding/logo-symbol-color-64-v1.png" alt=""><span>错题本运营后台</span></a>
       <nav id="admin-navigation">
         <a href="#overview" class="active"><span>运营概览</span></a>
+        <a href="#users" data-section-link="users"><span>用户管理</span></a>
+        <a href="#behavior" data-section-link="behavior"><span>行为分析</span></a>
+        <a href="#usage" data-section-link="usage"><span>Token 用量</span></a>
         <a href="#tasks" data-section-link="tasks"><span>失败任务</span></a>
         <a href="#content" data-section-link="content"><span>内容质量</span></a>
         <a href="#risk" data-section-link="risk"><span>短信与风控</span></a>
@@ -31,6 +34,23 @@
         <section id="overview" class="admin-section" aria-labelledby="overview-heading">
           <div class="panel-title"><div><p class="section-kicker">当前状态</p><h2 id="overview-heading">运营概览</h2></div><small id="generated-at"></small></div>
           <div id="admin-metrics" class="admin-metrics"></div>
+        </section>
+        <section id="users" class="admin-section" data-admin-section="users" aria-labelledby="users-heading">
+          <div class="panel-title"><div><p class="section-kicker">账号状态与学习概况</p><h2 id="users-heading">用户管理</h2></div></div>
+          <p class="admin-note">仅展示脱敏账号和汇总数据；首版不在后台直接停用、删除或修改用户数据。</p>
+          <div class="admin-table-wrap"><table><thead><tr><th>用户</th><th>状态</th><th>注册时间</th><th>最近活跃</th><th>有效会话</th><th>错题</th><th>复习</th><th>PDF</th><th>Token</th></tr></thead><tbody id="admin-users"></tbody></table></div>
+        </section>
+        <section id="behavior" class="admin-section" data-admin-section="behavior" aria-labelledby="behavior-heading">
+          <div class="panel-title"><div><p class="section-kicker">最近 7 天业务事件</p><h2 id="behavior-heading">用户行为分析</h2></div></div>
+          <div id="behavior-metrics" class="admin-metrics auto"></div>
+          <div class="admin-table-wrap"><table><thead><tr><th>日期</th><th>活跃用户</th><th>注册</th><th>上传</th><th>识别题目</th><th>判题</th><th>新增错题</th><th>完成复习</th><th>生成 PDF</th></tr></thead><tbody id="admin-behavior"></tbody></table></div>
+          <p class="admin-note">行为口径来自登录、上传、判题、错题、复习和 PDF 等权威业务记录，不包含页面点击跟踪。</p>
+        </section>
+        <section id="usage" class="admin-section" data-admin-section="usage" aria-labelledby="usage-heading">
+          <div class="panel-title"><div><p class="section-kicker">Harness 官方 token-meter</p><h2 id="usage-heading">模型 Token 消耗</h2></div></div>
+          <div id="usage-metrics" class="admin-metrics auto"></div>
+          <div class="admin-table-wrap"><table><thead><tr><th>用户</th><th>会话</th><th>非缓存输入</th><th>输出</th><th>缓存读取</th><th>缓存写入</th><th>合计</th><th>更新时间</th></tr></thead><tbody id="admin-usage"></tbody></table></div>
+          <p class="admin-note">Token 数量为模型供应商上报的实际计量；金额需在配置具体模型单价后另行计算。</p>
         </section>
         <section id="tasks" class="admin-section" data-admin-section="tasks" aria-labelledby="tasks-heading">
           <div class="panel-title"><div><p class="section-kicker">需关注</p><h2 id="tasks-heading">失败与等待任务</h2></div></div>

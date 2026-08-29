@@ -12,7 +12,7 @@ class FrontendContractTests(unittest.TestCase):
         html = (WEB / "admin.html").read_text(encoding="utf-8")
         script = (WEB / "admin.js").read_text(encoding="utf-8")
         style = (WEB / "app.css").read_text(encoding="utf-8")
-        for text in ("后台管理", "失败与等待任务", "候选题与待复核内容", "短信与风控", "注销工单", "后台访问审计"):
+        for text in ("后台管理", "用户管理", "用户行为分析", "模型 Token 消耗", "失败与等待任务", "候选题与待复核内容", "短信与风控", "注销工单", "后台访问审计"):
             self.assertIn(text, html)
         self.assertIn('fetch("/v1/admin/dashboard?limit=50"', script)
         self.assertIn("本视图不支持按手机号查询", html)
@@ -21,6 +21,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(".admin-metrics", style)
         self.assertIn(".admin-table-wrap", style)
         self.assertIn('data-label="状态"', script)
+        self.assertIn("/v1/harness/sessions/usage", (ROOT / "extensions" / "dsh-math-notebook-ui" / "lib" / "client.js").read_text(encoding="utf-8"))
+        self.assertIn('data-label="Token"', script)
         self.assertIn("content: attr(data-label)", style)
 
     def test_product_pages_remain_independent_documents(self) -> None:

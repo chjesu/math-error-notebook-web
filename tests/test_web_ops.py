@@ -7,10 +7,10 @@ from services.web_ops import InMemoryOperationsStore, OperationsService
 class OperationsServiceTests(unittest.TestCase):
     def test_roles_receive_only_their_declared_sections(self) -> None:
         expected = {
-            "operations": {"overview", "tasks", "risk"},
+            "operations": {"overview", "users", "behavior", "usage", "tasks", "risk"},
             "reviewer": {"overview", "tasks", "content"},
             "security": {"overview", "risk", "privacy", "audit"},
-            "administrator": {"overview", "tasks", "content", "risk", "privacy", "audit"},
+            "administrator": {"overview", "users", "behavior", "usage", "tasks", "content", "risk", "privacy", "audit"},
         }
         for role, sections in expected.items():
             with self.subTest(role=role):
@@ -36,6 +36,8 @@ class OperationsServiceTests(unittest.TestCase):
         adapter = (root / "services" / "web_ops" / "mysql_store.py").read_text(encoding="utf-8")
         self.assertIn("admin_operators", migration)
         self.assertIn("operations_audit_events", migration)
+        usage_migration = (root / "services" / "web_domain" / "migrations" / "0013_model_usage_sessions.sql").read_text(encoding="utf-8")
+        self.assertIn("model_usage_sessions", usage_migration)
         self.assertNotIn("CONCAT(", adapter)
         for forbidden in ("phone_lookup_hash", "phone_ciphertext", "stem_text", "answer_text", "solution_text", "object_key"):
             self.assertNotIn(forbidden, adapter)

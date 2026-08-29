@@ -124,6 +124,36 @@ class NotebookE2ETests(unittest.TestCase):
             self.assertNotIn(forbidden, serialized)
         self.assertEqual(len(operations.audit_events), 1)
 
+    def test_harness_token_usage_is_bound_to_the_authenticated_user(self) -> None:
+        cookie = self.login("13600136020")
+        other_cookie = self.login("13600136021")
+        harness_origin = "http://example.test:3080"
+        session_id = "session-token-usage"
+        bound = self.call(
+            "/v1/harness/sessions/bind", method="POST", payload={"session_id": session_id},
+            cookie=cookie, origin=harness_origin,
+        )
+        self.assertEqual((bound[0], bound[2]), (200, {"status": "bound"}))
+        usage = self.call(
+            "/v1/harness/sessions/usage", method="POST",
+            payload={
+                "session_id": session_id, "uncached_input_tokens": 120,
+                "output_tokens": 40, "cache_read_tokens": 80, "cache_write_tokens": 5,
+            },
+            cookie=cookie, origin=harness_origin,
+        )
+        self.assertEqual((usage[0], usage[2]), (200, {"status": "recorded"}))
+        record = next(iter(self.domain_store.model_usage_sessions.values()))
+        self.assertEqual(
+            (record["uncached_input_tokens"], record["output_tokens"], record["cache_read_tokens"], record["cache_write_tokens"]),
+            (120, 40, 80, 5),
+        )
+        rebound = self.call(
+            "/v1/harness/sessions/bind", method="POST", payload={"session_id": session_id},
+            cookie=other_cookie, origin=harness_origin,
+        )
+        self.assertEqual(rebound[0], 403)
+
     def test_public_upload_cannot_claim_internal_pdf_purpose(self) -> None:
         cookie = self.login("13600136000")
         content_type, body = self.multipart("fake.pdf", b"%PDF-1.4\n%%EOF", purpose="practice_pdf")

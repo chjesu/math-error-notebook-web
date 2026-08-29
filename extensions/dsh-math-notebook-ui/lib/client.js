@@ -226,6 +226,7 @@ window.__ModuleLoader__.load({
           }).then((response) => {
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             bound = sessionId;
+            window.dispatchEvent(new CustomEvent("lzlm:model-session-bound", {detail: {sessionId}}));
           }).catch((reason) => {
             console.warn("math notebook session binding failed:", reason);
           }).finally(() => {
@@ -236,6 +237,72 @@ window.__ModuleLoader__.load({
         bind();
         return unsubscribe;
       }, "math-notebook: bind product session");
+    }
+
+    function reportProductTokenUsage(ctx) {
+      ctx.effect(() => {
+        let current = null;
+        let unsubscribeProjection = null;
+        let timer = null;
+        let lastPayload = null;
+
+        const publish = () => {
+          timer = null;
+          const sessionId = ctx.sessions.list.getSnapshot().current;
+          const binding = sessionId === undefined ? undefined : ctx.sessions.binding(sessionId);
+          const snapshot = binding?.session.projections.faceOf("tokenUsage").getSnapshot();
+          const usage = snapshot?.totals || snapshot;
+          const keys = ["uncachedInputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
+          if (sessionId === undefined || usage === undefined || keys.some((key) => !Number.isSafeInteger(usage[key]) || usage[key] < 0)) return;
+          const payload = JSON.stringify({
+            session_id: sessionId,
+            uncached_input_tokens: usage.uncachedInputTokens,
+            output_tokens: usage.outputTokens,
+            cache_read_tokens: usage.cacheReadTokens,
+            cache_write_tokens: usage.cacheWriteTokens
+          });
+          if (payload === lastPayload) return;
+          fetch(`${productOrigin}/v1/harness/sessions/usage`, {
+            method: "POST",
+            credentials: "include",
+            headers: {"content-type": "application/json"},
+            body: payload
+          }).then((response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            lastPayload = payload;
+          }).catch((reason) => console.warn("math notebook token usage reporting failed:", reason));
+        };
+        const schedule = () => {
+          if (timer !== null) clearTimeout(timer);
+          timer = setTimeout(publish, 500);
+        };
+        const attach = () => {
+          const sessionId = ctx.sessions.list.getSnapshot().current;
+          if (sessionId === current) return;
+          unsubscribeProjection?.();
+          unsubscribeProjection = null;
+          current = sessionId;
+          lastPayload = null;
+          const binding = sessionId === undefined ? undefined : ctx.sessions.binding(sessionId);
+          if (binding !== undefined) {
+            const face = binding.session.projections.faceOf("tokenUsage");
+            unsubscribeProjection = face.subscribe(schedule);
+            schedule();
+          }
+        };
+        const unsubscribeList = ctx.sessions.list.subscribe(attach);
+        const onBound = (event) => {
+          if (event.detail?.sessionId === ctx.sessions.list.getSnapshot().current) schedule();
+        };
+        window.addEventListener("lzlm:model-session-bound", onBound);
+        attach();
+        return () => {
+          unsubscribeList();
+          unsubscribeProjection?.();
+          window.removeEventListener("lzlm:model-session-bound", onBound);
+          if (timer !== null) clearTimeout(timer);
+        };
+      }, "math-notebook: report token usage");
     }
 
     function closeProductOnSessionClick(ctx) {
@@ -381,6 +448,7 @@ window.__ModuleLoader__.load({
       restrictStudentSettings(ctx);
       openProductWorkspace(ctx);
       bindProductSession(ctx);
+      reportProductTokenUsage(ctx);
       closeProductOnSessionClick(ctx);
       installSelectionToConversation(ctx);
       ctx.effect(() => {
