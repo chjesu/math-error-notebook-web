@@ -5,8 +5,158 @@ from __future__ import annotations
 from collections import defaultdict
 from html import escape
 from io import BytesIO
+import hashlib
+import re
 from pathlib import Path
 from typing import Any
+
+
+_MATH_CACHE_DIR = Path(__file__).resolve().parents[2] / "tmp" / "pdfs" / "math"
+_MATH_COMMANDS = (
+    "frac", "dfrac", "tfrac", "sqrt", "vec", "overrightarrow", "angle",
+    "pi", "infty", "cdot", "times", "pm", "le", "leq", "ge", "geq",
+    "ne", "neq", "perp", "parallel", "in", "notin", "triangle", "ell",
+    "rightarrow", "leftarrow", "Rightarrow", "Leftarrow", "Leftrightarrow",
+    "mathbb", "mathrm", "operatorname", "text", "boxed", "langle", "rangle",
+    "left", "right", "middle",
+)
+_MATH_COMMAND_RE = re.compile(r"\\(?:" + "|".join(_MATH_COMMANDS) + r")(?![A-Za-z])")
+_HAS_CJK = re.compile(r"[\u3400-\u9fff]")
+_SUPERSCRIPTS = str.maketrans("0123456789+-=()n", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿ")
+_SUBSCRIPTS = str.maketrans("0123456789+-=()aeoxn", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₒₓₙ")
+
+
+def _replace_math_args(value: str) -> str:
+    """Convert common LaTeX commands to readable Unicode math text."""
+    replacements = {
+        r"\left": "", r"\right": "", r"\middle": "", r"\,": " ",
+        r"\;": " ", r"\quad": "  ", r"\leq": "≤", r"\le": "≤",
+        r"\geq": "≥", r"\ge": "≥", r"\neq": "≠", r"\ne": "≠",
+        r"\perp": "⊥", r"\parallel": "∥", r"\pi": "π", r"\infty": "∞",
+        r"\cdot": "·", r"\times": "×", r"\pm": "±", r"\angle": "∠",
+        r"\triangle": "△", r"\ell": "ℓ", r"\in": "∈", r"\notin": "∉",
+        r"\rightarrow": "→", r"\leftarrow": "←", r"\Rightarrow": "⇒",
+        r"\Leftarrow": "⇐", r"\Leftrightarrow": "⇔",
+        r"\langle": "⟨", r"\rangle": "⟩",
+    }
+    for command, symbol in replacements.items():
+        value = value.replace(command, symbol)
+    for _ in range(8):
+        before = value
+
+        def _vector(match: re.Match[str]) -> str:
+            base, braced_subscript, bare_subscript = match.groups()
+            subscript = braced_subscript or bare_subscript
+            return base + "⃗" + (f"_{{{subscript}}}" if subscript else "")
+
+        value = re.sub(
+            r"\\(?:vec|overrightarrow)\{([^{}_]+)(?:_\{([^{}]+)\}|_([^{}]))?\}",
+            _vector,
+            value,
+        )
+        value = re.sub(r"\\operatorname\{vec\}\s*\(([^()]*)\)", r"\1⃗", value)
+        value = re.sub(r"\\boxed\{([^{}]*)\}", r"\1", value)
+        value = re.sub(r"\\(?:text|mathrm|operatorname|mathbb)\{([^{}]*)\}", r"\1", value)
+
+        def _fraction(match: re.Match[str]) -> str:
+            numerator, denominator = (part.strip() for part in match.groups())
+            atom = lambda part: part if re.fullmatch(r"[A-Za-z0-9π∞√]+", part) else f"({part})"
+            return f"{atom(numerator)}⁄{atom(denominator)}"
+
+        value = re.sub(r"\\(?:frac|dfrac|tfrac)\{([^{}]*)\}\{([^{}]*)\}", _fraction, value)
+        value = re.sub(r"\\sqrt\{([^{}]*)\}", lambda m: "√" + (m.group(1) if re.fullmatch(r"[A-Za-z0-9]+", m.group(1)) else f"({m.group(1)})"), value)
+        if value == before:
+            break
+    value = re.sub(r"\^\{([^{}]+)\}", lambda m: m.group(1).translate(_SUPERSCRIPTS), value)
+    value = re.sub(r"_\{([^{}]+)\}", lambda m: m.group(1).translate(_SUBSCRIPTS), value)
+    value = re.sub(r"\^([0-9A-Za-z])", lambda m: m.group(1).translate(_SUPERSCRIPTS), value)
+    value = re.sub(r"_([0-9A-Za-z])", lambda m: m.group(1).translate(_SUBSCRIPTS), value)
+    value = value.replace("\\\\", " ").replace("{", "").replace("}", "")
+    return re.sub(r"\\([A-Za-z]+)", r"\1", value)
+
+
+def _math_spans(value: str) -> list[tuple[int, int, str]]:
+    spans: list[tuple[int, int, str]] = []
+    index = 0
+    while index < len(value):
+        opener = next((item for item in ("$$", r"\[", r"\(", "$") if value.startswith(item, index)), None)
+        if opener is None:
+            index += 1
+            continue
+        closer = {"$$": "$$", r"\[": r"\]", r"\(": r"\)", "$": "$"}[opener]
+        right = value.find(closer, index + len(opener))
+        if right < 0:
+            index += len(opener)
+            continue
+        spans.append((index, right + len(closer), value[index + len(opener):right]))
+        index = right + len(closer)
+    for match in _MATH_COMMAND_RE.finditer(value):
+        if any(left <= match.start() < right for left, right, _ in spans):
+            continue
+        end = match.start()
+        while end < len(value) and not _HAS_CJK.search(value[end]):
+            if value[end] in "，。；：！？":
+                break
+            end += 1
+        if end > match.start():
+            spans.append((match.start(), end, value[match.start():end]))
+    return sorted(spans)
+
+
+def _render_math_image(math_text: str, font_size: float) -> tuple[Path, float, float] | None:
+    if _HAS_CJK.search(math_text):
+        return None
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        font_path = next((item for item in (
+            Path(r"C:\Windows\Fonts\DejaVuMathTeXGyre.ttf"),
+            Path(r"C:\Windows\Fonts\DejaVuSans.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuMathTeXGyre.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        ) if item.is_file()), None)
+        if font_path is None:
+            return None
+        px_size = max(18, round(font_size * 3.0))
+        key = hashlib.sha256(f"v2|{math_text}|{font_size:.2f}".encode("utf-8")).hexdigest()[:20]
+        output = _MATH_CACHE_DIR / f"math-{key}.png"
+        if not output.is_file():
+            _MATH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            font = ImageFont.truetype(str(font_path), px_size)
+            probe = Image.new("RGBA", (8, 8), (255, 255, 255, 0))
+            bounds = ImageDraw.Draw(probe).textbbox((0, 0), _replace_math_args(math_text), font=font)
+            width, height = max(8, bounds[2] - bounds[0] + 10), max(8, bounds[3] - bounds[1] + 8)
+            image = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+            ImageDraw.Draw(image).text((5 - bounds[0], 3 - bounds[1]), _replace_math_args(math_text), font=font, fill="#172033")
+            image.save(output, format="PNG", optimize=True)
+        with Image.open(output) as image:
+            width, height = image.size
+        scale = 72.0 / 216.0
+        return output, width * scale, height * scale
+    except Exception:
+        return None
+
+
+def _formatted_text(value: Any, font_size: float = 10.5) -> str:
+    text = str(value)
+    spans = _math_spans(text)
+    if not spans:
+        return escape(text).replace("\n", "<br/>")
+    pieces: list[str] = []
+    cursor = 0
+    for left, right, math_text in spans:
+        pieces.append(escape(text[cursor:left]).replace("\n", "<br/>"))
+        rendered = _render_math_image(math_text, font_size)
+        if rendered is None:
+            pieces.append(escape(_replace_math_args(math_text)))
+        else:
+            path, width, height = rendered
+            # ReportLab's mini-HTML parser expects POSIX separators even on
+            # Windows; native backslashes make it silently drop the image.
+            image_src = path.resolve().as_posix()
+            pieces.append(f'<img src="{escape(image_src)}" width="{width:.1f}" height="{height:.1f}" valign="-2"/>')
+        cursor = right
+    pieces.append(escape(text[cursor:]).replace("\n", "<br/>"))
+    return "".join(pieces)
 
 
 def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, logo_path: Path | None = None) -> bytes:
@@ -82,4 +232,4 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, lo
 
 
 def _text(value: Any) -> str:
-    return escape(str(value)).replace("\n", "<br/>")
+    return _formatted_text(value)

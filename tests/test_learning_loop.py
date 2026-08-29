@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from services.web_domain import ErrorEntry, InMemoryNotebookStore, NotebookService, Question, VerifiedQuestionReference, cross_validate_reference
-from services.web_domain.learning import next_review, rank_questions
+from services.web_domain.learning import learning_day, next_review, rank_questions
 from services.web_domain.notebook import Attempt
 
 
@@ -49,13 +49,13 @@ class LearningLoopTests(unittest.TestCase):
         self.assertEqual(self.store.learning_usage(user_id=self.user_id, now=datetime(2026, 8, 29, 16, tzinfo=timezone.utc))["grade"]["count"], 0)
 
     def test_unclear_grade_reservation_and_recommendation_overflow_do_not_count(self) -> None:
-        now = datetime(2026, 8, 29, 4, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         self.store.reserve_grade_batch(user_id=self.user_id, intake_ids=["f" * 32], now=now)
         self.store.finish_grade_usage(user_id=self.user_id, intake_id="f" * 32, counted=False, now=now)
         self.assertEqual(self.store.learning_usage(user_id=self.user_id, now=now)["grade"]["count"], 0)
         for index in range(24):
             resource = f"{index:064x}"
-            self.store.learning_usage_events[(self.user_id, "2026-08-29", "recommendation", resource)] = {"kind": "recommendation", "status": "counted", "created_at": now}
+            self.store.learning_usage_events[(self.user_id, learning_day(now), "recommendation", resource)] = {"kind": "recommendation", "status": "counted", "created_at": now}
         self.store.add_question(Question("9" * 32, "解方程 x+3=6", "x=3", 10, 2.0, "授权题库"))
         items, gap = self.store.assign_recommendations(user_id=self.user_id, error_id=self.error_id)
         self.assertEqual(items, [])
