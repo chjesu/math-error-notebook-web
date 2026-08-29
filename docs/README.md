@@ -36,6 +36,7 @@
 | [16-CODEX-APP-SERVER-HARNESS.md](./16-CODEX-APP-SERVER-HARNESS.md) | 官方 app-server 会话运行时、事件流、持久线程和能力边界 | v0.4.0 | 核心运行时已接入 |
 | [17-GRADING-ABILITY-ENHANCEMENT.md](./17-GRADING-ABILITY-ENHANCEMENT.md) | 原图复核、同图父线程、独立解题、受限验算与动态推理路由 | v0.4.0 | 已实现，待完整验收 |
 | [18-MODEL-PROVIDER-MIGRATION.md](./18-MODEL-PROVIDER-MIGRATION.md) | 阿里云环境的模型供应商替换、应用自有 Harness、评测与灰度方案 | v0.1 | 已记录，待评测和实施批准 |
+| [22-ALIYUN-DEPLOYMENT-RUNBOOK.md](./22-ALIYUN-DEPLOYMENT-RUNBOOK.md) | 阿里云资源采购、生产化门禁、部署、灰度、回滚与恢复手册 | v0.1 | 可执行准备基线；当前版本仍禁止直接公网部署 |
 | [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前完整本地候选机器可校验 API 契约 | v0.4.0 | 36 paths；生产部署前仍需契约复核 |
 
 ## 活跃需求

@@ -66,3 +66,4 @@ powershell -ExecutionPolicy Bypass -File scripts\bootstrap_local.ps1
 - [瑞成云接入](docs/07-SMS-PROVIDER-RUICHENG.md)
 - [当前实施证据与剩余上线门](docs/08-IMPLEMENTATION-EVIDENCE.md)
 - [可配置 Harness 运行时](docs/20-CONFIGURABLE-HARNESS-RUNTIME.md)
+- [阿里云部署与上线手册](docs/22-ALIYUN-DEPLOYMENT-RUNBOOK.md)
