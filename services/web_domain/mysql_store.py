@@ -1302,11 +1302,12 @@ class MySqlDomainStore:
         try:
             cursor.execute(
                 f"SELECT e.id,COALESCE((SELECT t.stage FROM review_tasks t WHERE t.user_id=e.user_id AND t.error_id=e.id AND t.status IN ('pending','ready') ORDER BY t.due_at LIMIT 1),IF(e.status='mastered',6,1)),"
-                f"(SELECT a.result FROM review_attempts a WHERE a.user_id=e.user_id AND a.error_id=e.id ORDER BY a.completed_at DESC,a.id DESC LIMIT 1) "
+                f"(SELECT a.result FROM review_attempts a WHERE a.user_id=e.user_id AND a.error_id=e.id ORDER BY a.completed_at DESC,a.id DESC LIMIT 1),"
+                f"(SELECT f.object_key FROM attempts a JOIN intake_items i ON i.id=a.intake_id JOIN web_files f ON f.id=i.file_id WHERE a.id=e.attempt_id AND f.status='ready' LIMIT 1) "
                 f"FROM error_notebook_entries e WHERE e.user_id=%s AND e.id IN ({placeholders})",
                 (user_id, *error_ids),
             )
-            review_context = {str(row[0]): (int(row[1]), str(row[2]) if row[2] else None) for row in cursor.fetchall()}
+            review_context = {str(row[0]): (int(row[1]), str(row[2]) if row[2] else None, str(row[3]) if row[3] else None) for row in cursor.fetchall()}
         finally:
             cursor.close()
             connection.close()
@@ -1314,10 +1315,10 @@ class MySqlDomainStore:
             error = self.get_error(user_id=user_id, error_id=error_id)
             if not error:
                 raise LookupError("error not found")
-            stage, latest_result = review_context.get(error_id, (1, None))
+            stage, latest_result, image_object_key = review_context.get(error_id, (1, None, None))
             requires_original = review_requires_original(stage, latest_result)
             reason = "订正回退" if latest_result in {"partial", "wrong"} else f"第 {stage} 阶段"
-            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "error_reason": error.first_error, "difficulty": None, "source_title": "个人错题本", "reason": reason, "review_stage": stage, "requires_original": requires_original})
+            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "error_reason": error.first_error, "difficulty": None, "source_title": "个人错题本", "reason": reason, "review_stage": stage, "requires_original": requires_original, "image_object_key": image_object_key})
             recommendations = self.list_recommendations(user_id=user_id, error_id=error_id)
             if not recommendations:
                 gaps += 1
