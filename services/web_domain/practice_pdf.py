@@ -190,14 +190,8 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, lo
     body = ParagraphStyle("BodyCN", parent=styles["BodyText"], fontName="STSong-Light", fontSize=10.5, leading=18, textColor=colors.HexColor("#172033"))
     meta = ParagraphStyle("MetaCN", parent=body, fontSize=8.5, leading=14, textColor=colors.HexColor("#647087"))
 
-    def answer_space() -> Table:
-        table = Table([[""]] * 4, colWidths=[174 * mm], rowHeights=[7 * mm] * 4)
-        table.setStyle(TableStyle([
-            ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor("#cdd5e4")),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ]))
-        return table
+    def answer_space() -> Spacer:
+        return Spacer(1, 28 * mm)
 
     story: list[Any] = []
     if logo_path and logo_path.is_file():
