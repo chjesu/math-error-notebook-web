@@ -226,7 +226,7 @@ function processAttachmentsTool(ctx) {
   };
   return {
     name: "process_error_notebook_attachments",
-    description: "Required once when the latest user message contains math images. Submit every recognized question and judgment in image order. The tool reads the actual latest attachments, validates and stores them, freezes versions, cross-checks the verified bank, writes only incorrect or partial questions, schedules review, and returns authoritative receipts. If a result contains reference_review, compare its frozen independent answer with the protected reference answer and solution, then submit all such decisions once through adjudicate_error_notebook_reference_conflicts. Use empty strings for inapplicable diagnosis fields; never invent candidate ids.",
+    description: "Required once when the latest user message contains one math image. Submit every recognized question and judgment in reading order with attachment_index fixed to 1. The tool reads the actual latest attachment, validates and stores it, freezes versions, cross-checks the verified bank, writes only incorrect or partial questions, schedules review, and returns authoritative receipts. If a result contains reference_review, compare its frozen independent answer with the protected reference answer and solution, then submit all such decisions once through adjudicate_error_notebook_reference_conflicts. Use empty strings for inapplicable diagnosis fields; never invent candidate ids.",
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
       properties: {items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
@@ -246,6 +246,7 @@ function processAttachmentsTool(ctx) {
       if (!exec.agent) throw new Error("Notebook processing requires an owning Harness session");
       const images = latestUserImages(exec.agent);
       if (images.length === 0) throw new Error("The latest user message has no image attachments");
+      if (images.length > 1) throw new Error("一条消息最多上传 1 张图片，请删除多余图片后重新发送");
       if (args.items.some((item) => item.attachment_index < 1 || item.attachment_index > images.length)) {
         throw new Error("A result refers to an attachment outside the latest user message");
       }

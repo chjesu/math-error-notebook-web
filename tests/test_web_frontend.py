@@ -163,6 +163,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('ctx.sessions.open(sessionId)', plugin)
         for plugin_id in ("ui-settings-models", "ui-model-selection", "ui-settings-plugin-inventory", "ui-settings-plugins"):
             self.assertRegex(patch, rf"- id: {plugin_id}\s+disabled: true")
+        self.assertRegex(patch, r"- id: attachment-local\s+config:\s+maxImagesPerMessage: 1")
+        self.assertRegex(runtime_config, r"- id: attachment-local\s+name: '@deepseek-ai/dsh-attachment-local'\s+config:\s+dshHome: .*\s+maxImagesPerMessage: 1")
         self.assertIn('ctx.workspaceRegistry.create(workspacePath, "错题会话")', host_plugin)
         self.assertIn('LZLM_HARNESS_WORKSPACE_ROOT', host_plugin)
         self.assertIn('name: "confirm_error_notebook_entry"', host_plugin)
@@ -175,6 +177,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('ctx.attachments.readImage', host_plugin)
         self.assertIn('/v1/internal/harness/intakes/process', host_plugin)
         self.assertIn('latestUserImages(exec.agent)', host_plugin)
+        self.assertIn('if (images.length > 1)', host_plugin)
+        self.assertIn('一条消息最多上传 1 张图片', host_plugin)
         self.assertIn('exec.concludeTurn()', host_plugin)
         self.assertIn('/v1/internal/harness/grade-results/', host_plugin)
         self.assertIn('/v1/harness/sessions/bind', plugin)
@@ -204,6 +208,7 @@ class FrontendContractTests(unittest.TestCase):
             self.assertIn('*（小建议：……）*', prompt)
             self.assertIn('“## 下一步”', prompt)
             self.assertIn('只给出一个最优先', prompt)
+            self.assertIn('固定为 1 的 attachment_index', prompt)
             self.assertNotIn('最终答案及小建议', prompt)
 
     def test_harness_product_views_hide_the_legacy_sidebar(self) -> None:

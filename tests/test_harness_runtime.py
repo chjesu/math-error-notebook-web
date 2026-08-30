@@ -182,6 +182,21 @@ if (result.schema !== 'math-notebook-process-result/v1' || result.results[0].att
 const rendered = tool.output.render({{}}, result)[0].text;
 if (!rendered.includes('第 1 题') || !rendered.includes('已计入错题本')) throw new Error('result not rendered');
 if (!rendered.includes('下一步：') || !rendered.includes('打开「错题本」')) throw new Error('processing next step missing');
+let multipleImagesRejected = false;
+try {{
+  await tool.execute({{items: [{{
+    attachment_index: 1, item_no: 1, question_text: 'q', answer_text: 'a', verdict: 'incorrect', first_error: 'e',
+    cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'], correct_solution: 'solution',
+    final_answer: 'answer', prevention_cue: 'check', confidence: 0.9
+  }}]}}, {{
+    agent: {{id: 'session-process', session: {{deriveMessages: () => [
+      {{role: 'user', content: [{{type: 'image', attachment: 'image-ref'}}, {{type: 'image', attachment: 'image-ref-2'}}]}}
+    ]}}}}, signal: new AbortController().signal
+  }});
+}} catch (error) {{
+  multipleImagesRejected = String(error).includes('一条消息最多上传 1 张图片');
+}}
+if (!multipleImagesRejected) throw new Error('multiple images were not rejected');
 const adjudicator = registered.find((value) => value.name === 'adjudicate_error_notebook_reference_conflicts');
 const rechecker = registered.find((value) => value.name === 'recheck_error_notebook_reference_conflict');
 const rechecked = await rechecker.execute({{question_text: 'historical q'}}, {{agent: {{id: 'session-process'}}, signal: new AbortController().signal}});
