@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import datetime, timezone
 import hashlib
-from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
 import unittest
-
-from PIL import Image
+from unittest import mock
 
 from services.web_app import NotebookAsgiApp
 from services.web_auth import AuthConfig, InMemoryCaptchaVerifier, InMemoryRegistrationStore, RecordingSmsSender, RegistrationService
-from services.web_domain import GradeCandidate, InMemoryNotebookStore, NotebookService, Question, cross_validate_reference
+from services.web_domain import ErrorEntry, GradeCandidate, InMemoryNotebookStore, NotebookService, Question, cross_validate_reference
 from services.web_domain.notebook import Attempt
+from services.web_files import PresignedStorageRequest
+from services.web_files.images import normalize_image_upload
+from tests.image_fixtures import png_bytes as make_png_bytes
 
 
 class NotebookE2ETests(unittest.TestCase):
@@ -42,10 +44,8 @@ class NotebookE2ETests(unittest.TestCase):
         self.temp.cleanup()
 
     @staticmethod
-    def png_bytes() -> bytes:
-        stream = BytesIO()
-        Image.new("RGB", (10, 10), "white").save(stream, format="PNG")
-        return stream.getvalue()
+    def png_bytes(*, color: str = "white") -> bytes:
+        return make_png_bytes(color=color, size=(10, 10))
 
     def call(self, path: str, *, method: str = "GET", payload: dict | None = None, body: bytes | None = None, content_type: str = "application/json", cookie: str | None = None, origin: str | None = "https://example.test", idempotency_key: str | None = None, extra_headers: dict[str, str] | None = None, client: tuple[str, int] = ("203.0.113.7", 12345)):
         route_path, _, query = path.partition("?")
@@ -114,18 +114,52 @@ class NotebookE2ETests(unittest.TestCase):
         response = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="upload-internal")
         self.assertEqual(response[0], 400)
 
+    def test_oss_practice_pdf_download_redirects_after_user_ownership_check(self) -> None:
+        cookie = self.login("13600136002")
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        assert user is not None
+        error_id = "e" * 32
+        self.domain_store.errors[error_id] = ErrorEntry(
+            error_id,
+            user.user_id,
+            "t" * 32,
+            "解方程 x+1=2",
+            "x=0",
+            "移项符号错误",
+            "open",
+            datetime.now(timezone.utc),
+        )
+        job = self.notebook.create_practice_pdf(
+            user_id=user.user_id,
+            error_ids=[error_id],
+            idempotency_key="pdf-redirect",
+        )
+        request = PresignedStorageRequest(
+            method="GET",
+            url="https://student-files.oss-cn-beijing.aliyuncs.com/private.pdf?signature=test",
+            headers={},
+            expires_at=datetime(2026, 8, 30, 13, 0, tzinfo=timezone.utc),
+        )
+        with mock.patch.object(self.notebook.storage, "presign_download", return_value=request):
+            response = self.call(
+                f"/v1/practice-pdfs/{job.job_id}/download",
+                cookie=cookie,
+            )
+
+        self.assertEqual((response[0], response[1]["location"]), (303, request.url))
+
     def test_upload_requires_the_declared_idempotency_key(self) -> None:
         cookie = self.login("13400134000")
-        content_type, body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nimage")
+        content_type, body = self.multipart("question.png", self.png_bytes())
         response = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie)
         self.assertEqual((response[0], response[2]["error"]["code"]), (400, "invalid_request"))
 
     def test_upload_idempotency_key_binds_one_exact_request(self) -> None:
         cookie = self.login("13300133000")
-        content_type, body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nimage")
+        content_type, body = self.multipart("question.png", self.png_bytes())
         first = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="upload-replay-key")
         replay = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="upload-replay-key")
-        changed_type, changed_body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nchanged")
+        changed_type, changed_body = self.multipart("question.png", self.png_bytes(color="black"))
         changed = self.call("/v1/files", method="POST", body=changed_body, content_type=changed_type, cookie=cookie, idempotency_key="upload-replay-key")
         self.assertEqual((first[0], replay[0], changed[0]), (201, 201, 409))
         self.assertEqual(first[2]["file_id"], replay[2]["file_id"])
@@ -409,7 +443,10 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertNotIn("object_key", attachment)
 
         preview = self.call(attachment["preview_url"], cookie=cookie)
-        self.assertEqual((preview[0], preview[1]["content-type"], preview[2]), (200, "image/png", content))
+        self.assertEqual(
+            (preview[0], preview[1]["content-type"], preview[2]),
+            (200, "image/png", normalize_image_upload(content, "image/png")),
+        )
         self.assertEqual(preview[1]["cache-control"], "private,no-store")
         self.assertEqual(self.call(attachment["preview_url"], cookie=other_cookie)[0], 404)
 
@@ -865,7 +902,7 @@ class NotebookE2ETests(unittest.TestCase):
 
     def test_phone_to_first_error_http_slice_and_cross_user_denial(self) -> None:
         cookie = self.login("13800138000")
-        content_type, body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nimage")
+        content_type, body = self.multipart("question.png", self.png_bytes())
         uploaded = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="upload-0001")
         self.assertEqual(uploaded[0], 201)
 
@@ -1115,7 +1152,7 @@ class NotebookE2ETests(unittest.TestCase):
 
     def test_manual_grade_requires_first_error_and_large_body_is_413(self) -> None:
         cookie = self.login("13700137000")
-        content_type, body = self.multipart("question.png", b"\x89PNG\r\n\x1a\nimage")
+        content_type, body = self.multipart("question.png", self.png_bytes())
         uploaded = self.call("/v1/files", method="POST", body=body, content_type=content_type, cookie=cookie, idempotency_key="upload-validation")
         created = self.call("/v1/intakes", method="POST", payload={"file_id": uploaded[2]["file_id"]}, cookie=cookie, idempotency_key="extract-validation")
         intake_id = created[2]["resource_id"]
@@ -1140,7 +1177,7 @@ class NotebookE2ETests(unittest.TestCase):
 
     def test_stale_candidate_and_unclear_result_cannot_enter_notebook(self) -> None:
         user = "a" * 32
-        file = self.notebook.upload(user_id=user, purpose="question_image", original_name="q.png", content=b"\x89PNG\r\n\x1a\nimage")
+        file = self.notebook.upload(user_id=user, purpose="question_image", original_name="q.png", content=self.png_bytes())
         intake, _ = self.domain_store.create_intake(user_id=user, file_id=file.file_id, idempotency_key="extract-0002")
         self.domain_store.save_extraction_candidate(user_id=user, intake_id=intake.intake_id, question_text="题目", answer_text="答案", evidence={})
         revised = self.domain_store.revise_intake(user_id=user, intake_id=intake.intake_id, expected_version=1, question_text="题目修订", answer_text="答案")

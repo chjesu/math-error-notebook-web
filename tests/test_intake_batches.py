@@ -20,6 +20,7 @@ from services.web_domain.intake_batch import (
 )
 from services.web_app.intake_pipeline import NotebookIntakeBatchProcessor
 from services.web_app.codex_model import ModelUnavailableError
+from tests.image_fixtures import png_bytes
 
 
 class MutableClock:
@@ -45,7 +46,7 @@ class IntakeBatchRepositoryTests(unittest.TestCase):
                 user_id="a" * 32,
                 purpose="question_image",
                 original_name=f"question-{index}.png",
-                content=b"\x89PNG\r\n\x1a\n" + bytes([index]),
+                content=png_bytes(color=(index, 0, 0)),
                 idempotency_key=f"upload-{index}",
             ).file_id
             for index in (1, 2, 3)
@@ -527,7 +528,7 @@ class IntakeBatchEngineTests(unittest.TestCase):
                 user_id="a" * 32,
                 purpose="question_image",
                 original_name="question.png",
-                content=b"\x89PNG\r\n\x1a\nimage",
+                content=png_bytes(),
                 idempotency_key="upload",
             ).file_id
             repo = InMemoryIntakeBatchRepository(store.get_file, clock=clock)
@@ -571,7 +572,7 @@ class IntakeBatchEngineTests(unittest.TestCase):
                 user_id="a" * 32,
                 purpose="question_image",
                 original_name="question.png",
-                content=b"\x89PNG\r\n\x1a\nimage",
+                content=png_bytes(),
                 idempotency_key="upload",
             ).file_id
             repo = InMemoryIntakeBatchRepository(store.get_file, clock=clock)
@@ -616,7 +617,7 @@ class IntakeBatchEngineTests(unittest.TestCase):
             service = NotebookService(store, Path(temp))
             file_id = service.upload(
                 user_id="a" * 32, purpose="question_image", original_name="q.png",
-                content=b"\x89PNG\r\n\x1a\nq", idempotency_key="upload",
+                content=png_bytes(), idempotency_key="upload",
             ).file_id
             repo = InMemoryIntakeBatchRepository(store.get_file, clock=clock)
             batch = repo.create_batch(user_id="a" * 32, file_ids=[file_id], idempotency_key="batch")[0]

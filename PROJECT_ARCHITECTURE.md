@@ -60,6 +60,7 @@ flowchart TB
 | 模型供应商迁移与应用自有 Harness | `services/web_domain/model_provider/`、`services/web_app/model_providers.py`、`docs/18-MODEL-PROVIDER-MIGRATION.md` | Phase 3 已落地统一契约、DeepSeek/百炼双配置档、安全端点与稳定错误语义，AST 验算保持确定性；真实百炼标注集评测、应用自有会话存储和生产灰度仍未完成，不得标记为生产完成 |
 | 任务领取、租约、证据、恢复 | `scripts/project_workflow.py` | 已实现注册模板和全项目模板 |
 | 个人账号与 user_id 数据隔离 | `services/web_domain/` | 已实现；API、Store、任务和下载均从服务端会话注入 `user_id` |
+| 文件与对象存储 | `services/web_files/`、`STORAGE_PROVIDER` | Phase 4 已落地 LocalFS/阿里云 OSS 统一契约、安全端点与凭据模式、不可覆盖写入、有界读取、短时预签名和图片元数据清理；图片、PDF、导出及注销删除均以对象键为边界。真实 OSS Bucket/RAM Role/内网 smoke 仍未完成，不得标记为生产完成 |
 | Web 题库、错题、作答和复习数据 | MySQL 个人 `user_id` 模型 | 权威桌面题库已同步到本地 MySQL：10,569 题，其中 10,278 题保持已验证、291 题按授权/质量门降级为候选；生产回滚未完成 |
 | 文件上传、解析、审核、判题 | API + `intake_batches` + Harness 附件业务桥 + 现有错题领域服务 | Host 读取本轮最多 5 张真实 PNG/JPEG 后立即创建持久批次；TaskEngine 通过 MySQL 两个固定槽位和递增 `claim_epoch` 依次拆题、独立解题、判题并入本。模型计算在事务外进行；每个领域写入事务在首尾都按槽位、批次、token、阶段和数据库租约复核并续租，操作回执、单调计数和事件另在同一批次事务写入，崩溃窗口由稳定业务键对账恢复。解题回执只保留有界白名单；判题候选绑定批次、题目序号和冻结解答哈希。模型提供的题库复核字段不受信任，服务端只用冻结的独立答案与当前权威题库确定性重算，并在关联或抑制入本的事务内再次核对版本与哈希。每账号最多 3 个活动批次、24 小时 60 个新批次。SSE 按批次序号完整重放，并限制总连接、账号连接和单批次连接，官方工作台显示识别、求解、判题和终态进度。正确题自动跳过，错误或部分正确自动入本，无法识别或证据冲突等待补充；题库复核边界保持不变。模型不可用时有限重试后安全失败，PDF/DOCX 自动解析与生产 Worker 部署门禁仍延期 |
 | 推荐、复习计划和 PDF | `services/web_domain/` | 仅已验证且授权题可推荐；推荐、复习和 PDF 本地链路已验收，题库为空时展示缺口。按中国标准时间为每个账号记录唯一学习用量：每日判题建议 12 道、硬上限 20 道，每日推荐建议 12 道、硬上限 24 道，可覆盖一次选取的 12 道错题并为每题最多匹配 2 道练习；重复提交、失败和无法识别不计数，已经开始处理的同一批图片完整完成后才停止下一批。桌面 Skill `output/pdf` 中的历史 PDF 可通过既有错题迁移脚本幂等同步到个人练习 PDF 历史，重名内容只存一份但保留每个生成记录的文件名 |
@@ -80,6 +81,7 @@ flowchart TB
 | `services/web_domain/` | 错题、推荐、复习调度、进度和 A4 PDF |
 | `services/web_domain/model_provider/` | 模型供应商无关契约、能力和稳定错误语义 |
 | `services/web_app/model_providers.py` | DeepSeek 与阿里百炼 Harness 适配器及安全配置工厂 |
+| `services/web_files/` | LocalFS/OSS 存储契约、对象键校验、图片摄取规范化与安全配置工厂 |
 | `scripts/project_workflow.py` | 注册/全项目任务模板、依赖、领取、租约和证据 |
 | `scripts/codex_task_router.py` | Luna/Terra/Sol 分层只读审查 |
 | `scripts/local_env.py` | localhost MySQL、模拟短信/CAPTCHA 与端到端验收 |

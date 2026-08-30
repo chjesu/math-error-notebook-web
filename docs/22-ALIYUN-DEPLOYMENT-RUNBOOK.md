@@ -17,7 +17,7 @@
 - 上传原图、PDF、导出文件、Harness 附件和会话仍有本地文件路径；
 - 本地同源网关已能统一代理 Harness，但完整生产装配入口、可信转发头和生产安全响应头尚未落地；
 - Harness JSONL 会话仍在单机目录，不能安全运行两个无状态应用副本；
-- 生产异步 Worker、OSS 适配、就绪检查、生产迁移器和完整依赖锁仍未完成；
+- 生产异步 Worker、OSS 真实资源验收、就绪检查、生产迁移器和完整依赖锁仍未完成；
 - 真实短信、Turnstile、百炼模型、备份恢复、压测、观测和独立安全复核尚未取得上线证据。
 
 因此执行分两段：
@@ -209,6 +209,10 @@ harness/attachments/
 5. 下载只返回短时签名 URL；导出链接继续执行次数、过期和审计限制。
 6. 开启服务端加密、版本控制和生命周期策略；注销时删除活动对象，并按合规策略处理版本和备份。
 7. Web 进程不能再依赖仓库内 `data/runtime/`、`.runtime/`、`output/` 或 `tmp/` 保存权威数据。
+
+应用侧已支持 `STORAGE_PROVIDER=oss` 并在启动时校验 Region、Bucket、同地域官方 HTTPS Endpoint 和凭据模式；任何错误都失败关闭，不回落到本地。ECS 推荐 `OSS_CREDENTIAL_MODE=ecs_ram_role`，本地受控联调才使用 `environment`。运行配置示例见 `.env.example`；创建真实资源后仍须执行上传、读取、PDF 预签名、删除和跨用户拒绝 smoke。
+
+真实资源 smoke 固定按以下结果验收：上传一张带 EXIF 的 JPEG 后，Bucket 中对象为私有、带 `x-oss-meta-sha256` 且下载图不含原始元数据；生成练习 PDF 后，所属用户下载接口返回 `303` 到配置 Bucket 的 HTTPS 地址，其他用户得到 `404`；签名超过 15 分钟被拒绝；注销测试账号后，其数据库列出的测试对象全部删除。测试只使用隔离账号和测试前缀，完成后清理对象，不复用真实学生数据。
 
 官方依据：[OSS 访问控制](https://help.aliyun.com/en/oss/how-to-control-access-permissions-on-oss)、[OSS 预签名上传](https://help.aliyun.com/en/oss/user-guide/upload-files-using-presigned-urls)、[ECS 实例 RAM 角色与 STS](https://help.aliyun.com/en/ram/support/faq-about-ram-roles-and-sts-tokens)。
 
@@ -425,7 +429,7 @@ RPO、RTO 在压测和恢复实测后冻结，未演练前不得承诺具体数�
 | 阻断项 | 完成标准 |
 |---|---|
 | 完整生产工厂 | `NotebookAsgiApp` 从 RDS、OSS、KMS、模型和 Worker 装配，失败关闭 |
-| OSS 存储适配 | 上传、下载、PDF、导出、注销和重试均不依赖本地权威文件 |
+| OSS 真实资源验收 | 私有 Bucket、RAM Role、内网 Endpoint、加密/生命周期已配置，上传、下载、PDF、导出、注销和重试 smoke 通过 |
 | 应用自有会话存储 | 历史、分页、压缩、任务和恢复不依赖单机 JSONL |
 | Harness 同源入口 | 正式 HTTPS 域名下页面、API、WebSocket、附件和 Cookie 全流程通过 |
 | 异步 Worker | 任务租约、重试、停止、恢复、幂等和积压监控通过 |

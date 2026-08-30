@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Protocol
+from typing import Mapping, Protocol
 import hashlib
 import re
 import secrets
+
+
+@dataclass(frozen=True)
+class PresignedStorageRequest:
+    method: str
+    url: str
+    headers: Mapping[str, str]
+    expires_at: datetime
 
 
 class StorageAdapter(Protocol):
@@ -20,42 +30,65 @@ class StorageAdapter(Protocol):
 
     def delete_path(self, object_key: str) -> None: ...
 
+    def presign_download(
+        self,
+        object_key: str,
+        *,
+        expires_in: int = 300,
+        download_name: str | None = None,
+    ) -> PresignedStorageRequest | None: ...
+
+    def presign_upload(
+        self,
+        object_key: str,
+        *,
+        content_type: str,
+        content_length: int,
+        content_sha256: str,
+        expires_in: int = 300,
+    ) -> PresignedStorageRequest | None: ...
+
+
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+
+
+def validate_object_key(value: str) -> PurePosixPath:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 1024
+        or "\\" in value
+        or value.startswith("/")
+    ):
+        raise ValueError("unsafe object key")
+    parts = value.split("/")
+    if any(
+        part in {"", ".", ".."}
+        or part.endswith((".", " "))
+        or not re.fullmatch(r"[A-Za-z0-9._-]+", part)
+        or part.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES
+        for part in parts
+    ):
+        raise ValueError("unsafe object key")
+    key = PurePosixPath(value)
+    if key.is_absolute():
+        raise ValueError("unsafe object key")
+    return key
+
 
 class LocalFsStorageAdapter:
     """Fail-closed local filesystem implementation of ``StorageAdapter``."""
-
-    _WINDOWS_RESERVED_NAMES = {
-        "CON", "PRN", "AUX", "NUL",
-        *(f"COM{number}" for number in range(1, 10)),
-        *(f"LPT{number}" for number in range(1, 10)),
-    }
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
 
     @staticmethod
     def _key(value: str) -> PurePosixPath:
-        if (
-            not isinstance(value, str)
-            or not value
-            or len(value) > 1024
-            or "\\" in value
-            or value.startswith("/")
-        ):
-            raise ValueError("unsafe object key")
-        parts = value.split("/")
-        if any(
-            part in {"", ".", ".."}
-            or part.endswith((".", " "))
-            or not re.fullmatch(r"[A-Za-z0-9._-]+", part)
-            or part.split(".", 1)[0].upper() in LocalFsStorageAdapter._WINDOWS_RESERVED_NAMES
-            for part in parts
-        ):
-            raise ValueError("unsafe object key")
-        key = PurePosixPath(value)
-        if key.is_absolute():
-            raise ValueError("unsafe object key")
-        return key
+        return validate_object_key(value)
 
     def _target(self, object_key: str) -> Path:
         key = self._key(object_key)
@@ -95,3 +128,25 @@ class LocalFsStorageAdapter:
         if not target.is_file():
             raise LookupError("file not found")
         return target
+
+    def presign_download(
+        self,
+        object_key: str,
+        *,
+        expires_in: int = 300,
+        download_name: str | None = None,
+    ) -> None:
+        validate_object_key(object_key)
+        return None
+
+    def presign_upload(
+        self,
+        object_key: str,
+        *,
+        content_type: str,
+        content_length: int,
+        content_sha256: str,
+        expires_in: int = 300,
+    ) -> None:
+        validate_object_key(object_key)
+        return None

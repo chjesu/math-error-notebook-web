@@ -10,7 +10,12 @@ import hashlib
 import json
 import uuid
 
-from services.web_files import FileIntake, LocalFsStorageAdapter, StorageAdapter
+from services.web_files import (
+    FileIntake,
+    LocalFsStorageAdapter,
+    PresignedStorageRequest,
+    StorageAdapter,
+)
 
 from .learning import (
     DAILY_GRADE_LIMIT,
@@ -1118,16 +1123,40 @@ class NotebookService:
         )
 
     def download_practice_pdf(self, *, user_id: str, job_id: str) -> tuple[str, bytes]:
+        job, record = self._practice_pdf_file(user_id=user_id, job_id=job_id)
+        content = self.storage.read_bytes(record.object_key)
+        if hashlib.sha256(content).hexdigest() != record.content_sha256:
+            raise RuntimeError("file_integrity_failed")
+        return f"practice-{job.job_id[:8]}.pdf", content
+
+    def presign_practice_pdf_download(
+        self,
+        *,
+        user_id: str,
+        job_id: str,
+        expires_in: int = 300,
+    ) -> tuple[str, PresignedStorageRequest] | None:
+        job, record = self._practice_pdf_file(user_id=user_id, job_id=job_id)
+        filename = f"practice-{job.job_id[:8]}.pdf"
+        request = self.storage.presign_download(
+            record.object_key,
+            expires_in=expires_in,
+            download_name=filename,
+        )
+        if request is None:
+            return None
+        if request.method != "GET" or request.headers:
+            raise RuntimeError("invalid storage download request")
+        return filename, request
+
+    def _practice_pdf_file(self, *, user_id: str, job_id: str) -> tuple[Job, FileRecord]:
         job = self.store.get_job(user_id=user_id, job_id=job_id)
         if not job or job.job_type != "practice_pdf" or job.status != "completed" or not job.checkpoint:
             raise LookupError("practice PDF not found")
         record = self.store.get_file(user_id=user_id, file_id=str(job.checkpoint["file_id"]))
         if not record or record.purpose != "practice_pdf":
             raise LookupError("practice PDF not found")
-        content = self.storage.read_bytes(record.object_key)
-        if hashlib.sha256(content).hexdigest() != record.content_sha256:
-            raise RuntimeError("file_integrity_failed")
-        return f"practice-{job.job_id[:8]}.pdf", content
+        return job, record
 
     def read_intake_source(self, *, user_id: str, intake_id: str) -> tuple[str, str, bytes]:
         intake = self.store.get_intake(user_id=user_id, intake_id=intake_id)

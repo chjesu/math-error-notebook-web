@@ -14,6 +14,7 @@ import zipfile
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from .images import normalize_image_upload
 from .storage import LocalFsStorageAdapter, StorageAdapter
 
 
@@ -85,6 +86,9 @@ class FileIntake:
         if not content or len(content) > self.max_bytes:
             raise ValueError("file is empty or exceeds the size limit")
         media_type, suffix = self._kind(name, content)
+        content = normalize_image_upload(content, media_type)
+        if len(content) > self.max_bytes:
+            raise ValueError("normalized file exceeds the size limit")
         digest = hashlib.sha256(content).hexdigest()
         user_namespace = hashlib.sha256(user_id.encode("ascii")).hexdigest()[:16]
         object_key = f"quarantine/{user_namespace}/{secrets.token_hex(16)}.{suffix}"

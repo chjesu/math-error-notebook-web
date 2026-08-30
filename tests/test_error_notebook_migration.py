@@ -8,6 +8,7 @@ from unittest import mock
 import unittest
 
 from scripts import migrate_error_notebook
+from tests.image_fixtures import jpeg_bytes
 
 
 class ErrorNotebookMigrationTests(unittest.TestCase):
@@ -18,7 +19,7 @@ class ErrorNotebookMigrationTests(unittest.TestCase):
         database.parent.mkdir(parents=True)
         skill.parent.mkdir(parents=True)
         skill.write_text("skill", encoding="utf-8")
-        image.write_bytes(b"\xff\xd8\xfftest-image")
+        image.write_bytes(jpeg_bytes())
         pdf_root = root / "output" / "pdf"
         pdf_root.mkdir(parents=True)
         (pdf_root / "历史练习.pdf").write_bytes(b"%PDF-1.4\n%%EOF")

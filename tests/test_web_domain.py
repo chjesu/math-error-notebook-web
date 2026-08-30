@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from services.web_domain import InMemoryNotebookStore, MySqlDomainStore, NotebookService
+from tests.image_fixtures import png_bytes
 
 
 class FakeCursor:
@@ -128,7 +129,7 @@ class DomainContractTests(unittest.TestCase):
     def test_duplicate_upload_discards_unreferenced_quarantine_file(self) -> None:
         with TemporaryDirectory() as temporary:
             service = NotebookService(InMemoryNotebookStore(), Path(temporary))
-            content = b"\x89PNG\r\n\x1a\nimage"
+            content = png_bytes()
             first = service.upload(user_id="a" * 32, purpose="question_image", original_name="q.png", content=content)
             second = service.upload(user_id="a" * 32, purpose="question_image", original_name="q.png", content=content)
             self.assertEqual(first.file_id, second.file_id)
@@ -142,7 +143,7 @@ class DomainContractTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             service = NotebookService(FailingStore(), Path(temporary))
             with self.assertRaisesRegex(RuntimeError, "database unavailable"):
-                service.upload(user_id="a" * 32, purpose="question_image", original_name="q.png", content=b"\x89PNG\r\n\x1a\nimage")
+                service.upload(user_id="a" * 32, purpose="question_image", original_name="q.png", content=png_bytes())
             self.assertFalse(any(path.is_file() for path in Path(temporary).rglob("*")))
 
 

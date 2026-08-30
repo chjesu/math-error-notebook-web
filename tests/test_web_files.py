@@ -12,6 +12,7 @@ from PIL import Image
 
 from services.web_files import FileIntake, LocalFsStorageAdapter
 from services.web_domain import InMemoryNotebookStore, NotebookService
+from tests.image_fixtures import png_bytes
 
 
 class FalsyLocalFsStorageAdapter(LocalFsStorageAdapter):
@@ -54,16 +55,50 @@ class LocalFsStorageAdapterTests(unittest.TestCase):
 
 
 class FileIntakeTests(unittest.TestCase):
+    def test_quarantine_reencodes_jpeg_orientation_and_removes_metadata(self) -> None:
+        stream = BytesIO()
+        exif = Image.Exif()
+        exif[0x0112] = 6
+        exif[0x010F] = "test-camera"
+        Image.new("RGB", (20, 10), "white").save(stream, format="JPEG", exif=exif)
+        original = stream.getvalue()
+
+        with tempfile.TemporaryDirectory() as directory:
+            intake = FileIntake(Path(directory))
+            candidate = intake.quarantine(
+                user_id="a" * 32, original_name="q.jpg", content=original
+            )
+            stored = intake.read(candidate.object_key)
+
+            self.assertNotEqual(stored, original)
+            self.assertEqual(candidate.content_sha256, hashlib.sha256(stored).hexdigest())
+            self.assertEqual(candidate.byte_size, len(stored))
+            with Image.open(BytesIO(stored)) as image:
+                self.assertEqual((image.format, image.size), ("JPEG", (10, 20)))
+                self.assertEqual(len(image.getexif()), 0)
+                self.assertNotIn("icc_profile", image.info)
+
+    def test_rejects_magic_only_png_that_cannot_be_decoded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            intake = FileIntake(Path(directory))
+            with self.assertRaisesRegex(ValueError, "invalid image"):
+                intake.quarantine(
+                    user_id="a" * 32,
+                    original_name="q.png",
+                    content=b"\x89PNG\r\n\x1a\nimage",
+                )
+
     def test_can_store_validated_files_in_a_separate_local_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory() as objects:
             storage = LocalFsStorageAdapter(Path(objects))
             intake = FileIntake(Path(scratch), storage=storage)
-            content = b"\x89PNG\r\n\x1a\nimage"
+            content = png_bytes()
 
             candidate = intake.quarantine(user_id="a" * 32, original_name="q.png", content=content)
 
-            self.assertEqual(storage.read_bytes(candidate.object_key), content)
-            self.assertEqual(intake.read(candidate.object_key), content)
+            stored = storage.read_bytes(candidate.object_key)
+            self.assertEqual(intake.read(candidate.object_key), stored)
+            self.assertEqual(candidate.content_sha256, hashlib.sha256(stored).hexdigest())
             self.assertTrue(candidate.local_path.is_relative_to(Path(objects)))
 
     def test_notebook_service_uses_injected_storage_for_upload_and_deletion(self) -> None:
@@ -77,7 +112,7 @@ class FileIntakeTests(unittest.TestCase):
                 user_id=user_id,
                 purpose="question_image",
                 original_name="q.png",
-                content=b"\x89PNG\r\n\x1a\nimage",
+                content=png_bytes(),
             )
 
             self.assertTrue(storage.resolve(record.object_key).is_relative_to(Path(objects)))
@@ -105,7 +140,7 @@ class FileIntakeTests(unittest.TestCase):
     def test_valid_file_is_user_scoped_and_object_key_is_unpredictable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             intake = FileIntake(Path(directory))
-            content = b"\x89PNG\r\n\x1a\nimage"
+            content = png_bytes()
             first = intake.quarantine(user_id="a" * 32, original_name="q.png", content=content)
             second = intake.quarantine(user_id="b" * 32, original_name="q.png", content=content)
             self.assertEqual(first.content_sha256, second.content_sha256)
@@ -113,7 +148,10 @@ class FileIntakeTests(unittest.TestCase):
             self.assertNotIn(first.content_sha256, first.object_key)
             self.assertTrue(first.local_path.is_file())
             self.assertEqual(intake.resolve(first.object_key), first.local_path)
-            self.assertEqual(intake.read(first.object_key), content)
+            self.assertEqual(
+                hashlib.sha256(intake.read(first.object_key)).hexdigest(),
+                first.content_sha256,
+            )
 
     def test_rejects_path_traversal_spoofed_extension_and_size(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

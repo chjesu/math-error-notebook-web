@@ -9,6 +9,40 @@ import unittest
 from services.web_domain import ErrorEntry, InMemoryNotebookStore, NotebookService, Question, VerifiedQuestionReference, cross_validate_reference
 from services.web_domain.learning import learning_day, next_review, rank_questions
 from services.web_domain.notebook import Attempt
+from services.web_files import PresignedStorageRequest
+
+
+class MemoryStorage:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    def save_bytes(self, object_key: str, content: bytes, content_type: str) -> bool:
+        created = object_key not in self.objects
+        self.objects.setdefault(object_key, content)
+        return created
+
+    def read_bytes(self, object_key: str) -> bytes:
+        return self.objects[object_key]
+
+    def delete_path(self, object_key: str) -> None:
+        self.objects.pop(object_key, None)
+
+    def presign_download(
+        self,
+        object_key: str,
+        *,
+        expires_in: int = 300,
+        download_name: str | None = None,
+    ) -> PresignedStorageRequest:
+        return PresignedStorageRequest(
+            method="GET",
+            url=f"https://student-files.oss-cn-beijing.aliyuncs.com/{object_key}?signature=test",
+            headers={},
+            expires_at=datetime(2026, 8, 30, 13, 0, tzinfo=timezone.utc),
+        )
+
+    def presign_upload(self, *args, **kwargs):
+        return None
 
 
 class LearningLoopTests(unittest.TestCase):
@@ -122,6 +156,31 @@ class LearningLoopTests(unittest.TestCase):
                 service.create_practice_pdf(user_id=self.user_id, error_ids=[self.error_id], idempotency_key="practice-0001", include_answers=True)
             with self.assertRaises(LookupError):
                 service.download_practice_pdf(user_id="b" * 32, job_id=job.job_id)
+
+    def test_pdf_uses_injected_storage_and_presigns_only_after_ownership_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = MemoryStorage()
+            service = NotebookService(self.store, Path(directory), storage=storage)
+            job = service.create_practice_pdf(
+                user_id=self.user_id,
+                error_ids=[self.error_id],
+                idempotency_key="practice-remote",
+            )
+
+            signed = service.presign_practice_pdf_download(
+                user_id=self.user_id, job_id=job.job_id
+            )
+
+            self.assertIsNotNone(signed)
+            assert signed is not None
+            filename, request = signed
+            self.assertTrue(filename.endswith(".pdf"))
+            self.assertEqual(request.method, "GET")
+            self.assertEqual(len(storage.objects), 1)
+            with self.assertRaises(LookupError):
+                service.presign_practice_pdf_download(
+                    user_id="b" * 32, job_id=job.job_id
+                )
 
     def test_review_schedule_boundaries(self) -> None:
         now = datetime(2026, 8, 23, tzinfo=timezone.utc)

@@ -1021,8 +1021,17 @@ def _service(*, cooldown_seconds: int = 60):
 
 
 def _domain_smoke(service: Any, sender: Any, session_cookie: str, phone: str) -> dict[str, int]:
+    from io import BytesIO
+
+    from PIL import Image
+
     from services.web_app import NotebookAsgiApp
     from services.web_domain import MySqlDomainStore, NotebookService
+
+    def png_bytes(color: tuple[int, int, int]) -> bytes:
+        output = BytesIO()
+        Image.new("RGB", (2, 2), color).save(output, format="PNG")
+        return output.getvalue()
 
     token = session_cookie.split(";", 1)[0].split("=", 1)[1]
     user = service.authenticate_session(token)
@@ -1031,13 +1040,13 @@ def _domain_smoke(service: Any, sender: Any, session_cookie: str, phone: str) ->
     store = MySqlDomainStore(_connection_factory())
     with tempfile.TemporaryDirectory(prefix="domain-smoke-", dir=RUNTIME) as directory:
         notebook = NotebookService(store, Path(directory))
-        upload_content = b"\x89PNG\r\n\x1a\nlocal-smoke"
+        upload_content = png_bytes((255, 255, 255))
         uploaded = notebook.upload(user_id=user.user_id, purpose="question_image", original_name="question.png", content=upload_content, idempotency_key="smoke-upload")
         replayed_upload = notebook.upload(user_id=user.user_id, purpose="question_image", original_name="question.png", content=upload_content, idempotency_key="smoke-upload")
         if replayed_upload.file_id != uploaded.file_id:
             raise RuntimeError("file upload idempotency replay failed")
         try:
-            notebook.upload(user_id=user.user_id, purpose="question_image", original_name="question.png", content=b"\x89PNG\r\n\x1a\nchanged-smoke", idempotency_key="smoke-upload")
+            notebook.upload(user_id=user.user_id, purpose="question_image", original_name="question.png", content=png_bytes((0, 0, 0)), idempotency_key="smoke-upload")
         except RuntimeError as exc:
             if str(exc) != "conflict":
                 raise
@@ -1685,6 +1694,7 @@ def serve(
         RegistrationService,
     )
     from services.web_domain import MySqlDomainStore, NotebookService
+    from services.web_files import build_storage_adapter
     import uvicorn
 
     sender = ConsoleSmsSender()
@@ -1695,7 +1705,13 @@ def serve(
         secret_pepper=base64.b64decode(_load_secrets()["auth_pepper_b64"]),
         config=AuthConfig(captcha_after_phone_day=99, captcha_after_ip_hour=99),
     )
-    notebook = NotebookService(MySqlDomainStore(_connection_factory()), RUNTIME / "quarantine")
+    quarantine_root = RUNTIME / "quarantine"
+    storage = build_storage_adapter(quarantine_root, environ=os.environ)
+    notebook = NotebookService(
+        MySqlDomainStore(_connection_factory()),
+        quarantine_root,
+        storage=storage,
+    )
     harness_internal_token = secrets.token_urlsafe(32) if enable_harness_ui else None
     if enable_codex_model and enable_harness_model:
         raise RuntimeError("choose either the Harness model or the legacy Codex model")

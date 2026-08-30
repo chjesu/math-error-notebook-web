@@ -686,8 +686,21 @@ class NotebookAsgiApp:
                 await self._json(send, 201, self._practice_job(job))
             elif path.startswith("/v1/practice-pdfs/") and path.endswith("/download") and method == "GET":
                 job_id = path.split("/")[-2]
-                filename, content = await self._sync(self.notebook.download_practice_pdf, user_id=user.user_id, job_id=job_id)
-                await self._bytes(send, 200, content, "application/pdf", filename)
+                signed = await self._sync(
+                    self.notebook.presign_practice_pdf_download,
+                    user_id=user.user_id,
+                    job_id=job_id,
+                )
+                if signed is not None:
+                    _, request = signed
+                    await self._redirect(send, request.url)
+                else:
+                    filename, content = await self._sync(
+                        self.notebook.download_practice_pdf,
+                        user_id=user.user_id,
+                        job_id=job_id,
+                    )
+                    await self._bytes(send, 200, content, "application/pdf", filename)
             elif path.startswith("/v1/practice-pdfs/") and method == "GET":
                 job = await self._sync(self.notebook.store.get_job, user_id=user.user_id, job_id=path.rsplit("/", 1)[1])
                 if not job or job.job_type != "practice_pdf":

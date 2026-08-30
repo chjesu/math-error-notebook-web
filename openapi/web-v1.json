@@ -403,7 +403,7 @@
         "operationId": "downloadPracticePdf",
         "security": [{"sessionCookie": []}],
         "parameters": [{"$ref": "#/components/parameters/TaskId"}],
-        "responses": {"200": {"description": "当前用户的 A4 PDF", "content": {"application/pdf": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+        "responses": {"200": {"description": "LocalFS 模式下返回当前用户的 A4 PDF", "content": {"application/pdf": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "303": {"description": "OSS 模式下跳转到当前用户对象的短时签名下载地址", "headers": {"Location": {"schema": {"type": "string", "format": "uri"}}}}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/v1/exports": {
