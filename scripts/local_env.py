@@ -58,6 +58,9 @@ HARNESS_WEB_PATCH = ROOT / "config" / "deepseek-harness" / "web-product.patch.ym
 HARNESS_WEB_STDOUT = ROOT / "data" / "runtime" / "deepseek-harness-web.stdout.log"
 HARNESS_WEB_STDERR = ROOT / "data" / "runtime" / "deepseek-harness-web.stderr.log"
 HARNESS_WEB_PORT = 3080
+SERVICE_PID_FILE = ROOT / "data" / "runtime" / "service.pid"
+SERVICE_STDOUT = ROOT / "data" / "runtime" / "service.stdout.log"
+SERVICE_STDERR = ROOT / "data" / "runtime" / "service.stderr.log"
 
 
 def _load_env_file() -> None:
@@ -81,19 +84,33 @@ _load_env_file()
 def _basedir() -> Path:
     if "LZLM_LOCAL_MYSQL_HOME" in os.environ:
         return Path(os.environ["LZLM_LOCAL_MYSQL_HOME"]).resolve()
-    scoop_mysql = Path(os.path.expanduser("~")) / "scoop" / "apps" / "mysql-lts" / "current"
-    if (scoop_mysql / "bin" / "mysqld.exe").is_file():
-        return scoop_mysql
+    if sys.platform == "win32":
+        scoop_mysql = Path(os.path.expanduser("~")) / "scoop" / "apps" / "mysql-lts" / "current"
+        if (scoop_mysql / "bin" / "mysqld.exe").is_file():
+            return scoop_mysql
+        return DEFAULT_BASEDIR.resolve()
+    for candidate in (Path("/usr"), Path("/usr/local/mysql"), Path("/opt/mysql")):
+        if (candidate / "bin" / "mysqld").is_file() or (candidate / "sbin" / "mysqld").is_file():
+            return candidate
     return DEFAULT_BASEDIR.resolve()
 
 
 def _binary(name: str) -> Path:
-    path = _basedir() / "bin" / f"{name}.exe"
-    if path.is_file():
-        return path
-    which_path = shutil.which(f"{name}.exe") or shutil.which(name)
-    if which_path:
-        return Path(which_path)
+    if sys.platform == "win32":
+        path = _basedir() / "bin" / f"{name}.exe"
+        if path.is_file():
+            return path
+        which_path = shutil.which(f"{name}.exe") or shutil.which(name)
+        if which_path:
+            return Path(which_path)
+    else:
+        for sub in ("bin", "sbin"):
+            path = _basedir() / sub / name
+            if path.is_file():
+                return path
+        which_path = shutil.which(name)
+        if which_path:
+            return Path(which_path)
     return path
 
 
@@ -430,6 +447,23 @@ def start() -> None:
 
 
 def stop() -> None:
+    if SERVICE_PID_FILE.is_file():
+        try:
+            pid = int(SERVICE_PID_FILE.read_text(encoding="ascii").strip())
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                try:
+                    os.kill(pid, 15)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        try:
+            SERVICE_PID_FILE.unlink()
+        except Exception:
+            pass
+
     if not _is_running():
         return
     binary_path = _binary("mysqladmin")
@@ -1202,6 +1236,7 @@ def main() -> int:
     serve_parser.add_argument("--enable-codex-model", action="store_true")
     serve_parser.add_argument("--enable-harness-model", action="store_true")
     serve_parser.add_argument("--enable-harness-ui", action="store_true")
+    serve_parser.add_argument("--daemon", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "init":
@@ -1222,14 +1257,54 @@ def main() -> int:
         elif args.command == "smoke":
             result = smoke()
         elif args.command == "serve":
-            serve(
-                args.host,
-                args.port,
-                enable_codex_model=args.enable_codex_model,
-                enable_harness_model=args.enable_harness_model,
-                enable_harness_ui=args.enable_harness_ui,
-            )
-            return 0
+            if getattr(args, "daemon", False):
+                SERVICE_STDOUT.parent.mkdir(parents=True, exist_ok=True)
+                cmd = [
+                    sys.executable,
+                    "-X", "utf8", "-B",
+                    str(Path(__file__).resolve()),
+                    "serve",
+                    "--host", args.host,
+                    "--port", str(args.port),
+                ]
+                if args.enable_codex_model:
+                    cmd.append("--enable-codex-model")
+                if args.enable_harness_model:
+                    cmd.append("--enable-harness-model")
+                if args.enable_harness_ui:
+                    cmd.append("--enable-harness-ui")
+
+                creationflags = 0
+                if sys.platform == "win32":
+                    for name in ("CREATE_NO_WINDOW", "DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+                        creationflags |= int(getattr(subprocess, name, 0))
+
+                out_fd = os.open(str(SERVICE_STDOUT), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+                err_fd = os.open(str(SERVICE_STDERR), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(ROOT),
+                        stdout=out_fd,
+                        stderr=err_fd,
+                        stdin=subprocess.DEVNULL,
+                        creationflags=creationflags,
+                        start_new_session=False if sys.platform == "win32" else True,
+                    )
+                finally:
+                    os.close(out_fd)
+                    os.close(err_fd)
+                SERVICE_PID_FILE.write_text(str(proc.pid), encoding="ascii")
+                result = {"status": "ok", "mode": "daemon", "pid": proc.pid, "port": args.port}
+            else:
+                serve(
+                    args.host,
+                    args.port,
+                    enable_codex_model=args.enable_codex_model,
+                    enable_harness_model=args.enable_harness_model,
+                    enable_harness_ui=args.enable_harness_ui,
+                )
+                return 0
         else:
             result = doctor()
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
