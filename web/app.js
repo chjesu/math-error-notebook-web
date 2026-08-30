@@ -1330,10 +1330,11 @@ function bindProgress() {
   let calendar = {days: [], summary: {}, total_error_count: 0};
   let activeFilter = "all";
   let selectedDate = "";
-  let selectedBacklog = false;
+  let selectedMetric = "";
   let todaySnapshot = {date: chinaDate(), due_count: 0, completed_count: 0, overdue_items: []};
   let selectionScope = "";
   let selectedErrorIds = new Set();
+  let currentReviews = new Map();
   const filterLabels = {all: "全部活动", new: "新增错题", due: "待复习", completed: "已完成", correction: "需改错"};
 
   function monthKey() {
@@ -1348,8 +1349,32 @@ function bindProgress() {
     return day.items;
   }
 
-  function metric(label, value, className) {
-    return value ? `<span class="${className}">${label}<strong>${value}</strong></span>` : "";
+  function metric(date, kind, label, value, className, incomplete = false) {
+    const count = incomplete ? value ? `≥${value}` : "待核实" : value;
+    return `<button type="button" class="calendar-metric ${className}" data-calendar-date="${date}" data-calendar-kind="${kind}" aria-label="${date} ${label} ${count}">${label}<strong>${count}</strong></button>`;
+  }
+
+  function backlogFor(day) {
+    if (day.date === todaySnapshot.date) return todaySnapshot.overdue_items;
+    return (day.backlog_indices || []).map(index => calendar.backlog_items[index]);
+  }
+
+  function selectable(item) {
+    const review = currentReviews.get(item.error_id);
+    return item.type === "due" && review && item.stage === review.stage && item.original_due_date === chinaDate(review.due_at);
+  }
+
+  function detailItems(day) {
+    const future = day.date > todaySnapshot.date;
+    const kind = selectedMetric || activeFilter;
+    const due = day.items.filter(item => item.type === "due" && (day.date < todaySnapshot.date || selectable(item)));
+    const backlog = backlogFor(day);
+    if (kind === "backlog") return backlog;
+    if (kind === "due") return selectedMetric ? due : [...due, ...backlog];
+    if (kind === "new") return day.items.filter(item => item.type === "new");
+    if (kind === "completed") return day.items.filter(item => item.type === "completed");
+    if (kind === "correction") return day.items.filter(item => item.type === "completed" && ["partial", "wrong"].includes(item.result));
+    return future ? due : [...day.items, ...backlog];
   }
 
   function renderStats() {
@@ -1365,35 +1390,35 @@ function bindProgress() {
 
   function renderDayDetail() {
     const detail = $("#calendar-day-detail");
-    const day = calendar.days.find(item => item.date === selectedDate);
-    const isToday = selectedDate === todaySnapshot.date;
-    const backlog = isToday && (selectedBacklog || ["all", "due"].includes(activeFilter)) ? todaySnapshot.overdue_items : [];
-    const items = [...(selectedBacklog ? [] : day ? filteredItems(day) : []), ...backlog];
-    if (!selectedDate || (!items.length && !isToday)) {
+    const day = calendar.days.find(item => item.date === selectedDate) || {date: selectedDate, items: []};
+    const items = detailItems(day);
+    if (!selectedDate) {
       detail.hidden = true;
       return;
     }
     const groups = new Map();
     items.forEach(item => {
-      if (!groups.has(item.error_id)) groups.set(item.error_id, {item, labels: [], knowledge: new Set()});
+      if (!groups.has(item.error_id)) groups.set(item.error_id, {item, labels: new Set(), knowledge: new Set(), selectable: false});
       const group = groups.get(item.error_id);
-      if (item.original_due_date) group.backlog = item;
+      group.selectable ||= Boolean(selectable(item));
       (item.knowledge_points || []).forEach(point => group.knowledge.add(point));
-      if (item.type === "new") group.labels.push({text: "新增错题", className: ""});
-      else if (item.type === "due") group.labels.push({text: item.original_due_date ? `第 ${item.stage} 阶段 · 原定 ${item.original_due_date} · 历史逾期` : `S${item.stage} ${item.overdue ? "已逾期" : item.status === "completed" ? "已完成计划" : "应复习"}`, className: item.overdue ? "is-correction" : ""});
+      if (item.type === "new") group.labels.add("新增错题");
+      else if (item.type === "due") group.labels.add(`第 ${item.stage} 阶段 · 原定 ${item.original_due_date || selectedDate}`);
       else {
         const result = {correct: "正确", partial: "部分掌握", wrong: "错误"}[item.result] || "已完成";
-        group.labels.push({text: `S${item.stage} 复习${result}`, className: item.result === "correct" ? "is-completed" : "is-correction"});
+        group.labels.add(`第 ${item.stage} 阶段 · 复习${result}`);
       }
     });
-    $("#calendar-day-title").textContent = `${selectedDate.replaceAll("-", " 年 ").replace(/ 年 (\d{2}) 年 /, " 年 $1 月 ")} 日 · ${selectedBacklog ? "历史逾期" : filterLabels[activeFilter]}`;
-    $("#calendar-selection-status").hidden = !backlog.length;
-    status($("#calendar-selection-status"), `历史逾期 ${backlog.length} 道（包含以前月份）；已选 ${selectedErrorIds.size}/12 道。勾选后打开左侧「错题本」继续生成 PDF。`);
+    const label = selectedMetric === "backlog" ? selectedDate === todaySnapshot.date ? "历史逾期" : "截至当天未完成" : selectedMetric === "due" ? selectedDate > todaySnapshot.date ? "计划复习" : "当日到期" : filterLabels[selectedMetric || activeFilter];
+    $("#calendar-day-title").textContent = `${selectedDate} · ${label}`;
+    $("#calendar-history-note").textContent = day.history_complete === false ? "历史记录不完整：部分旧到期日期已被覆盖或任务已取消，以下只展示可核实的记录，不能视为完整统计。" : selectedDate < todaySnapshot.date ? "未完成数量截至所选日期当天结束（中国时间）；已在之后完成的题仍保留在当时的记录中。" : selectedDate > todaySnapshot.date ? "仅展示已经安排的复习计划，后续阶段按实际完成情况生成；选题不改变原定复习日期。" : "历史逾期包含以前月份，不包含今天到期的题目。";
+    $("#calendar-selection-status").hidden = ![...groups.values()].some(group => group.selectable);
+    status($("#calendar-selection-status"), `已选 ${selectedErrorIds.size}/12 道。仅仍在待复习任务中的题目可加入今日选题，勾选后打开左侧「错题本」继续生成 PDF。`);
     $("#calendar-day-items").innerHTML = [...groups.values()].map(group => {
-      const labels = group.labels.map(label => `<span class="${label.className}">${escapeHtml(label.text)}</span>`).join("");
+      const labels = [...group.labels].map(label => `<span>${escapeHtml(label)}</span>`).join("");
       const cause = group.item.first_error ? `<p><strong>错误原因：</strong>${escapeHtml(group.item.first_error)}</p>` : "";
       const knowledge = group.knowledge.size ? `<p><strong>知识点：</strong>${[...group.knowledge].map(escapeHtml).join("、")}</p>` : "";
-      const checkbox = group.backlog ? `<label class="calendar-backlog-select"><input type="checkbox" name="calendar-error" value="${escapeHtml(group.item.error_id)}"${selectedErrorIds.has(group.item.error_id) ? " checked" : ""}><span>加入今日复习</span></label>` : "";
+      const checkbox = group.selectable ? `<label class="calendar-backlog-select"><input type="checkbox" name="calendar-error" value="${escapeHtml(group.item.error_id)}"${selectedErrorIds.has(group.item.error_id) ? " checked" : ""}><span>加入今日复习</span></label>` : "";
       return `<article class="calendar-detail-item">${checkbox}<div class="calendar-event-labels">${labels}</div><h4>${escapeHtml(group.item.question_text)}</h4>${cause}${knowledge}</article>`;
     }).join("") || '<p class="empty">当前没有符合筛选条件的题目。</p>';
     detail.hidden = false;
@@ -1409,26 +1434,23 @@ function bindProgress() {
     const cells = Array.from({length: firstWeekday}, () => '<div class="calendar-day is-empty" aria-hidden="true"></div>');
     for (let day = 1; day <= daysInMonth; day += 1) {
       const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-      const record = byDay.get(dateKey) || {items: [], stage_counts: {}};
-      const items = filteredItems(record);
+      const record = byDay.get(dateKey) || {date: dateKey, items: [], stage_counts: {}};
       const isToday = dateKey === todaySnapshot.date;
+      const isFuture = dateKey > todaySnapshot.date;
       const classes = `calendar-day${isToday ? " is-today" : ""}${selectedDate === dateKey ? " is-selected" : ""}`;
-      if (isToday) {
-        // This is a live summary, not an extra calendar event: never add it to
-        // calendar.days or the historical/monthly totals.
-        cells.push(`<div class="${classes}"><button type="button" class="calendar-today-open" data-calendar-date="${dateKey}" aria-label="查看今日复习详情"><strong>${day}</strong><span>今天</span></button><div class="calendar-day-metrics"><span class="is-due">今日到期<strong>${todaySnapshot.due_count}</strong></span><button type="button" class="calendar-overdue-link is-overdue" data-calendar-date="${dateKey}" data-calendar-backlog="true" aria-label="查看历史逾期 ${todaySnapshot.overdue_items.length} 道题并选择复习">历史逾期<strong>${todaySnapshot.overdue_items.length}</strong></button><span class="is-completed">今日已完成<strong>${todaySnapshot.completed_count}</strong></span></div></div>`);
-        continue;
-      }
+      const plans = record.items.filter(item => item.type === "due" && (!isFuture || selectable(item)));
+      const incomplete = !isToday && !isFuture && record.history_complete === false;
       const metrics = [
-        activeFilter === "all" || activeFilter === "new" ? metric("新增", record.new_error_count, "is-new") : "",
-        activeFilter === "all" || activeFilter === "due" ? metric("应复习", record.due_review_count, "is-due") : "",
-        activeFilter === "all" || activeFilter === "completed" ? metric("已复习", record.completed_review_count, "is-completed") : "",
-        activeFilter === "all" || activeFilter === "correction" ? metric("需改错", record.needs_correction_count, "is-correction") : "",
-        activeFilter === "all" || activeFilter === "due" ? metric("逾期", record.overdue_review_count, "is-overdue") : "",
+        ["all", "due"].includes(activeFilter) ? metric(dateKey, "due", isFuture ? "计划复习" : isToday ? "今日到期" : "当日到期", isToday ? todaySnapshot.due_count : plans.length, "is-due", incomplete) : "",
+        !isFuture && ["all", "due"].includes(activeFilter) ? metric(dateKey, "backlog", isToday ? "历史逾期" : "当日未完成", backlogFor(record).length, "is-overdue", incomplete) : "",
+        !isFuture && ["all", "completed"].includes(activeFilter) ? metric(dateKey, "completed", isToday ? "今日已完成" : "当日已完成", isToday ? todaySnapshot.completed_count : record.completed_review_count || 0, "is-completed") : "",
+        !isFuture && (activeFilter === "new" || activeFilter === "all" && record.new_error_count) ? metric(dateKey, "new", "新增错题", record.new_error_count || 0, "is-new") : "",
+        !isFuture && (activeFilter === "correction" || activeFilter === "all" && record.needs_correction_count) ? metric(dateKey, "correction", "需改错", record.needs_correction_count || 0, "is-correction") : "",
       ].join("");
-      const stages = activeFilter === "all" || activeFilter === "due" ? Object.entries(record.stage_counts || {}).filter(([, count]) => count).map(([stage, count]) => `<span>S${stage}×${count}</span>`).join("") : "";
-      const content = `<div class="calendar-day-heading"><strong>${day}</strong>${items.length ? `<span>${items.length} 项</span>` : ""}</div>${metrics ? `<div class="calendar-day-metrics">${metrics}</div>` : ""}${stages ? `<div class="calendar-stages">${stages}</div>` : ""}`;
-      cells.push(items.length ? `<button type="button" class="${classes}" data-calendar-date="${dateKey}" aria-label="${year}年${month + 1}月${day}日，${items.length}项${filterLabels[activeFilter]}">${content}</button>` : `<div class="${classes}" aria-label="${year}年${month + 1}月${day}日，无${filterLabels[activeFilter]}">${content}</div>`);
+      const stageCounts = {};
+      plans.forEach(item => {stageCounts[item.stage] = (stageCounts[item.stage] || 0) + 1;});
+      const stages = ["all", "due"].includes(activeFilter) ? Object.entries(stageCounts).map(([stage, count]) => `<span>第${stage}阶段×${count}</span>`).join("") : "";
+      cells.push(`<div class="${classes}"><button type="button" class="calendar-date-open" data-calendar-date="${dateKey}" aria-label="查看 ${dateKey} 复习详情"><strong>${day}</strong><span>${isToday ? "今天" : isFuture ? "计划" : ""}</span></button><div class="calendar-day-metrics">${metrics}</div>${stages ? `<div class="calendar-stages">${stages}</div>` : ""}${incomplete ? '<span class="calendar-history-warning">记录不完整</span>' : ""}</div>`);
     }
     while (cells.length % 7) cells.push('<div class="calendar-day is-empty" aria-hidden="true"></div>');
     $("#calendar-month").textContent = `${year} 年 ${month + 1} 月`;
@@ -1445,6 +1467,7 @@ function bindProgress() {
       calendar = history;
       todaySnapshot = todayReviewSnapshot(errorResult.items, progress);
       selectionScope = errorResult.selection_scope;
+      currentReviews = new Map(errorResult.items.filter(item => item.status === "open" && ["pending", "ready"].includes(item.review?.status)).map(item => [item.error_id, item.review]));
       selectedErrorIds = new Set(readReviewSelection(selectionScope, new Set(errorResult.items.filter(item => item.status === "open").map(item => item.error_id))) || []);
       renderStats();
       renderCalendar();
@@ -1459,7 +1482,7 @@ function bindProgress() {
     const button = event.target.closest("[data-calendar-filter]");
     if (!button) return;
     activeFilter = button.dataset.calendarFilter;
-    selectedBacklog = false;
+    selectedMetric = "";
     $("#calendar-filters").querySelectorAll("button").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
     renderCalendar();
   });
@@ -1467,13 +1490,14 @@ function bindProgress() {
     const button = event.target.closest("[data-calendar-date]");
     if (!button) return;
     selectedDate = button.dataset.calendarDate;
-    selectedBacklog = button.dataset.calendarBacklog === "true";
+    selectedMetric = button.dataset.calendarKind || "";
     renderCalendar();
     $("#calendar-day-detail").scrollIntoView({block: "nearest"});
   });
   $("#calendar-day-items").addEventListener("change", event => {
     const input = event.target;
-    if (input.name !== "calendar-error" || !todaySnapshot.overdue_items.some(item => item.error_id === input.value)) return;
+    const day = calendar.days.find(item => item.date === selectedDate) || {date: selectedDate, items: []};
+    if (input.name !== "calendar-error" || !detailItems(day).some(item => item.error_id === input.value && selectable(item))) return;
     if (input.checked && selectedErrorIds.size >= 12) {
       input.checked = false;
       return status($("#calendar-selection-status"), "今日复习一次最多选择 12 道，请先取消其他题目。", true);

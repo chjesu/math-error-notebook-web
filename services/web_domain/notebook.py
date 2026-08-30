@@ -593,7 +593,8 @@ class InMemoryNotebookStore:
 
         error_by_id = {item.error_id: item for item in errors}
         tasks = [
-            details(error_by_id[item.error_id]) | {"stage": item.stage, "due_at": item.due_at, "status": item.status}
+            details(error_by_id[item.error_id]) | {"stage": item.stage, "due_at": item.due_at, "status": item.status,
+                "task_id": item.task_id, "error_created_at": error_by_id[item.error_id].created_at}
             for item in self.review_tasks.values()
             if item.user_id == user_id and item.error_id in error_by_id
         ]
@@ -603,6 +604,7 @@ class InMemoryNotebookStore:
             if owner != user_id or task is None or task.error_id not in error_by_id:
                 continue
             attempts.append(details(error_by_id[task.error_id]) | {
+                "task_id": task.task_id,
                 "stage": task.stage,
                 "result": item["result"],
                 "completed_at": item["completed_at"],

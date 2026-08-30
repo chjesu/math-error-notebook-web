@@ -77,7 +77,8 @@ class WebOpenApiContractTests(unittest.TestCase):
         self.assertEqual(operation["parameters"][0]["name"], "month")
         self.assertEqual(operation["responses"]["200"]["$ref"], "#/components/responses/ReviewCalendar")
         schema = self.document["components"]["schemas"]["ReviewCalendar"]
-        self.assertEqual(set(schema["required"]), {"month", "total_error_count", "summary", "days"})
+        self.assertEqual(set(schema["required"]), {"month", "total_error_count", "summary", "days", "backlog_items"})
+        self.assertIn("history_complete", schema["properties"]["days"]["items"]["required"])
 
     def test_daily_learning_usage_documents_targets_and_hard_limits(self) -> None:
         operation = self.operation("/v1/learning-usage", "get")

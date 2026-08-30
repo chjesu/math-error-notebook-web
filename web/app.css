@@ -341,11 +341,12 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .calendar-day-metrics .is-completed strong { color: #067647; }
 .calendar-day-metrics .is-correction strong,
 .calendar-day-metrics .is-overdue strong { color: #b54708; }
-.calendar-day .calendar-today-open,
-.calendar-day-metrics .calendar-overdue-link { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; min-height: 24px; margin: 0; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--muted); text-align: left; font-size: 11px; font-weight: 500; }
-.calendar-day .calendar-today-open strong { color: var(--ink); font-size: 14px; }
-.calendar-day-metrics .calendar-overdue-link { text-decoration: underline; text-underline-offset: 3px; }
-.calendar-day-metrics .calendar-overdue-link:hover { color: var(--ink); background: #fff6e9; }
+.calendar-day .calendar-date-open,
+.calendar-day-metrics .calendar-metric { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; min-height: 24px; margin: 0; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--muted); text-align: left; font-size: 11px; font-weight: 500; }
+.calendar-day .calendar-date-open strong { color: var(--ink); font-size: 14px; }
+.calendar-day-metrics .calendar-metric { text-decoration: underline; text-underline-offset: 3px; }
+.calendar-day-metrics .calendar-metric:hover { color: var(--ink); background: #fff6e9; }
+.calendar-history-warning { color: #b54708; font-size: 10px; }
 .calendar-backlog-select { display: flex; align-items: center; gap: 8px; width: fit-content; font-size: 12px; }
 .calendar-backlog-select input { width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; box-shadow: none; }
 .calendar-stages { display: flex; flex-wrap: wrap; gap: 3px; }

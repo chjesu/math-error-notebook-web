@@ -7,11 +7,57 @@ import tempfile
 import unittest
 
 from services.web_domain import ErrorEntry, InMemoryNotebookStore, NotebookService, Question, VerifiedQuestionReference, cross_validate_reference
-from services.web_domain.learning import learning_day, next_review, rank_questions, review_requires_original
+from services.web_domain.learning import build_review_calendar, learning_day, next_review, rank_questions, review_requires_original
 from services.web_domain.notebook import Attempt
 
 
 class LearningLoopTests(unittest.TestCase):
+    def test_calendar_reconstructs_cross_month_day_end_not_current_status(self) -> None:
+        def moment(value):
+            return datetime.fromisoformat(value + "+08:00")
+
+        def task(id, due, status="pending"):
+            return {"task_id": id, "error_id": id, "stage": 1, "due_at": moment(due), "status": status, "question_text": "题目", "evidence": {"knowledge_points": ["向量"]}}
+
+        tasks = [task("old", "2026-07-31T10:00:00", "completed"), task("due", "2026-08-01T10:00:00"),
+                 task("same-day", "2026-08-01T12:00:00", "completed"), task("future", "2026-08-06T08:00:00")]
+        attempts = [{"task_id": id, "error_id": id, "stage": 1, "status": "completed", "result": "correct", "completed_at": moment(completed)}
+                    for id, completed in [("old", "2026-08-03T00:00:00"), ("same-day", "2026-08-01T23:59:59")]]
+        calendar = build_review_calendar("2026-08", errors=[], review_tasks=tasks, review_attempts=attempts, total_error_count=4, now=moment("2026-08-04T10:00:00"))
+        days = {item["date"]: item for item in calendar["days"]}
+        def backlog(date):
+            return {calendar["backlog_items"][i]["error_id"] for i in days[date]["backlog_indices"]}
+        self.assertEqual(backlog("2026-08-01"), {"old", "due"})
+        self.assertEqual(backlog("2026-08-02"), {"old", "due"})  # completed exactly at next midnight
+        self.assertEqual(backlog("2026-08-03"), {"due"})
+        self.assertEqual(backlog("2026-08-06"), set())  # no predicted overdue
+        self.assertEqual(days["2026-08-01"]["completed_review_count"], 1)
+        self.assertEqual(calendar["summary"]["due_review_count"], 3)  # backlog is not counted again
+        self.assertTrue(all(day["history_complete"] for day in days.values()))
+        self.assertEqual(len(days), 31)
+        self.assertEqual(days["2026-08-06"]["stage_counts"]["1"], 1)
+
+    def test_calendar_marks_overwritten_and_cancelled_history_as_unknown(self) -> None:
+        def moment(day):
+            return datetime(2026, 8, day, 8, tzinfo=timezone.utc)
+        task = {"task_id": "repeat", "error_id": "repeat", "stage": 1, "due_at": moment(10), "status": "pending", "error_created_at": moment(1)}
+        attempts = [{"task_id": "repeat", "error_id": "repeat", "stage": 1, "result": "partial", "completed_at": moment(5)}]
+        cancelled = {"task_id": "cancel", "error_id": "cancel", "stage": 1, "due_at": moment(12), "status": "cancelled"}
+        calendar = build_review_calendar("2026-08", errors=[], review_tasks=[task, cancelled], review_attempts=attempts, total_error_count=2, now=moment(15))
+        days = {day["date"]: day for day in calendar["days"]}
+        self.assertFalse(days["2026-08-04"]["history_complete"])
+        self.assertEqual(days["2026-08-04"]["backlog_indices"], [])
+        self.assertTrue(days["2026-08-06"]["history_complete"])  # the old cycle is known to have finished
+        self.assertTrue(days["2026-08-11"]["history_complete"])
+        self.assertEqual(len(days["2026-08-11"]["backlog_indices"]), 1)
+        self.assertFalse(days["2026-08-13"]["history_complete"])
+        self.assertTrue(days["2026-08-16"]["history_complete"])
+        empty = build_review_calendar("2024-02", errors=[], review_tasks=[], review_attempts=[], total_error_count=0, now=moment(15))
+        self.assertEqual(len(empty["days"]), 29)
+        self.assertTrue(all(day["history_complete"] and not day["backlog_indices"] for day in empty["days"]))
+        early = build_review_calendar("2026-08", errors=[], review_tasks=[task | {"status": "completed"}], review_attempts=attempts, total_error_count=1, now=moment(15))
+        self.assertTrue(all(day["history_complete"] and not day["backlog_indices"] for day in early["days"]))
+
     def setUp(self) -> None:
         self.store = InMemoryNotebookStore()
         self.user_id = "a" * 32

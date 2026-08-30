@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -49,6 +49,23 @@ class FakeConnection:
 
 
 class DomainContractTests(unittest.TestCase):
+    def test_calendar_reads_cross_month_history_with_account_scope_and_no_writes(self) -> None:
+        owner = "a" * 32
+        due, completed = datetime(2026, 7, 31), datetime(2026, 8, 3)
+        connection = FakeConnection([(1,), [], [("e" * 32, "题目", "错因", '{"knowledge_points":["向量"]}', 1, due, "completed", "t" * 32, due)],
+                                     [("e" * 32, "题目", "错因", None, 1, "correct", completed, "t" * 32)]])
+        result = MySqlDomainStore(lambda: connection).review_calendar(user_id=owner, month="2026-08", now=datetime(2026, 8, 4, tzinfo=timezone.utc))
+        days = {day["date"]: day for day in result["days"]}
+        self.assertEqual(len(days["2026-08-01"]["backlog_indices"]), 1)
+        self.assertEqual(days["2026-08-03"]["backlog_indices"], [])
+        for query, args in connection.cursor_instance.executed:
+            self.assertTrue(query.startswith("SELECT "))
+            self.assertEqual(args[0], owner)
+            self.assertIn("user_id=%s", query)
+        self.assertIn("a.review_task_id", connection.cursor_instance.executed[-1][0])
+        self.assertEqual(connection.cursor_instance.executed[-1][1], (owner,))
+        self.assertEqual(connection.committed, 0)
+
     def test_schema_has_only_direct_user_ownership(self) -> None:
         sql = (Path(__file__).resolve().parents[1] / "services" / "web_domain" / "migrations" / "0002_web_domain.sql").read_text(encoding="utf-8").lower()
         for removed in ("web_tenants", "tenant_memberships", "web_students", "tenant_invitations", "student_id"):

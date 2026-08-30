@@ -44,7 +44,7 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   assert.ok(grid.includes('今日已完成<strong>0</strong>'));
   assert.ok(grid.includes('data-calendar-date="2026-08-24"'));
   assert.equal($('#calendar-stat-due').textContent,1);
-  $('#review-calendar').handlers.click({target:{closest:()=>({dataset:{calendarDate:'2026-08-31',calendarBacklog:'true'}})}});
+  $('#review-calendar').handlers.click({target:{closest:()=>({dataset:{calendarDate:'2026-08-31',calendarKind:'backlog'}})}});
   assert.equal($('#calendar-day-detail').hidden,false);
   assert.equal(($('#calendar-day-items').innerHTML.match(/name="calendar-error"/g)||[]).length,13);
   assert.ok($('#calendar-day-items').innerHTML.includes('原定 2026-07-01'));
@@ -62,6 +62,34 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   context.sessionStorage.setItem=()=>{throw new Error('blocked');}; change('12',false);
   assert.equal($('#calendar-selection-status').error,true);
   assert.ok($('#calendar-selection-status').textContent.includes('无法保存选题'));
+  // Historical details use the server's day-end snapshot, not today's list.
+  const recorded = id => ({type:'due',error_id:id,stage:2,question_text:'题目',first_error:'错因',knowledge_points:['知识点'],original_due_date:'2026-07-01'});
+  history.backlog_items = [recorded('0'),recorded('finished')];
+  history.days[0].backlog_indices = [0,1];
+  history.days[0].history_complete = false;
+  await $('#refresh-progress').handlers.click();
+  const clickDay = (date,kind='') => $('#review-calendar').handlers.click({target:{closest:()=>({dataset:{calendarDate:date,calendarKind:kind}})}});
+  clickDay('2026-08-24','backlog');
+  assert.ok($('#calendar-history-note').textContent.includes('记录不完整'));
+  assert.equal(($('#calendar-day-items').innerHTML.match(/<article/g)||[]).length,2);
+  assert.equal(($('#calendar-day-items').innerHTML.match(/name="calendar-error"/g)||[]).length,1);
+  const storedBefore = JSON.stringify([...storage]);
+  change('finished',true);
+  assert.equal(JSON.stringify([...storage]),storedBefore);
+  clickDay('2026-08-23');
+  assert.equal($('#calendar-day-detail').hidden,false);
+  assert.ok($('#calendar-day-items').innerHTML.includes('没有符合筛选条件'));
+  // Move to a future month: only real pending plans, with no completion/overdue prediction.
+  errors.push({error_id:'future',status:'open',review:{stage:3,status:'pending',due_at:'2026-09-02T00:00:00Z'}});
+  history.days = [{date:'2026-09-02',items:[{...recorded('future'),stage:3,original_due_date:'2026-09-02'}],stage_counts:{'3':1}}];
+  $('#calendar-next').handlers.click(); await tick();
+  const futureGrid = $('#review-calendar').innerHTML;
+  assert.ok(futureGrid.includes('计划复习<strong>1</strong>'));
+  assert.ok(futureGrid.includes('第3阶段×1'));
+  assert.ok(!futureGrid.includes('当日未完成') && !futureGrid.includes('当日已完成'));
+  clickDay('2026-09-02','due');
+  assert.equal(($('#calendar-day-items').innerHTML.match(/name="calendar-error"/g)||[]).length,1);
+  assert.ok($('#calendar-history-note').textContent.includes('选题不改变原定复习日期'));
 })().catch(error=>{console.error(error);process.exitCode=1;});
 """
         result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=15)
@@ -109,7 +137,7 @@ assert.equal(context.readReviewSelection('a'.repeat(24),many,now).length,12);
 context.sessionStorage.setItem = () => {throw new Error('blocked');};
 assert.equal(context.writeReviewSelection('a'.repeat(24),ids,now),false);
 assert.equal(context.writeReviewSelection('',ids,now),false);
-assert.ok(source.includes('data-calendar-backlog="true"'));
+assert.ok(source.includes('data-calendar-kind="${kind}"'));
 assert.ok(source.includes('saved ?? dueReviews.slice(0, 12)'));
 """
         result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=15)

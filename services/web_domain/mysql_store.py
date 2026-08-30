@@ -1302,25 +1302,25 @@ class MySqlDomainStore:
                 for row in cursor.fetchall()
             ]
             cursor.execute(
-                "SELECT t.error_id,e.question_text,e.first_error,c.evidence_text,t.stage,t.due_at,t.status "
+                "SELECT t.error_id,e.question_text,e.first_error,c.evidence_text,t.stage,t.due_at,t.status,t.id,e.created_at "
                 "FROM review_tasks t JOIN error_notebook_entries e ON e.id=t.error_id AND e.user_id=t.user_id "
                 "JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id "
-                "WHERE t.user_id=%s AND e.status<>'removed' AND t.status<>'cancelled' AND t.due_at>=%s AND t.due_at<%s ORDER BY t.due_at,t.id",
-                (user_id, start_db, end_db),
+                "WHERE t.user_id=%s AND e.status<>'removed' ORDER BY t.due_at,t.id",
+                (user_id,),
             )
             tasks = [
-                {"error_id": str(row[0]), "question_text": str(row[1]), "first_error": row[2], "evidence": row[3], "stage": int(row[4]), "due_at": row[5], "status": str(row[6])}
+                {"error_id": str(row[0]), "question_text": str(row[1]), "first_error": row[2], "evidence": row[3], "stage": int(row[4]), "due_at": row[5], "status": str(row[6]), "task_id": str(row[7]), "error_created_at": row[8]}
                 for row in cursor.fetchall()
             ]
             cursor.execute(
-                "SELECT a.error_id,e.question_text,e.first_error,c.evidence_text,a.stage,a.result,a.completed_at "
+                "SELECT a.error_id,e.question_text,e.first_error,c.evidence_text,a.stage,a.result,a.completed_at,a.review_task_id "
                 "FROM review_attempts a JOIN error_notebook_entries e ON e.id=a.error_id AND e.user_id=a.user_id "
                 "JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id "
-                "WHERE a.user_id=%s AND e.status<>'removed' AND a.completed_at>=%s AND a.completed_at<%s ORDER BY a.completed_at,a.id",
-                (user_id, start_db, end_db),
+                "WHERE a.user_id=%s AND e.status<>'removed' ORDER BY a.completed_at,a.id",
+                (user_id,),
             )
             attempts = [
-                {"error_id": str(row[0]), "question_text": str(row[1]), "first_error": row[2], "evidence": row[3], "stage": int(row[4]), "result": str(row[5]), "completed_at": row[6], "status": "completed"}
+                {"error_id": str(row[0]), "question_text": str(row[1]), "first_error": row[2], "evidence": row[3], "stage": int(row[4]), "result": str(row[5]), "completed_at": row[6], "status": "completed", "task_id": str(row[7])}
                 for row in cursor.fetchall()
             ]
             return build_review_calendar(month, errors=errors, review_tasks=tasks, review_attempts=attempts, total_error_count=total_error_count, now=now)

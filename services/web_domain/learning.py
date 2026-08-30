@@ -289,12 +289,8 @@ def build_review_calendar(
         "overdue_review_count": 0,
     }
 
-    def add_event(kind: str, when: datetime, record: dict[str, object]) -> None:
-        moment = _aware_utc(when)
-        if not start <= moment < end:
-            return
-        day_key = moment.astimezone(_CHINA_TIMEZONE).date().isoformat()
-        day = days.setdefault(day_key, {
+    def day_record(day_key: str) -> dict[str, object]:
+        return days.setdefault(day_key, {
             "date": day_key,
             "new_error_count": 0,
             "due_review_count": 0,
@@ -304,7 +300,10 @@ def build_review_calendar(
             "stage_counts": {str(stage): 0 for stage in range(1, 7)},
             "items": [],
         })
-        day["items"].append({
+
+    def event(kind: str, when: datetime, record: dict[str, object]) -> dict[str, object]:
+        moment = _aware_utc(when)
+        return {
             "type": kind,
             "error_id": str(record["error_id"]),
             "question_text": str(record.get("question_text") or "未命名题目"),
@@ -314,7 +313,15 @@ def build_review_calendar(
             "result": record.get("result"),
             "status": record.get("status"),
             "overdue": kind == "due" and record.get("status") in {"pending", "ready"} and moment < current,
-        })
+            "original_due_date": moment.astimezone(_CHINA_TIMEZONE).date().isoformat() if kind == "due" else None,
+        }
+
+    def add_event(kind: str, when: datetime, record: dict[str, object]) -> None:
+        moment = _aware_utc(when)
+        if not start <= moment < end:
+            return
+        day = day_record(moment.astimezone(_CHINA_TIMEZONE).date().isoformat())
+        day["items"].append(event(kind, when, record))
         if kind == "new":
             day["new_error_count"] += 1
             summary["new_error_count"] += 1
@@ -346,9 +353,49 @@ def build_review_calendar(
     for item in review_attempts:
         add_event("completed", item["completed_at"], item)
 
+    # Reuse recorded due/completion pairs, not today's status, for past day-end
+    # snapshots. Repeated stages can overwrite due_at; expose that gap rather
+    # than inventing an old deadline using the current scheduling rules.
+    attempts_by_task: dict[str, list[datetime]] = {}
+    for item in review_attempts:
+        attempts_by_task.setdefault(str(item.get("task_id")), []).append(_aware_utc(item["completed_at"]))
+    backlog_items = []
+    periods = []
+    gaps = []
+    for item in review_tasks:
+        due = _aware_utc(item["due_at"])
+        completions = sorted(attempts_by_task.get(str(item.get("task_id")), []))
+        ended = next((value for value in completions if value >= due), None)
+        status = item.get("status")
+        if status == "completed" and ended is None and completions:
+            ended = completions[-1]  # imported early completion: never an overdue period
+        if status == "cancelled" or (status == "completed" and ended is None):
+            gaps.append((due, current))
+            continue
+        if (status in {"pending", "ready"} and any(value < due for value in completions)) or len(completions) > 1:
+            origin = _aware_utc(item.get("error_created_at") or min(due, *completions))
+            gaps.append((origin, max(completions)))
+        if due >= end or (ended is not None and ended < start):
+            continue
+        index = len(backlog_items)
+        backlog_items.append(event("due", due, item))
+        periods.append((index, due, ended))
+    today = current.astimezone(_CHINA_TIMEZONE).date()
+    cursor = start
+    while cursor < end:
+        date = cursor.astimezone(_CHINA_TIMEZONE).date()
+        day = day_record(date.isoformat())
+        day_end = cursor + timedelta(days=1)
+        day["backlog_indices"] = [
+            index for index, due, ended in periods
+            if date < today and due < day_end and (ended is None or ended >= day_end)
+        ]
+        day["history_complete"] = date >= today or not any(a < day_end and b > cursor for a, b in gaps)
+        cursor = day_end
+
     summary["planned_completion_percent"] = round(summary["due_completed_count"] * 100 / summary["due_review_count"]) if summary["due_review_count"] else 0
     summary["review_accuracy_percent"] = round(summary["correct_review_count"] * 100 / summary["completed_review_count"]) if summary["completed_review_count"] else 0
-    return {"month": month, "total_error_count": total_error_count, "summary": summary, "days": [days[key] for key in sorted(days)]}
+    return {"month": month, "total_error_count": total_error_count, "summary": summary, "days": [days[key] for key in sorted(days)], "backlog_items": backlog_items}
 
 
 def _aware_utc(value: datetime) -> datetime:
