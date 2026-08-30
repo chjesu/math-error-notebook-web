@@ -138,6 +138,7 @@ class LearningLoopTests(unittest.TestCase):
         self.assertEqual(sum(item["kind"] == "recommendation" for item in items), 1)
         original = items[0]
         self.assertEqual((original["review_stage"], original["requires_original"]), (3, False))
+        self.assertEqual(original["error_reason"], "移项符号错误")
         self.assertTrue(review_requires_original(3, "wrong"))
         self.assertFalse(review_requires_original(3, "correct"))
 

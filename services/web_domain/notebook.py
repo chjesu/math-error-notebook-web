@@ -632,7 +632,7 @@ class InMemoryNotebookStore:
             stage = active_reviews[error_id].stage if error_id in active_reviews else (6 if error.status == "mastered" else 1)
             requires_original = review_requires_original(stage, latest_result)
             reason = "订正回退" if latest_result in {"partial", "wrong"} else f"第 {stage} 阶段"
-            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": reason, "review_stage": stage, "requires_original": requires_original})
+            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "error_reason": error.first_error, "difficulty": None, "source_title": "个人错题本", "reason": reason, "review_stage": stage, "requires_original": requires_original})
             recommendations = self.list_recommendations(user_id=user_id, error_id=error_id)
             if not recommendations:
                 gaps += 1

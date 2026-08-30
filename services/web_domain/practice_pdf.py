@@ -263,16 +263,8 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, as
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in items:
         groups[str(item["error_id"])].append(item)
-    recommendation_count = sum(item["kind"] == "recommendation" for item in items)
-    redo_count = sum(
-        bool(next(item for item in group if item["kind"] == "original").get("requires_original"))
-        or not any(item["kind"] == "recommendation" for item in group)
-        for group in groups.values()
-    )
-    task_count = redo_count + recommendation_count
     story: list[Any] = [
-        Paragraph("李兆霖数学错题本<br/><font size='11'>每日复习练习</font>", title),
-        Paragraph(f"本次需完成 {task_count} 道：原题重做 {redo_count} 道，推荐训练 {recommendation_count} 道。", body),
+        Paragraph("李兆霖数学错题本", title),
         Paragraph("姓名：____________　日期：____________　先独立完成，全部做完后拍照判题。", body),
         HRFlowable(width="100%", thickness=1, color=colors.HexColor("#84ADFF")),
     ]
@@ -288,6 +280,7 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, as
             story.append(CondPageBreak(80 * mm))
         story.append(Paragraph(f"{group_no}　错题编号 {escape(error_id[:8])}（第 {stage} 阶段 · {status_text}）", heading))
         story.extend(question_content(original["stem_text"], prefix="<b>错题回顾：</b>"))
+        story.append(Paragraph(f"<b>错题原因：</b>{_formatted_text(original.get('error_reason') or '未记录', body.fontSize)}", body))
         if requires_original:
             story.extend([Paragraph("原题作答区", meta), answer_space()])
         if not recommendations:
