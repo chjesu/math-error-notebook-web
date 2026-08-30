@@ -87,6 +87,22 @@ function latestUserImages(agent) {
   return [];
 }
 
+function abortableDelay(milliseconds, signal) {
+  return new Promise((resolve, reject) => {
+    const done = () => {
+      signal?.removeEventListener("abort", aborted);
+      resolve();
+    };
+    const aborted = () => {
+      clearTimeout(timer);
+      reject(signal?.reason || new Error("Notebook processing was cancelled"));
+    };
+    const timer = setTimeout(done, milliseconds);
+    if (signal?.aborted) aborted();
+    else signal?.addEventListener("abort", aborted, {once: true});
+  });
+}
+
 function processResultText(value) {
   const lines = [];
   for (const item of value.results) {
@@ -131,21 +147,6 @@ function processAttachmentsTool(ctx) {
   const origin = process.env.LZLM_PRODUCT_ORIGIN;
   const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
   if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
-  const itemProperties = {
-    attachment_index: {type: "integer", description: "One-based image index in the latest user message."},
-    item_no: {type: "integer", description: "One-based question order within that image."},
-    question_text: {type: "string"},
-    answer_text: {type: "string"},
-    verdict: {type: "string", enum: ["correct", "partial", "incorrect", "unclear"]},
-    first_error: {type: "string"},
-    cause_code: {type: "string", enum: ["", "knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear"]},
-    cause_evidence: {type: "string"},
-    knowledge_points: {type: "array", items: {type: "string"}},
-    correct_solution: {type: "string"},
-    final_answer: {type: "string"},
-    prevention_cue: {type: "string"},
-    confidence: {type: "number"}
-  };
   const resultProperties = {
     attachment_index: {type: "integer"}, item_no: {type: "integer"}, candidate_id: {type: "string"}, input_version: {type: "integer"},
     verdict: {type: "string", enum: ["correct", "partial", "incorrect", "unclear"]}, question_text: {type: "string"}, answer_text: {type: "string"},
@@ -168,10 +169,9 @@ function processAttachmentsTool(ctx) {
   };
   return {
     name: "process_error_notebook_attachments",
-    description: "Required once when the latest user message contains math images. Submit every recognized question and judgment in image order. The tool reads the actual latest attachments, validates and stores them, freezes versions, cross-checks the verified bank, writes only incorrect or partial questions, schedules review, and returns authoritative receipts. If a result contains reference_review, compare its frozen independent answer with the protected reference answer and solution, then submit all such decisions once through adjudicate_error_notebook_reference_conflicts. Use empty strings for inapplicable diagnosis fields; never invent candidate ids.",
+    description: "Required immediately and exactly once when the latest user message contains math images. Do not recognize or grade the images before calling. The tool reads every latest attachment, creates one durable asynchronous batch, and waits while the product performs recognition, independent solving, grading, verified-bank checks, notebook writes, and review scheduling. It returns authoritative receipts. If a result contains reference_review, compare its frozen independent answer with the protected reference answer and solution, then submit all such decisions once through adjudicate_error_notebook_reference_conflicts.",
     parameters: {
-      type: "object", additionalProperties: false, required: ["items"],
-      properties: {items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
+      type: "object", additionalProperties: false, properties: {}
     },
     output: {
       schema: {
@@ -184,44 +184,46 @@ function processAttachmentsTool(ctx) {
       },
       render: (_args, value) => processResultText(value)
     },
-    async execute(args, exec) {
+    async execute(_args, exec) {
       if (!exec.agent) throw new Error("Notebook processing requires an owning Harness session");
       const images = latestUserImages(exec.agent);
       if (images.length === 0) throw new Error("The latest user message has no image attachments");
-      if (args.items.some((item) => item.attachment_index < 1 || item.attachment_index > images.length)) {
-        throw new Error("A result refers to an attachment outside the latest user message");
-      }
-      const results = [];
-      let usage = null;
+      if (images.length > 5) throw new Error("一次最多处理 5 张图片，请分批发送。");
+      const attachments = [];
       for (let attachmentIndex = 1; attachmentIndex <= images.length; attachmentIndex += 1) {
-        const items = args.items.filter((item) => item.attachment_index === attachmentIndex);
-        if (items.length === 0) throw new Error(`No result supplied for attachment ${attachmentIndex}`);
         const stored = await ctx.attachments.readImage(images[attachmentIndex - 1].attachment, exec.signal);
-        const response = await fetch(`${origin}/v1/internal/harness/intakes/process`, {
-          method: "POST",
-          headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
-          body: JSON.stringify({
-            session_id: exec.agent.id,
-            attachment: {
-              attachment_id: String(stored.ref.attachmentId),
-              name: stored.ref.name || `question-${attachmentIndex}.${stored.ref.mediaType === "image/png" ? "png" : "jpg"}`,
-              media_type: stored.ref.mediaType,
-              data: Buffer.from(stored.data).toString("base64")
-            },
-            items: items.map(({attachment_index: _attachmentIndex, ...item}) => item)
-          }),
+        attachments.push({
+          attachment_id: String(stored.ref.attachmentId),
+          name: stored.ref.name || `question-${attachmentIndex}.${stored.ref.mediaType === "image/png" ? "png" : "jpg"}`,
+          media_type: stored.ref.mediaType,
+          data: Buffer.from(stored.data).toString("base64")
+        });
+      }
+      const created = await fetch(`${origin}/v1/internal/harness/intake-batches`, {
+        method: "POST",
+        headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
+        body: JSON.stringify({session_id: exec.agent.id, attachments}),
+        signal: exec.signal
+      });
+      let payload = await created.json();
+      if (!created.ok || !payload.batch_id) throw new Error(`Notebook batch creation failed (${created.status})`);
+      const deadline = Date.now() + 20 * 60 * 1000;
+      while (!payload.terminal) {
+        if (Date.now() >= deadline) throw new Error("Notebook processing timed out; the durable batch will continue in the background.");
+        await abortableDelay(500, exec.signal);
+        const response = await fetch(`${origin}/v1/internal/harness/intake-batches/${payload.batch_id}`, {
+          headers: {"authorization": `Bearer ${token}`, "x-lzlm-session-id": exec.agent.id},
           signal: exec.signal
         });
-        const payload = await response.json();
-        if (!response.ok || !Array.isArray(payload.results)) {
-          const code = payload.error?.code;
-          if (code === "daily_grade_limit") throw new Error("今天已完成 20 道判题，请先复习和订正；新图片可明日继续处理。");
-          throw new Error(`Notebook processing failed (${response.status})`);
-        }
-        usage = payload.usage || usage;
-        results.push(...payload.results.map((item) => ({...item, attachment_index: attachmentIndex})));
+        payload = await response.json();
+        if (!response.ok) throw new Error(`Notebook batch status failed (${response.status})`);
       }
-      return {schema: "math-notebook-process-result/v1", results, ...(usage ? {usage} : {})};
+      if (payload.status === "failed") {
+        if (payload.error_code === "daily_grade_limit") throw new Error("今天已完成 20 道判题，请先复习和订正；新图片可明日继续处理。");
+        throw new Error(`Notebook processing failed (${payload.error_code || "pipeline_failed"})`);
+      }
+      if (!Array.isArray(payload.results)) throw new Error("Notebook batch completed without receipts");
+      return {schema: "math-notebook-process-result/v1", results: payload.results, ...(payload.usage ? {usage: payload.usage} : {})};
     },
     presentCall: () => ({card: "generic", title: "整理并记录错题", kind: "other", rawInput: null})
   };

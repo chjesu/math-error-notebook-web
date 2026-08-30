@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import re
 from typing import Any, Protocol
 import uuid
 
@@ -19,6 +20,7 @@ from .learning import (
     VerifiedQuestionReference,
     build_review_calendar,
     calendar_month_range,
+    cross_validate_reference,
     learning_day,
     learning_usage_payload,
     next_review,
@@ -28,6 +30,8 @@ from .learning import (
     reference_conflict_resolved,
     reference_validation_from_evidence,
 )
+from .mysql_intake_batch import MySqlIntakeBatchRepository
+from .intake_batch import BatchClaim
 
 
 class Cursor(Protocol):
@@ -43,6 +47,26 @@ class Connection(Protocol):
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
     def close(self) -> None: ...
+
+
+def grade_operation_identity_from_evidence(evidence: str | None) -> tuple[str, str, str] | None:
+    try:
+        value = json.loads(evidence) if evidence else None
+    except (TypeError, ValueError):
+        return None
+    identity = value.get("batch_operation") if isinstance(value, dict) else None
+    if not isinstance(identity, dict) or identity.get("schema") != "intake-grade-operation/v1":
+        return None
+    batch_id = identity.get("batch_id")
+    operation_key = identity.get("operation_key")
+    solve_sha256 = identity.get("solve_sha256")
+    if (
+        not isinstance(batch_id, str) or re.fullmatch(r"[0-9a-f]{32}", batch_id) is None
+        or not isinstance(operation_key, str) or re.fullmatch(r"grade:[1-9][0-9]{0,3}", operation_key) is None
+        or not isinstance(solve_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", solve_sha256) is None
+    ):
+        return None
+    return batch_id, operation_key, solve_sha256
 
 
 ConnectionFactory = Callable[[], Connection]
@@ -140,6 +164,35 @@ class MySqlDomainStore:
 
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self._connect = connection_factory
+        self.batch_repository = MySqlIntakeBatchRepository(connection_factory)
+
+    def _require_batch_fence_tx(
+        self,
+        cursor: Cursor,
+        *,
+        batch_claim: BatchClaim | None,
+        batch_stage: str | None,
+    ) -> None:
+        if batch_claim is None and batch_stage is None:
+            return
+        if batch_claim is None or batch_stage is None:
+            raise ValueError("incomplete batch fence")
+        self.batch_repository.require_domain_claim_tx(cursor, batch_claim, stage=batch_stage)
+
+    def _commit_domain_mutation(
+        self,
+        connection: Connection,
+        cursor: Cursor,
+        *,
+        batch_claim: BatchClaim | None,
+        batch_stage: str | None,
+    ) -> None:
+        # Revalidate with the database clock while the same transaction still owns
+        # the slot/batch/user locks, then commit the domain mutation immediately.
+        self._require_batch_fence_tx(
+            cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+        )
+        connection.commit()
 
     def learning_usage(self, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
         day = learning_day(now)
@@ -161,7 +214,15 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
-    def reserve_grade_batch(self, *, user_id: str, intake_ids: list[str], now: datetime | None = None) -> None:
+    def reserve_grade_batch(
+        self,
+        *,
+        user_id: str,
+        intake_ids: list[str],
+        now: datetime | None = None,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> None:
         resources = list(dict.fromkeys(intake_ids))
         if not resources:
             raise ValueError("intake_ids is required")
@@ -171,6 +232,9 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             connection.begin()
+            self._require_batch_fence_tx(
+                cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             cursor.execute("SELECT id FROM web_users WHERE id=%s FOR UPDATE", (user_id,))
             if not cursor.fetchone():
                 raise LookupError("user not found")
@@ -194,7 +258,9 @@ class MySqlDomainStore:
                     "INSERT INTO daily_learning_usage (user_id,usage_date,kind,resource_id,status,created_at,updated_at) VALUES (%s,%s,'grade',%s,'reserved',%s,%s)",
                     (user_id, day, resource, current, current),
                 )
-            connection.commit()
+            self._commit_domain_mutation(
+                connection, cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
         except Exception:
             connection.rollback()
             raise
@@ -202,13 +268,25 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
-    def finish_grade_usage(self, *, user_id: str, intake_id: str, counted: bool, now: datetime | None = None) -> None:
+    def finish_grade_usage(
+        self,
+        *,
+        user_id: str,
+        intake_id: str,
+        counted: bool,
+        now: datetime | None = None,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> None:
         day = learning_day(now)
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
         connection = self._connect()
         cursor = connection.cursor()
         try:
             connection.begin()
+            self._require_batch_fence_tx(
+                cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             if counted:
                 cursor.execute(
                     "UPDATE daily_learning_usage SET status='counted',updated_at=%s WHERE user_id=%s AND usage_date=%s AND kind='grade' AND resource_id=%s AND status='reserved'",
@@ -219,7 +297,9 @@ class MySqlDomainStore:
                     "DELETE FROM daily_learning_usage WHERE user_id=%s AND usage_date=%s AND kind='grade' AND resource_id=%s AND status='reserved'",
                     (user_id, day, intake_id),
                 )
-            connection.commit()
+            self._commit_domain_mutation(
+                connection, cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
         except Exception:
             connection.rollback()
             raise
@@ -260,7 +340,15 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
-    def save_codex_thread(self, *, user_id: str, conversation_id: str, thread_id: str) -> str:
+    def save_codex_thread(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        thread_id: str,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> str:
         user = _required(user_id, "user_id", 32)
         conversation = _required(conversation_id, "conversation_id", 32)
         thread = _required(thread_id, "thread_id", 128)
@@ -268,12 +356,18 @@ class MySqlDomainStore:
         connection = self._connect()
         cursor = connection.cursor()
         try:
+            connection.begin()
+            self._require_batch_fence_tx(
+                cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             cursor.execute(
                 "INSERT INTO codex_conversations (user_id,conversation_id,thread_id,created_at,updated_at) "
                 "VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE thread_id=VALUES(thread_id),updated_at=VALUES(updated_at)",
                 (user, conversation, thread, now, now),
             )
-            connection.commit()
+            self._commit_domain_mutation(
+                connection, cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             return thread
         except Exception:
             connection.rollback()
@@ -490,11 +584,40 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
-    def link_attempt_question(self, *, user_id: str, attempt_id: str, question_id: str) -> Any:
+    def link_attempt_question(
+        self,
+        *,
+        user_id: str,
+        attempt_id: str,
+        question_id: str,
+        expected_reference_validation: dict[str, object] | None = None,
+        independent_answer: str | None = None,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> Any:
         connection = self._connect()
         cursor = connection.cursor()
         try:
             connection.begin()
+            self._require_batch_fence_tx(
+                cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
+            cursor.execute(
+                "SELECT question_text FROM attempts WHERE id=%s AND user_id=%s FOR UPDATE",
+                (attempt_id, user_id),
+            )
+            attempt_row = cursor.fetchone()
+            if not attempt_row:
+                raise LookupError("attempt not found")
+            if independent_answer is not None:
+                validation = self._require_reference_state_tx(
+                    cursor,
+                    question_text=str(attempt_row[0]),
+                    independent_answer=independent_answer,
+                    expected_validation=expected_reference_validation,
+                )
+                if validation is None or validation.get("status") != "consistent" or validation.get("question_id") != question_id:
+                    raise RuntimeError("reference_state_changed")
             cursor.execute(
                 "SELECT q.id FROM questions q JOIN question_sources s ON s.id=q.source_id "
                 "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
@@ -511,7 +634,9 @@ class MySqlDomainStore:
             if row[0] and str(row[0]) != question_id:
                 raise RuntimeError("question_link_conflict")
             cursor.execute("UPDATE attempts SET question_id=%s,updated_at=%s WHERE id=%s AND user_id=%s", (question_id, _utcnow(), attempt_id, user_id))
-            connection.commit()
+            self._commit_domain_mutation(
+                connection, cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             return self.get_attempt(user_id=user_id, attempt_id=attempt_id)
         except Exception:
             connection.rollback()
@@ -521,7 +646,13 @@ class MySqlDomainStore:
             connection.close()
 
     def create_intake(
-        self, *, user_id: str, file_id: str, idempotency_key: str
+        self,
+        *,
+        user_id: str,
+        file_id: str,
+        idempotency_key: str,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
     ) -> tuple[IntakeItem, Job]:
         user = _required(user_id, "user_id", 32)
         key = _required(idempotency_key, "idempotency_key")
@@ -531,6 +662,9 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             connection.begin()
+            self._require_batch_fence_tx(
+                cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             cursor.execute("SELECT content_sha256 FROM web_files WHERE id=%s AND user_id=%s AND status='ready' FOR UPDATE", (file_id, user))
             file_row = cursor.fetchone()
             if not file_row:
@@ -555,7 +689,9 @@ class MySqlDomainStore:
             job_row = cursor.fetchone()
             if not job_row:
                 raise RuntimeError("job did not persist")
-            connection.commit()
+            self._commit_domain_mutation(
+                connection, cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             return (
                 IntakeItem(stored_intake_id, user, file_id, int(intake_row[1]), str(intake_row[2]), str(intake_row[3]), str(intake_row[4])),
                 Job(str(job_row[0]), user, "extract", stored_intake_id, str(job_row[1]), self._json(job_row[2]), job_row[3]),
@@ -606,7 +742,15 @@ class MySqlDomainStore:
             connection.close()
 
     def save_extraction_candidates(
-        self, *, user_id: str, intake_id: str, items: list[dict[str, Any]], evidence: dict[str, Any], replace_existing: bool = False
+        self,
+        *,
+        user_id: str,
+        intake_id: str,
+        items: list[dict[str, Any]],
+        evidence: dict[str, Any],
+        replace_existing: bool = False,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
     ) -> list[IntakeItem]:
         values = normalize_extraction_items(items)
         connection = self._connect()
@@ -614,6 +758,9 @@ class MySqlDomainStore:
         now = _utcnow()
         try:
             connection.begin()
+            self._require_batch_fence_tx(
+                cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             cursor.execute(
                 "SELECT file_id,input_version,status FROM intake_items WHERE id=%s AND user_id=%s AND item_no=1 FOR UPDATE",
                 (intake_id, user_id),
@@ -654,7 +801,9 @@ class MySqlDomainStore:
                 "WHERE user_id=%s AND resource_type='intake' AND resource_id=%s AND job_type='extract'",
                 (json.dumps({"stage": "candidates_saved", "item_count": len(values)}), now, user_id, intake_id),
             )
-            connection.commit()
+            self._commit_domain_mutation(
+                connection, cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             return [
                 IntakeItem(item_id, user_id, file_id, input_version if item_no == 1 else 1, "waiting_confirmation", item["question_text"], item["answer_text"], item_no)
                 for item_id, item_no, item in zip(ids, range(1, len(values) + 1), values)
@@ -697,7 +846,14 @@ class MySqlDomainStore:
             connection.close()
 
     def confirm_intake(
-        self, *, user_id: str, intake_id: str, expected_version: int, idempotency_key: str
+        self,
+        *,
+        user_id: str,
+        intake_id: str,
+        expected_version: int,
+        idempotency_key: str,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
     ) -> tuple[str, Job]:
         key = _required(idempotency_key, "idempotency_key")
         attempt_id, job_id = uuid.uuid4().hex, uuid.uuid4().hex
@@ -706,6 +862,9 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             connection.begin()
+            self._require_batch_fence_tx(
+                cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             cursor.execute(
                 "SELECT input_version,status,question_text,answer_text FROM intake_items "
                 "WHERE id=%s AND user_id=%s FOR UPDATE",
@@ -737,7 +896,9 @@ class MySqlDomainStore:
             cursor.execute("SELECT id,status,checkpoint_json,last_error_code FROM web_jobs WHERE user_id=%s AND job_type='grade' AND idempotency_key=%s FOR UPDATE", (user_id, key))
             job_row = cursor.fetchone()
             cursor.execute("UPDATE intake_items SET status='confirmed',updated_at=%s WHERE id=%s AND user_id=%s", (now, intake_id, user_id))
-            connection.commit()
+            self._commit_domain_mutation(
+                connection, cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             return stored_attempt_id, Job(str(job_row[0]), user_id, "grade", stored_attempt_id, str(job_row[1]), self._json(job_row[2]), job_row[3])
         except Exception:
             connection.rollback()
@@ -756,6 +917,8 @@ class MySqlDomainStore:
         first_error: str | None,
         evidence: str | None,
         confidence: float | None = None,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
     ) -> GradeCandidate:
         if verdict not in {"correct", "partial", "incorrect", "unclear"}:
             raise ValueError("unsupported verdict")
@@ -766,12 +929,17 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             connection.begin()
+            self._require_batch_fence_tx(
+                cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             cursor.execute("SELECT input_version,status FROM attempts WHERE id=%s AND user_id=%s FOR UPDATE", (attempt_id, user_id))
             attempt = cursor.fetchone()
             if not attempt:
                 raise LookupError("attempt not found")
             if int(attempt[0]) != input_version:
                 raise RuntimeError("input_version_changed")
+            if str(attempt[1]) == "cancelled":
+                raise RuntimeError("account_deleted")
             cursor.execute(
                 "INSERT INTO grade_candidates (id,user_id,attempt_id,input_version,verdict,first_error,evidence_text,confidence,result_sha256,status,created_at) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'candidate',%s) ON DUPLICATE KEY UPDATE id=id",
@@ -781,7 +949,9 @@ class MySqlDomainStore:
             row = cursor.fetchone()
             cursor.execute("UPDATE attempts SET status='grade_ready',updated_at=%s WHERE id=%s AND user_id=%s", (now, attempt_id, user_id))
             cursor.execute("UPDATE web_jobs SET status='completed',result_json=%s,updated_at=%s WHERE user_id=%s AND job_type='grade' AND resource_id=%s", (json.dumps({"candidate_id": str(row[0])}), now, user_id, attempt_id))
-            connection.commit()
+            self._commit_domain_mutation(
+                connection, cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             return GradeCandidate(str(row[0]), attempt_id, int(row[1]), str(row[2]), row[3], row[4], str(row[5]))
         except Exception:
             connection.rollback()
@@ -791,15 +961,26 @@ class MySqlDomainStore:
             connection.close()
 
     def commit_grade(
-        self, *, user_id: str, candidate_id: str, expected_version: int
+        self,
+        *,
+        user_id: str,
+        candidate_id: str,
+        expected_version: int,
+        expected_reference_validation: dict[str, object] | None = None,
+        independent_answer: str | None = None,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
     ) -> ErrorEntry:
         now = _utcnow()
         connection = self._connect()
         cursor = connection.cursor()
         try:
             connection.begin()
+            self._require_batch_fence_tx(
+                cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             cursor.execute(
-                "SELECT c.attempt_id,c.input_version,c.verdict,c.first_error,c.status,a.question_text,a.answer_text,c.evidence_text,a.question_id "
+                "SELECT c.attempt_id,c.input_version,c.verdict,c.first_error,c.status,a.question_text,a.answer_text,c.evidence_text,a.question_id,a.status "
                 "FROM grade_candidates c JOIN attempts a ON a.id=c.attempt_id "
                 "WHERE c.id=%s AND c.user_id=%s AND a.user_id=%s FOR UPDATE",
                 (candidate_id, user_id, user_id),
@@ -811,7 +992,16 @@ class MySqlDomainStore:
                 raise RuntimeError("input_version_changed")
             if str(row[2]) not in {"partial", "incorrect"}:
                 raise RuntimeError("failed_final")
+            if str(row[9]) == "cancelled":
+                raise RuntimeError("account_deleted")
             validation = reference_validation_from_evidence(row[7])
+            if independent_answer is not None:
+                validation = self._require_reference_state_tx(
+                    cursor,
+                    question_text=str(row[5]),
+                    independent_answer=independent_answer,
+                    expected_validation=expected_reference_validation,
+                )
             if validation and validation.get("status") == "conflict" and not reference_conflict_resolved(row[7]):
                 raise RuntimeError("reference_conflict")
             attempt_id = str(row[0])
@@ -819,7 +1009,9 @@ class MySqlDomainStore:
             existing = cursor.fetchone()
             if existing:
                 self._ensure_review_tx(cursor, user_id, str(existing[0]), now)
-                connection.commit()
+                self._commit_domain_mutation(
+                    connection, cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+                )
                 cursor.execute("SELECT evidence_text FROM grade_candidates WHERE id=%s AND user_id=%s", (candidate_id, user_id))
                 evidence = (cursor.fetchone() or (None,))[0]
                 return ErrorEntry(str(existing[0]), user_id, attempt_id, str(existing[1]), str(existing[2]), existing[3], str(existing[4]), existing[5].replace(tzinfo=timezone.utc), evidence, str(existing[6]) if existing[6] else None)
@@ -833,7 +1025,9 @@ class MySqlDomainStore:
             cursor.execute("UPDATE attempts SET status='committed',updated_at=%s WHERE id=%s AND user_id=%s", (now, attempt_id, user_id))
             self._ensure_review_tx(cursor, user_id, error_id, now)
             cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'grade.committed','error',%s,%s,%s)", (user_id, error_id, json.dumps({"candidate_id": candidate_id, "question_id": row[8], "reference_status": validation.get("status") if validation else "not_found"}), now))
-            connection.commit()
+            self._commit_domain_mutation(
+                connection, cursor, batch_claim=batch_claim, batch_stage=batch_stage,
+            )
             return ErrorEntry(error_id, user_id, attempt_id, str(row[5]), str(row[6]), row[3], "open", now.replace(tzinfo=timezone.utc), row[7], str(row[8]) if row[8] else None)
         except Exception:
             connection.rollback()
@@ -841,6 +1035,44 @@ class MySqlDomainStore:
         finally:
             cursor.close()
             connection.close()
+
+    def _require_reference_state_tx(
+        self,
+        cursor: Cursor,
+        *,
+        question_text: str,
+        independent_answer: str,
+        expected_validation: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        anchor = question_anchor(question_text)
+        current: dict[str, object] | None = None
+        if anchor:
+            escaped = anchor.replace("=", "==").replace("%", "=%").replace("_", "=_")
+            cursor.execute(
+                "SELECT q.id,v.id,v.version_no,v.stem_text,v.answer_text,v.solution_text,s.title "
+                "FROM questions q JOIN question_sources s ON s.id=q.source_id "
+                "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
+                "WHERE q.status='verified' AND s.license_status IN ('open','user_authorized') "
+                "AND v.answer_text IS NOT NULL AND v.stem_text LIKE %s ESCAPE '=' "
+                "AND EXISTS (SELECT 1 FROM question_verifications x WHERE x.question_version_id=v.id AND x.verdict='verified') "
+                "ORDER BY q.id LIMIT 1000 FOR UPDATE",
+                (f"%{escaped}%",),
+            )
+            matches: list[VerifiedQuestionReference] = []
+            for item in cursor.fetchall():
+                score = question_match_score(question_text, str(item[3]))
+                if score >= 0.92:
+                    matches.append(VerifiedQuestionReference(
+                        question_id=str(item[0]), version_id=str(item[1]), version_no=int(item[2]),
+                        stem_text=str(item[3]), answer_text=str(item[4]), solution_text=item[5],
+                        source_title=str(item[6]), match_score=score,
+                    ))
+            if matches:
+                reference = sorted(matches, key=lambda value: (-value.match_score, value.question_id))[0]
+                current = cross_validate_reference(reference, independent_answer)
+        if current != expected_validation:
+            raise RuntimeError("reference_state_changed")
+        return current
 
     def get_grade_candidate(
         self, *, user_id: str, candidate_id: str
@@ -856,6 +1088,52 @@ class MySqlDomainStore:
             )
             row = cursor.fetchone()
             return GradeCandidate(candidate_id, str(row[0]), int(row[1]), str(row[2]), row[3], row[4], str(row[5])) if row else None
+        finally:
+            cursor.close()
+            connection.close()
+
+    def find_grade_candidate_for_attempt(
+        self,
+        *,
+        user_id: str,
+        attempt_id: str,
+        batch_id: str,
+        operation_key: str,
+        solve_sha256: str,
+    ) -> GradeCandidate | None:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT c.id,c.input_version,c.verdict,c.first_error,c.evidence_text,c.status "
+                "FROM grade_candidates c JOIN attempts a ON a.id=c.attempt_id AND a.user_id=c.user_id "
+                "WHERE c.user_id=%s AND c.attempt_id=%s ORDER BY c.created_at DESC,c.id DESC",
+                (user_id, attempt_id),
+            )
+            expected = (batch_id, operation_key, solve_sha256)
+            for row in cursor.fetchall():
+                if grade_operation_identity_from_evidence(row[4]) == expected:
+                    return GradeCandidate(str(row[0]), attempt_id, int(row[1]), str(row[2]), row[3], row[4], str(row[5]))
+            return None
+        finally:
+            cursor.close()
+            connection.close()
+
+    def get_error_by_attempt(self, *, user_id: str, attempt_id: str) -> ErrorEntry | None:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT e.id,e.question_text,e.answer_text,e.first_error,e.status,e.created_at,c.evidence_text,e.question_id "
+                "FROM error_notebook_entries e JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id "
+                "WHERE e.user_id=%s AND e.attempt_id=%s",
+                (user_id, attempt_id),
+            )
+            row = cursor.fetchone()
+            return ErrorEntry(
+                str(row[0]), user_id, attempt_id, str(row[1]), str(row[2]), row[3], str(row[4]),
+                row[5].replace(tzinfo=timezone.utc), row[6], str(row[7]) if row[7] else None,
+            ) if row else None
         finally:
             cursor.close()
             connection.close()
@@ -1420,6 +1698,9 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             connection.begin()
+            cursor.execute("SELECT id FROM web_users WHERE id=%s FOR UPDATE", (user_id,))
+            if not cursor.fetchone():
+                raise LookupError("user not found")
             cursor.execute(
                 "INSERT INTO account_deletions (user_id,requested_at,status,updated_at,last_error_code) VALUES (%s,%s,'pending',%s,NULL) "
                 "ON DUPLICATE KEY UPDATE updated_at=updated_at",
@@ -1452,6 +1733,7 @@ class MySqlDomainStore:
     def deactivate_user_data(self, *, user_id: str) -> None:
         """Idempotently make retained business rows inaccessible after the durable pending marker."""
         self.begin_user_deletion(user_id=user_id)
+        self.batch_repository.fail_user_batches(user_id=user_id)
         now = _utcnow()
         connection = self._connect()
         cursor = connection.cursor()

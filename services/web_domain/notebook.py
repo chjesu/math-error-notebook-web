@@ -20,6 +20,7 @@ from .learning import (
     ReviewTask,
     VerifiedQuestionReference,
     build_review_calendar,
+    cross_validate_reference,
     learning_day,
     learning_usage_payload,
     next_review,
@@ -28,7 +29,16 @@ from .learning import (
     reference_conflict_resolved,
     reference_validation_from_evidence,
 )
-from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job, normalize_extraction_items
+from .mysql_store import (
+    ErrorEntry,
+    FileRecord,
+    GradeCandidate,
+    IntakeItem,
+    Job,
+    grade_operation_identity_from_evidence,
+    normalize_extraction_items,
+)
+from .intake_batch import BatchClaim, InMemoryIntakeBatchRepository
 from .practice_pdf import build_practice_pdf
 
 
@@ -73,6 +83,25 @@ class InMemoryNotebookStore:
         self._review_keys: dict[tuple[str, str, int], str] = {}
         self._practice_inputs: dict[tuple[str, str, str], str] = {}
         self.learning_usage_events: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        self.batch_repository = InMemoryIntakeBatchRepository(
+            self.get_file,
+            admission_check=lambda user_id: user_id not in self.account_deletions,
+        )
+
+    def _run_batch_mutation(
+        self,
+        *,
+        batch_claim: BatchClaim | None,
+        batch_stage: str | None,
+        action: Any,
+    ) -> Any:
+        if batch_claim is None or batch_stage is None:
+            raise ValueError("incomplete batch fence")
+        return self.batch_repository.run_fenced_action(
+            batch_claim,
+            stage=batch_stage,
+            action=action,
+        )
 
     def learning_usage(self, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
         day = learning_day(now)
@@ -84,7 +113,21 @@ class InMemoryNotebookStore:
             sum(value["kind"] == "grade" and value["status"] == "reserved" for value in events),
         )
 
-    def reserve_grade_batch(self, *, user_id: str, intake_ids: list[str], now: datetime | None = None) -> None:
+    def reserve_grade_batch(
+        self,
+        *,
+        user_id: str,
+        intake_ids: list[str],
+        now: datetime | None = None,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> None:
+        if batch_claim is not None or batch_stage is not None:
+            return self._run_batch_mutation(
+                batch_claim=batch_claim,
+                batch_stage=batch_stage,
+                action=lambda: self.reserve_grade_batch(user_id=user_id, intake_ids=intake_ids, now=now),
+            )
         current = now or _now()
         day = learning_day(current)
         resources = list(dict.fromkeys(intake_ids))
@@ -101,7 +144,24 @@ class InMemoryNotebookStore:
         for resource in new_resources:
             self.learning_usage_events[(user_id, day, "grade", resource)] = {"kind": "grade", "status": "reserved", "created_at": current}
 
-    def finish_grade_usage(self, *, user_id: str, intake_id: str, counted: bool, now: datetime | None = None) -> None:
+    def finish_grade_usage(
+        self,
+        *,
+        user_id: str,
+        intake_id: str,
+        counted: bool,
+        now: datetime | None = None,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> None:
+        if batch_claim is not None or batch_stage is not None:
+            return self._run_batch_mutation(
+                batch_claim=batch_claim,
+                batch_stage=batch_stage,
+                action=lambda: self.finish_grade_usage(
+                    user_id=user_id, intake_id=intake_id, counted=counted, now=now,
+                ),
+            )
         day = learning_day(now)
         key = (user_id, day, "grade", intake_id)
         event = self.learning_usage_events.get(key)
@@ -126,7 +186,23 @@ class InMemoryNotebookStore:
                     break
         return recent
 
-    def save_codex_thread(self, *, user_id: str, conversation_id: str, thread_id: str) -> str:
+    def save_codex_thread(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        thread_id: str,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> str:
+        if batch_claim is not None or batch_stage is not None:
+            return self._run_batch_mutation(
+                batch_claim=batch_claim,
+                batch_stage=batch_stage,
+                action=lambda: self.save_codex_thread(
+                    user_id=user_id, conversation_id=conversation_id, thread_id=thread_id,
+                ),
+            )
         if not user_id or not conversation_id or not thread_id:
             raise ValueError("Codex thread mapping requires all identifiers")
         self.codex_threads.pop((user_id, conversation_id), None)
@@ -212,7 +288,23 @@ class InMemoryNotebookStore:
         value = self.attempts.get(attempt_id)
         return value if value and value.user_id == user_id else None
 
-    def create_intake(self, *, user_id: str, file_id: str, idempotency_key: str) -> tuple[IntakeItem, Job]:
+    def create_intake(
+        self,
+        *,
+        user_id: str,
+        file_id: str,
+        idempotency_key: str,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> tuple[IntakeItem, Job]:
+        if batch_claim is not None or batch_stage is not None:
+            return self._run_batch_mutation(
+                batch_claim=batch_claim,
+                batch_stage=batch_stage,
+                action=lambda: self.create_intake(
+                    user_id=user_id, file_id=file_id, idempotency_key=idempotency_key,
+                ),
+            )
         if not self.get_file(user_id=user_id, file_id=file_id):
             raise LookupError("file not found")
         job_key = (user_id, "extract", idempotency_key)
@@ -243,8 +335,28 @@ class InMemoryNotebookStore:
         return updated
 
     def save_extraction_candidates(
-        self, *, user_id: str, intake_id: str, items: list[dict[str, Any]], evidence: dict[str, Any], replace_existing: bool = False
+        self,
+        *,
+        user_id: str,
+        intake_id: str,
+        items: list[dict[str, Any]],
+        evidence: dict[str, Any],
+        replace_existing: bool = False,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
     ) -> list[IntakeItem]:
+        if batch_claim is not None or batch_stage is not None:
+            return self._run_batch_mutation(
+                batch_claim=batch_claim,
+                batch_stage=batch_stage,
+                action=lambda: self.save_extraction_candidates(
+                    user_id=user_id,
+                    intake_id=intake_id,
+                    items=items,
+                    evidence=evidence,
+                    replace_existing=replace_existing,
+                ),
+            )
         del evidence
         values = normalize_extraction_items(items)
         current = self._intake(user_id, intake_id)
@@ -280,7 +392,27 @@ class InMemoryNotebookStore:
         self.intakes[intake_id] = updated
         return updated
 
-    def confirm_intake(self, *, user_id: str, intake_id: str, expected_version: int, idempotency_key: str) -> tuple[str, Job]:
+    def confirm_intake(
+        self,
+        *,
+        user_id: str,
+        intake_id: str,
+        expected_version: int,
+        idempotency_key: str,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> tuple[str, Job]:
+        if batch_claim is not None or batch_stage is not None:
+            return self._run_batch_mutation(
+                batch_claim=batch_claim,
+                batch_stage=batch_stage,
+                action=lambda: self.confirm_intake(
+                    user_id=user_id,
+                    intake_id=intake_id,
+                    expected_version=expected_version,
+                    idempotency_key=idempotency_key,
+                ),
+            )
         current = self._intake(user_id, intake_id)
         if current.input_version != expected_version:
             raise RuntimeError("input_version_changed")
@@ -300,13 +432,41 @@ class InMemoryNotebookStore:
         self.intakes[intake_id] = IntakeItem(current.intake_id, user_id, current.file_id, current.input_version, "confirmed", current.question_text, current.answer_text, current.item_no)
         return attempt.attempt_id, job
 
-    def record_grade_candidate(self, *, user_id: str, attempt_id: str, input_version: int, verdict: str, first_error: str | None, evidence: str | None, confidence: float | None = None) -> GradeCandidate:
+    def record_grade_candidate(
+        self,
+        *,
+        user_id: str,
+        attempt_id: str,
+        input_version: int,
+        verdict: str,
+        first_error: str | None,
+        evidence: str | None,
+        confidence: float | None = None,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> GradeCandidate:
+        if batch_claim is not None or batch_stage is not None:
+            return self._run_batch_mutation(
+                batch_claim=batch_claim,
+                batch_stage=batch_stage,
+                action=lambda: self.record_grade_candidate(
+                    user_id=user_id,
+                    attempt_id=attempt_id,
+                    input_version=input_version,
+                    verdict=verdict,
+                    first_error=first_error,
+                    evidence=evidence,
+                    confidence=confidence,
+                ),
+            )
         del confidence
         attempt = self.attempts.get(attempt_id)
         if not attempt or attempt.user_id != user_id:
             raise LookupError("attempt not found")
         if attempt.input_version != input_version:
             raise RuntimeError("input_version_changed")
+        if attempt.status == "cancelled":
+            raise RuntimeError("account_deleted")
         if verdict not in {"correct", "partial", "incorrect", "unclear"}:
             raise ValueError("unsupported verdict")
         existing = next(
@@ -336,6 +496,34 @@ class InMemoryNotebookStore:
         attempt = self.attempts.get(candidate.attempt_id)
         return candidate if attempt and attempt.user_id == user_id else None
 
+    def find_grade_candidate_for_attempt(
+        self,
+        *,
+        user_id: str,
+        attempt_id: str,
+        batch_id: str,
+        operation_key: str,
+        solve_sha256: str,
+    ) -> GradeCandidate | None:
+        if self.get_attempt(user_id=user_id, attempt_id=attempt_id) is None:
+            return None
+        expected = (batch_id, operation_key, solve_sha256)
+        return next(
+            (
+                candidate
+                for candidate in reversed(tuple(self.candidates.values()))
+                if candidate.attempt_id == attempt_id
+                and grade_operation_identity_from_evidence(candidate.evidence) == expected
+            ),
+            None,
+        )
+
+    def get_error_by_attempt(self, *, user_id: str, attempt_id: str) -> ErrorEntry | None:
+        return next(
+            (entry for entry in self.errors.values() if entry.user_id == user_id and entry.attempt_id == attempt_id),
+            None,
+        )
+
     def find_reference_conflict_candidate(self, *, user_id: str, question_text: str) -> GradeCandidate | None:
         committed_attempts = {item.attempt_id for item in self.errors.values() if item.user_id == user_id}
         for candidate in reversed(tuple(self.candidates.values())):
@@ -354,16 +542,46 @@ class InMemoryNotebookStore:
                 return candidate
         return None
 
-    def commit_grade(self, *, user_id: str, candidate_id: str, expected_version: int) -> ErrorEntry:
+    def commit_grade(
+        self,
+        *,
+        user_id: str,
+        candidate_id: str,
+        expected_version: int,
+        expected_reference_validation: dict[str, object] | None = None,
+        independent_answer: str | None = None,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> ErrorEntry:
+        if batch_claim is not None or batch_stage is not None:
+            return self._run_batch_mutation(
+                batch_claim=batch_claim,
+                batch_stage=batch_stage,
+                action=lambda: self.commit_grade(
+                    user_id=user_id,
+                    candidate_id=candidate_id,
+                    expected_version=expected_version,
+                    expected_reference_validation=expected_reference_validation,
+                    independent_answer=independent_answer,
+                ),
+            )
         candidate = self.get_grade_candidate(user_id=user_id, candidate_id=candidate_id)
         if not candidate:
             raise LookupError("grade candidate not found")
         attempt = self.attempts[candidate.attempt_id]
+        if attempt.status == "cancelled":
+            raise RuntimeError("account_deleted")
         if candidate.input_version != expected_version:
             raise RuntimeError("input_version_changed")
         if candidate.verdict not in {"partial", "incorrect"}:
             raise RuntimeError("failed_final")
         validation = reference_validation_from_evidence(candidate.evidence)
+        if independent_answer is not None:
+            validation = self._require_reference_state(
+                question_text=attempt.question_text,
+                independent_answer=independent_answer,
+                expected_validation=expected_reference_validation,
+            )
         if validation and validation.get("status") == "conflict" and not reference_conflict_resolved(candidate.evidence):
             raise RuntimeError("reference_conflict")
         existing = next((item for item in self.errors.values() if item.user_id == user_id and item.attempt_id == attempt.attempt_id), None)
@@ -400,10 +618,40 @@ class InMemoryNotebookStore:
                 ))
         return sorted(matches, key=lambda value: (-value.match_score, value.question_id))[0] if matches else None
 
-    def link_attempt_question(self, *, user_id: str, attempt_id: str, question_id: str) -> Attempt:
+    def link_attempt_question(
+        self,
+        *,
+        user_id: str,
+        attempt_id: str,
+        question_id: str,
+        expected_reference_validation: dict[str, object] | None = None,
+        independent_answer: str | None = None,
+        batch_claim: BatchClaim | None = None,
+        batch_stage: str | None = None,
+    ) -> Attempt:
+        if batch_claim is not None or batch_stage is not None:
+            return self._run_batch_mutation(
+                batch_claim=batch_claim,
+                batch_stage=batch_stage,
+                action=lambda: self.link_attempt_question(
+                    user_id=user_id,
+                    attempt_id=attempt_id,
+                    question_id=question_id,
+                    expected_reference_validation=expected_reference_validation,
+                    independent_answer=independent_answer,
+                ),
+            )
         attempt = self.get_attempt(user_id=user_id, attempt_id=attempt_id)
         if not attempt:
             raise LookupError("attempt not found")
+        if independent_answer is not None:
+            validation = self._require_reference_state(
+                question_text=attempt.question_text,
+                independent_answer=independent_answer,
+                expected_validation=expected_reference_validation,
+            )
+            if validation is None or validation.get("status") != "consistent" or validation.get("question_id") != question_id:
+                raise RuntimeError("reference_state_changed")
         if self.question_rules.get(question_id) not in {("verified", "open", True), ("verified", "user_authorized", True)}:
             raise LookupError("verified question not found")
         if attempt.question_id not in {None, question_id}:
@@ -414,6 +662,19 @@ class InMemoryNotebookStore:
         )
         self.attempts[attempt_id] = linked
         return linked
+
+    def _require_reference_state(
+        self,
+        *,
+        question_text: str,
+        independent_answer: str,
+        expected_validation: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        reference = self.find_verified_question(question_text=question_text)
+        current = cross_validate_reference(reference, independent_answer) if reference is not None else None
+        if current != expected_validation:
+            raise RuntimeError("reference_state_changed")
+        return current
 
     def assign_recommendations(self, *, user_id: str, error_id: str, limit: int = 2) -> tuple[list[Recommendation], bool]:
         error = self.get_error(user_id=user_id, error_id=error_id)
@@ -679,6 +940,7 @@ class InMemoryNotebookStore:
         return {"schema_version": 2, "files": files, "intakes": intakes, "attempts": attempts, "grade_candidates": candidates, "errors": errors, "recommendations": recommendations, "learning_usage": learning_usage, "review_tasks": reviews, "review_attempts": review_attempts, "jobs": jobs}
 
     def deactivate_user_data(self, *, user_id: str) -> None:
+        self.batch_repository.fail_user_batches(user_id=user_id)
         for file_id, item in list(self.files.items()):
             if item.user_id == user_id and item.status != "deleted":
                 self.files[file_id] = FileRecord(item.file_id, item.user_id, item.purpose, item.object_key, item.content_sha256, item.media_type, item.byte_size, "deleted", item.original_name)
@@ -734,12 +996,18 @@ class InMemoryNotebookStore:
         return {"job_id": item.job_id, "job_type": item.job_type, "resource_id": item.resource_id, "status": item.status}
 
     def begin_user_deletion(self, *, user_id: str) -> dict[str, Any]:
-        value = self.account_deletions.get(user_id)
-        if value:
+        def persist_marker() -> dict[str, Any]:
+            value = self.account_deletions.get(user_id)
+            if value:
+                return dict(value)
+            value = {"status": "pending", "updated_at": _now(), "last_error_code": None}
+            self.account_deletions[user_id] = value
             return dict(value)
-        value = {"status": "pending", "updated_at": _now(), "last_error_code": None}
-        self.account_deletions[user_id] = value
-        return dict(value)
+
+        return self.batch_repository.begin_user_deletion(
+            user_id=user_id,
+            marker_action=persist_marker,
+        )
 
     def deletion_status(self, *, user_id: str) -> dict[str, Any] | None:
         value = self.account_deletions.get(user_id)

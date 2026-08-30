@@ -54,6 +54,7 @@ MIGRATIONS = (
     ROOT / "services" / "web_domain" / "migrations" / "0009_file_upload_idempotency.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0010_codex_harness.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0011_daily_learning_usage.sql",
+    ROOT / "services" / "web_domain" / "migrations" / "0012_async_intake_batches.sql",
 )
 HARNESS_WEB_HOME = ROOT / "data" / "runtime" / "deepseek-harness-web-home"
 HARNESS_PRODUCT_WORKSPACE = HARNESS_WEB_HOME / "math-notebook-workspace"
@@ -825,8 +826,13 @@ def _clear_test_data() -> None:
     connection = _connection_factory()()
     cursor = connection.cursor()
     try:
+        cursor.execute("UPDATE intake_worker_slots SET batch_id=NULL,lease_owner=NULL,lease_expires_at=NULL")
         for table in (
             "account_deletions",
+            "intake_batch_events",
+            "intake_batch_operations",
+            "intake_batch_files",
+            "intake_batches",
             "file_upload_idempotency",
             "daily_learning_usage",
             "review_attempts",
@@ -1156,6 +1162,11 @@ def _clear_domain_smoke_data(user_id: str) -> None:
     cursor = connection.cursor()
     try:
         cursor.execute("DELETE FROM account_deletions WHERE user_id=%s", (user_id,))
+        cursor.execute("UPDATE intake_worker_slots SET batch_id=NULL,lease_owner=NULL,lease_expires_at=NULL WHERE batch_id IN (SELECT id FROM intake_batches WHERE user_id=%s)", (user_id,))
+        cursor.execute("DELETE FROM intake_batch_events WHERE batch_id IN (SELECT id FROM intake_batches WHERE user_id=%s)", (user_id,))
+        cursor.execute("DELETE FROM intake_batch_operations WHERE batch_id IN (SELECT id FROM intake_batches WHERE user_id=%s)", (user_id,))
+        cursor.execute("DELETE FROM intake_batch_files WHERE batch_id IN (SELECT id FROM intake_batches WHERE user_id=%s)", (user_id,))
+        cursor.execute("DELETE FROM intake_batches WHERE user_id=%s", (user_id,))
         for table in ("file_upload_idempotency", "daily_learning_usage", "review_attempts", "recommendations", "review_tasks", "domain_audit_events", "error_notebook_entries", "grade_candidates", "attempts", "web_jobs", "intake_items", "web_files"):
             cursor.execute(f"DELETE FROM `{table}` WHERE user_id=%s", (user_id,))
         cursor.execute("DELETE FROM question_verifications WHERE id=%s AND question_version_id=%s", (verification_id, version_id))
@@ -1701,6 +1712,7 @@ def serve(
     else:
         model_runner = CodexNotebookModel(RUNTIME / "model-candidates") if enable_codex_model else None
     harness_web = None
+    app = None
     try:
         harness_upstream = None
         if harness_internal_token:
@@ -1719,8 +1731,11 @@ def serve(
             harness_upstream=harness_upstream,
         )
         app.resume_pending_deletions()
+        app.resume_pending_batches()
         uvicorn.run(LocalOtpDisclosureApp(app, sender), host=host, port=port, access_log=False)
     finally:
+        if app is not None:
+            app.stop_pending_batches()
         _stop_harness_web(harness_web)
 
 
