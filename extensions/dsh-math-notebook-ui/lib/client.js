@@ -163,6 +163,14 @@ window.__ModuleLoader__.load({
           [data-lzlm-selection-actions] button:focus-visible {
             background: var(--dsw-alias-interactive-bg-hover);
           }
+          [data-variant="think"] [class*="_leading"] {
+            width: 16px;
+            height: 16px;
+            background: url("${productOrigin}/assets/branding/logo-symbol-color-64-v1.png") center / 16px 16px no-repeat;
+          }
+          [data-variant="think"] [class*="_leading"] > svg {
+            opacity: 0;
+          }
         `;
         document.head.appendChild(style);
         return () => style.remove();
