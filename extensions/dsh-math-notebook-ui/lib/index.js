@@ -215,7 +215,7 @@ function processAttachmentsTool(ctx) {
         const payload = await response.json();
         if (!response.ok || !Array.isArray(payload.results)) {
           const code = payload.error?.code;
-          if (code === "daily_grade_limit") throw new Error("今天已完成 20 道判题，请先复习和订正；新图片可明日继续处理。");
+          if (code === "daily_grade_limit") throw new Error("今天已完成 40 道判题，请先复习和订正；新图片可明日继续处理。");
           throw new Error(`Notebook processing failed (${response.status})`);
         }
         usage = payload.usage || usage;

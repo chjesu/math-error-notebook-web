@@ -33,7 +33,7 @@ class LearningLoopTests(unittest.TestCase):
 
     def test_daily_grade_quota_counts_unique_successes_and_keeps_a_started_batch(self) -> None:
         now = datetime(2026, 8, 29, 4, tzinfo=timezone.utc)
-        first = [f"{index:032x}" for index in range(19)]
+        first = [f"{index:032x}" for index in range(39)]
         self.store.reserve_grade_batch(user_id=self.user_id, intake_ids=first, now=now)
         for intake_id in first:
             self.store.finish_grade_usage(user_id=self.user_id, intake_id=intake_id, counted=True, now=now)
@@ -42,7 +42,7 @@ class LearningLoopTests(unittest.TestCase):
         for intake_id in final_batch:
             self.store.finish_grade_usage(user_id=self.user_id, intake_id=intake_id, counted=True, now=now)
         usage = self.store.learning_usage(user_id=self.user_id, now=now)
-        self.assertEqual((usage["grade"]["count"], usage["grade"]["target"], usage["grade"]["limit"]), (21, 12, 20))
+        self.assertEqual((usage["grade"]["count"], usage["grade"]["target"], usage["grade"]["limit"]), (41, 24, 40))
         self.store.reserve_grade_batch(user_id=self.user_id, intake_ids=[first[0]], now=now)
         with self.assertRaisesRegex(RuntimeError, "daily_grade_limit"):
             self.store.reserve_grade_batch(user_id=self.user_id, intake_ids=["d" * 32], now=now)

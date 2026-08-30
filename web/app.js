@@ -51,7 +51,7 @@ function authError(error) {
     model_network_error: "智能处理网络连接失败，系统已自动重试；请稍后再次发送。",
     model_rate_limited: "智能处理请求较多，请稍后重试。",
     model_authentication_error: "智能处理登录状态失效，请重新启动本地服务。",
-    daily_grade_limit: "今天已完成 20 道判题，请先复习和订正；新图片可明日继续处理。",
+    daily_grade_limit: "今天已完成 40 道判题，请先复习和订正；新图片可明日继续处理。",
     daily_recommendation_limit: "今天已生成 24 道推荐题，请先完成已有练习。",
     network_error: "网络异常，请检查网络后重试。"
   })[error.message] || "操作失败，请稍后重试。";
