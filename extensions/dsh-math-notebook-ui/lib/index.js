@@ -319,7 +319,7 @@ function adjudicateReferenceConflictsTool() {
   if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
   return {
     name: "adjudicate_error_notebook_reference_conflicts",
-    description: "Required once after process_error_notebook_attachments or recheck_error_notebook_reference_conflict returns one or more reference_review objects. For each frozen candidate, compare the independent answer with the verified reference answer and solution. Use consistent only when they are mathematically equivalent, conflict for a substantive difference, and uncertain when the evidence cannot decide. Submit every returned conflict in one call.",
+    description: "Required once after process_error_notebook_attachments or recheck_error_notebook_reference_conflict returns one or more reference_review objects. For each frozen candidate, compare the independent answer with the verified reference answer and solution. Use consistent only when they are mathematically equivalent. Use conflict for a substantive difference; in that case the verified current reference is authoritative, so regrade the student's answer against it and submit authoritative_grade. Use uncertain only when the evidence cannot decide. Submit every returned conflict in one call.",
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
       properties: {
@@ -331,7 +331,19 @@ function adjudicateReferenceConflictsTool() {
             properties: {
               candidate_id: {type: "string"}, input_version: {type: "integer"},
               status: {type: "string", enum: ["consistent", "conflict", "uncertain"]},
-              rationale: {type: "string", minLength: 20, maxLength: 4000}
+              rationale: {type: "string", minLength: 20, maxLength: 4000},
+              authoritative_grade: {
+                type: "object", additionalProperties: false,
+                required: ["verdict", "first_error", "cause_code", "cause_evidence", "knowledge_points", "prevention_cue", "confidence"],
+                properties: {
+                  verdict: {type: "string", enum: ["correct", "partial", "incorrect", "unclear"]},
+                  first_error: {type: "string"},
+                  cause_code: {type: "string", enum: ["", "knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear"]},
+                  cause_evidence: {type: "string"},
+                  knowledge_points: {type: "array", items: {type: "string"}},
+                  prevention_cue: {type: "string"}, confidence: {type: "number"}
+                }
+              }
             }
           }
         }

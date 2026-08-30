@@ -1277,7 +1277,11 @@ class NotebookAsgiApp:
                 raise ValueError("invalid reference adjudication items")
             results = []
             for item in items:
-                if not isinstance(item, dict) or set(item) != {"candidate_id", "input_version", "status", "rationale"}:
+                if (
+                    not isinstance(item, dict)
+                    or not {"candidate_id", "input_version", "status", "rationale"} <= set(item)
+                    or set(item) - {"candidate_id", "input_version", "status", "rationale", "authoritative_grade"}
+                ):
                     raise ValueError("invalid reference adjudication item")
                 candidate_id = item["candidate_id"]
                 input_version = item["input_version"]
@@ -1307,18 +1311,28 @@ class NotebookAsgiApp:
                 validation = diagnosis.get("cross_validation")
                 if not isinstance(validation, dict) or validation.get("status") != "conflict":
                     raise RuntimeError("reference_conflict")
-                if status != "consistent":
+                authoritative_grade = item.get("authoritative_grade")
+                if status == "uncertain":
+                    if authoritative_grade is not None:
+                        raise ValueError("uncertain adjudication cannot replace grade")
                     results.append({
                         "candidate_id": candidate_id,
                         "input_version": input_version,
                         "status": "needs_review",
-                        "receipt_message": (
-                            "错题本记录检查：第二阶段复核确认独立解答与题库参考答案存在实质冲突，尚未计入错题本。"
-                            if status == "conflict"
-                            else "错题本记录检查：第二阶段复核仍无法确认两份答案等价，尚未计入错题本。"
-                        ),
+                        "receipt_message": "错题本记录检查：第二阶段复核仍无法确认两份答案是否一致，尚未计入错题本。",
                     })
                     continue
+                if status == "consistent" and authoritative_grade is not None:
+                    raise ValueError("consistent adjudication cannot replace grade")
+                grade_keys = {
+                    "verdict", "first_error", "cause_code", "cause_evidence",
+                    "knowledge_points", "prevention_cue", "confidence",
+                }
+                if status == "conflict" and (
+                    not isinstance(authoritative_grade, dict)
+                    or set(authoritative_grade) != grade_keys
+                ):
+                    raise ValueError("authoritative grade is required for a reference conflict")
                 attempt = await self._sync(
                     self.notebook.store.get_attempt,
                     user_id=user_id,
@@ -1338,21 +1352,50 @@ class NotebookAsgiApp:
                     or fresh_validation.get("independent_answer_sha256") != validation.get("independent_answer_sha256")
                 ):
                     raise RuntimeError("reference_conflict")
-                diagnosis["reference_adjudication"] = {
+                adjudication_status = "consistent"
+                revised_verdict = candidate.verdict
+                revised_first_error = candidate.first_error
+                revised_evidence = diagnosis
+                revised_confidence = None
+                if status == "conflict":
+                    assert isinstance(authoritative_grade, dict)
+                    revised_confidence = authoritative_grade["confidence"]
+                    if (
+                        not isinstance(revised_confidence, (int, float))
+                        or isinstance(revised_confidence, bool)
+                        or not 0 <= float(revised_confidence) <= 1
+                    ):
+                        raise ValueError("invalid authoritative confidence")
+                    revised_payload = dict(authoritative_grade)
+                    revised_payload["correct_solution"] = reference.solution_text or reference.answer_text
+                    revised_payload["final_answer"] = reference.answer_text
+                    revised_verdict, revised_first_error, encoded = self._grade_values(
+                        revised_payload,
+                        evidence_key="cause_evidence",
+                        cross_validation=validation,
+                    )
+                    revised_evidence = self._diagnosis(encoded)
+                    if diagnosis.get("practice_review"):
+                        revised_evidence["practice_review"] = diagnosis["practice_review"]
+                    adjudication_status = "reference_preferred"
+                revised_evidence["reference_adjudication"] = {
                     "schema": "question-bank-reference-adjudication/v1",
-                    "status": "consistent",
+                    "status": adjudication_status,
                     "rationale": rationale.strip(),
                     "reference_answer_sha256": validation["reference_answer_sha256"],
                     "independent_answer_sha256": validation["independent_answer_sha256"],
+                    "independent_verdict": candidate.verdict,
+                    "independent_final_answer": str(diagnosis.get("final_answer") or ""),
                 }
                 revised = await self._sync(
                     self.notebook.store.record_grade_candidate,
                     user_id=user_id,
                     attempt_id=candidate.attempt_id,
                     input_version=candidate.input_version,
-                    verdict=candidate.verdict,
-                    first_error=candidate.first_error,
-                    evidence=json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":")),
+                    verdict=revised_verdict,
+                    first_error=revised_first_error,
+                    evidence=json.dumps(revised_evidence, ensure_ascii=False, separators=(",", ":")),
+                    confidence=float(revised_confidence) if revised_confidence is not None else None,
                 )
                 await self._sync(
                     self.notebook.store.link_attempt_question,
@@ -1533,17 +1576,33 @@ class NotebookAsgiApp:
 
     async def _commit_candidate_receipt(self, user_id: str, candidate: GradeCandidate) -> dict[str, Any]:
         receipt = self._grade_receipt(candidate)
+        adjudication = reference_adjudication_from_evidence(candidate.evidence)
+        reference_preferred = bool(adjudication and adjudication.get("status") == "reference_preferred")
+        reference_prefix = (
+            f"题库第 {receipt['reference_version_no']} 版为已验证当前版本；"
+            "第二阶段复核确认独立推导与题库不一致，已按题库答案与解析重新判题；"
+            if receipt["reference_status"] == "consistent" and reference_preferred
+            else ""
+        )
+        if receipt["reference_status"] == "consistent" and reference_preferred:
+            receipt["message"] = reference_prefix + receipt["message"]
         if self._diagnosis(candidate.evidence).get("practice_review"):
             if receipt["reference_status"] == "conflict":
                 receipt["message"] = "复习判题与题库参考答案正在等待语义复核，尚未推进复习阶段，未重复入本。"
                 return receipt
             try:
-                return receipt | await self._sync(self.notebook.commit_practice_review, user_id=user_id, candidate=candidate)
+                result = receipt | await self._sync(self.notebook.commit_practice_review, user_id=user_id, candidate=candidate)
+                if reference_preferred:
+                    result["message"] = reference_prefix + result["message"]
+                return result
             except Exception:
                 # The frozen grade already exists. Report a retryable receipt,
                 # never claim success or ask the student to upload it again.
-                return receipt | {"status": "review_retryable", "review_status": "retryable",
+                result = receipt | {"status": "review_retryable", "review_status": "retryable",
                     "message": "复习判题结果已保留，但复习记录暂未写入。可直接在会话重试确认，无需重新上传图片。"}
+                if reference_preferred:
+                    result["message"] = reference_prefix + result["message"]
+                return result
         if candidate.verdict not in {"partial", "incorrect"} or receipt["status"] != "pending":
             return receipt
         entry = await self._sync(
@@ -1563,8 +1622,9 @@ class NotebookAsgiApp:
             if already_saved
             else f"错题本记录检查：已计入错题本，已保存 {receipt['knowledge_point_count']} 个知识点，并已安排首次复习。"
         )
-        if receipt["reference_status"] == "consistent":
-            adjudication = reference_adjudication_from_evidence(candidate.evidence)
+        if receipt["reference_status"] == "consistent" and reference_preferred:
+            receipt["message"] = reference_prefix + receipt["message"]
+        elif receipt["reference_status"] == "consistent":
             prefix = (
                 f"题库第 {receipt['reference_version_no']} 版答案与解析经第二阶段语义复核一致；"
                 if adjudication and adjudication.get("status") == "consistent"

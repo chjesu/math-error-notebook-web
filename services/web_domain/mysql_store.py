@@ -981,10 +981,13 @@ class MySqlDomainStore:
                 "WHERE c.user_id=%s AND c.status='candidate' AND e.id IS NULL ORDER BY c.created_at DESC LIMIT 50",
                 (user_id,),
             )
-            for row in cursor.fetchall():
+            rows = cursor.fetchall()
+            resolved_attempts = {str(row[1]) for row in rows if reference_conflict_resolved(row[5])}
+            for row in rows:
                 validation = reference_validation_from_evidence(row[5])
                 if (
-                    validation is not None
+                    str(row[1]) not in resolved_attempts
+                    and validation is not None
                     and validation.get("status") == "conflict"
                     and not reference_conflict_resolved(row[5])
                     and (str(row[7]) == question_text or question_match_score(str(row[7]), question_text) >= 0.92)

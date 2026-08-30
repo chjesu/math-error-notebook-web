@@ -219,7 +219,7 @@ def reference_conflict_resolved(evidence: str | None) -> bool:
         validation
         and validation.get("status") == "conflict"
         and adjudication
-        and adjudication.get("status") == "consistent"
+        and adjudication.get("status") in {"consistent", "reference_preferred"}
         and adjudication.get("reference_answer_sha256") == validation.get("reference_answer_sha256")
         and adjudication.get("independent_answer_sha256") == validation.get("independent_answer_sha256")
     )

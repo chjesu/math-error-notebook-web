@@ -583,6 +583,77 @@ class NotebookE2ETests(unittest.TestCase):
         evidence = json.loads(next(iter(self.domain_store.errors.values())).evidence)
         self.assertEqual(evidence["reference_adjudication"]["status"], "consistent")
 
+    def test_verified_reference_overrides_conflicting_independent_grade(self) -> None:
+        cookie = self.login("13500135016")
+        harness_origin = "http://example.test:3080"
+        self.call(
+            "/v1/harness/sessions/bind", method="POST",
+            payload={"session_id": "session-reference-preferred"}, cookie=cookie, origin=harness_origin,
+        )
+        self.domain_store.add_question(Question(
+            "9" * 32,
+            "若 x+1=2，求 x。",
+            "x=1",
+            7,
+            1.0,
+            "公开验证题库",
+            solution_text="等式两边同时减去 1，得到 x=1。",
+            version_id="8" * 32,
+            version_no=3,
+        ))
+        content = self.png_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        processed = self.call(
+            "/v1/internal/harness/intakes/process", method="POST",
+            payload={
+                "session_id": "session-reference-preferred",
+                "attachment": {
+                    "attachment_id": f"sha256:{digest}", "name": "reference-preferred.png",
+                    "media_type": "image/png", "data": base64.b64encode(content).decode("ascii"),
+                },
+                "items": [{
+                    "item_no": 1, "question_text": "若 x+1=2，求 x。", "answer_text": "x=1",
+                    "verdict": "incorrect", "first_error": "学生答案与独立推导不一致",
+                    "cause_code": "calculation", "cause_evidence": "独立推导错误地得到 x=2",
+                    "knowledge_points": ["一元一次方程"], "correct_solution": "错误地移项得到 x=2。",
+                    "final_answer": "x=2", "prevention_cue": "代回检验", "confidence": 0.91,
+                }],
+            },
+            origin=None, client=("127.0.0.1", 3080),
+            extra_headers={"authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual(processed[0], 200)
+        result = processed[2]["results"][0]
+        self.assertEqual(result["receipt_status"], "needs_review")
+
+        adjudicated = self.call(
+            "/v1/internal/harness/reference-conflicts/adjudicate", method="POST",
+            payload={"session_id": "session-reference-preferred", "items": [{
+                "candidate_id": result["candidate_id"], "input_version": result["input_version"],
+                "status": "conflict",
+                "rationale": "独立推导得到 x=2，但题库当前验证答案和代回检验均表明 x=1，应以题库解析为准。",
+                "authoritative_grade": {
+                    "verdict": "correct", "first_error": "", "cause_code": "", "cause_evidence": "",
+                    "knowledge_points": ["一元一次方程"], "prevention_cue": "", "confidence": 0.99,
+                },
+            }]},
+            origin=None, client=("127.0.0.1", 3080),
+            extra_headers={"authorization": "Bearer test-internal-token"},
+        )
+        self.assertEqual((adjudicated[0], adjudicated[2]["results"][0]["status"]), (200, "not_saved_correct"))
+        self.assertIn("已按题库答案与解析重新判题", adjudicated[2]["results"][0]["receipt_message"])
+        self.assertEqual(len(self.domain_store.errors), 0)
+        revised = list(self.domain_store.candidates.values())[-1]
+        diagnosis = json.loads(revised.evidence or "{}")
+        self.assertEqual(revised.verdict, "correct")
+        self.assertEqual(diagnosis["final_answer"], "x=1")
+        self.assertEqual(diagnosis["correct_solution"], "等式两边同时减去 1，得到 x=1。")
+        self.assertEqual(diagnosis["reference_adjudication"]["status"], "reference_preferred")
+        self.assertIsNone(self.domain_store.find_reference_conflict_candidate(
+            user_id=self.auth_service.authenticate_session(cookie.split("=", 1)[1]).user_id,
+            question_text="若 x+1=2，求 x。",
+        ))
+
     def test_harness_rechecks_historical_false_conflict_without_reupload(self) -> None:
         cookie = self.login("13500135006")
         user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])

@@ -399,6 +399,11 @@ class InMemoryNotebookStore:
 
     def find_reference_conflict_candidate(self, *, user_id: str, question_text: str) -> GradeCandidate | None:
         committed_attempts = {item.attempt_id for item in self.errors.values() if item.user_id == user_id}
+        resolved_attempts = {
+            item.attempt_id
+            for item in self.candidates.values()
+            if reference_conflict_resolved(item.evidence)
+        }
         for candidate in reversed(tuple(self.candidates.values())):
             attempt = self.attempts.get(candidate.attempt_id)
             validation = reference_validation_from_evidence(candidate.evidence)
@@ -407,6 +412,7 @@ class InMemoryNotebookStore:
                 and attempt is not None
                 and attempt.user_id == user_id
                 and attempt.attempt_id not in committed_attempts
+                and attempt.attempt_id not in resolved_attempts
                 and validation is not None
                 and validation.get("status") == "conflict"
                 and not reference_conflict_resolved(candidate.evidence)
