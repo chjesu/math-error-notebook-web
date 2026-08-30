@@ -62,8 +62,8 @@ class NotebookE2ETests(unittest.TestCase):
         headers = [(b"host", b"example.test"), (b"content-type", content_type.encode("latin-1")), (b"x-device-id", b"browser-device-001")]
         if cookie:
             headers.append((b"cookie", cookie.encode("ascii")))
-            if origin is not None:
-                headers.append((b"origin", origin.encode("ascii")))
+        if origin is not None:
+            headers.append((b"origin", origin.encode("ascii")))
         if idempotency_key:
             headers.append((b"idempotency-key", idempotency_key.encode("ascii")))
         for key, value in (extra_headers or {}).items():
@@ -76,23 +76,33 @@ class NotebookE2ETests(unittest.TestCase):
         parsed = json.loads(response_body) if response_headers.get("content-type", "").startswith("application/json") and response_body else response_body or None
         return started["status"], response_headers, parsed
 
-    def test_public_shell_serves_only_fixed_brand_assets(self) -> None:
+    def test_public_shell_exposes_auth_pages_but_protects_product_pages(self) -> None:
         home = self.call("/")
-        self.assertEqual(home[0], 200)
-        self.assertIn("李兆霖数学错题本".encode("utf-8"), home[2])
-        for route in ("/", "/login", "/register", "/legal/terms", "/legal/privacy", "/errors", "/practice", "/progress", "/settings"):
+        self.assertEqual((home[0], home[1]["location"]), (303, "/login"))
+        for route in ("/login", "/register", "/legal/terms", "/legal/privacy"):
             self.assertEqual(self.call(route)[0], 200)
+        cookie = self.login("13600136001")
+        for route in ("/", "/errors", "/practice", "/progress", "/settings"):
+            self.assertEqual(self.call(route, cookie=cookie)[0], 200)
         self.assertNotIn("/reviews", self.app.static_files)
         self.assertIn("/progress", self.app.static_files)
         logo = self.call("/assets/branding/logo-symbol-color-64-v1.png")
         self.assertEqual(logo[1]["content-type"], "image/png")
-        icons = self.call("/web/nav-icons.svg")
+        for route in (
+            "/web/app.js",
+            "/web/nav-icons.svg",
+            "/web/vendor/katex/katex.min.js",
+            "/web/vendor/katex/auto-render.min.js",
+        ):
+            protected = self.call(route)
+            self.assertEqual((protected[0], protected[1]["location"]), (303, "/login"))
+        icons = self.call("/web/nav-icons.svg", cookie=cookie)
         self.assertEqual((icons[0], icons[1]["content-type"]), (200, "image/svg+xml"))
         self.assertIn(b'<symbol id="workbench"', icons[2])
-        katex = self.call("/web/vendor/katex/katex.min.js")
+        katex = self.call("/web/vendor/katex/katex.min.js", cookie=cookie)
         self.assertEqual((katex[0], katex[1]["content-type"]), (200, "text/javascript; charset=utf-8"))
         self.assertIn(b"KaTeX", katex[2])
-        self.assertEqual(self.call("/web/vendor/katex/auto-render.min.js")[0], 200)
+        self.assertEqual(self.call("/web/vendor/katex/auto-render.min.js", cookie=cookie)[0], 200)
         self.assertEqual(self.call("/assets/branding/../README.md")[0], 401)
 
     def test_public_upload_cannot_claim_internal_pdf_purpose(self) -> None:
@@ -214,10 +224,10 @@ class NotebookE2ETests(unittest.TestCase):
             "prevention_cue": "代回验算",
         }, cookie=cookie)
         candidate_id = graded[2]["result_id"]
-        harness_origin = "http://example.test:3080"
+        harness_origin = "https://example.test"
         bound = self.call("/v1/harness/sessions/bind", method="POST", payload={"session_id": "session-receipt"}, cookie=cookie, origin=harness_origin)
         self.assertEqual((bound[0], bound[2]), (200, {"status": "bound"}))
-        self.assertEqual(bound[1]["access-control-allow-origin"], harness_origin)
+        self.assertNotIn("access-control-allow-origin", bound[1])
 
         internal = {
             "origin": None,
@@ -272,7 +282,7 @@ class NotebookE2ETests(unittest.TestCase):
 
     def test_harness_attachment_bridge_freezes_grades_and_writes_authoritative_receipts(self) -> None:
         cookie = self.login("13500135003")
-        harness_origin = "http://example.test:3080"
+        harness_origin = "https://example.test"
         bound = self.call(
             "/v1/harness/sessions/bind",
             method="POST",
@@ -376,7 +386,7 @@ class NotebookE2ETests(unittest.TestCase):
     def test_harness_reference_conflict_requires_frozen_semantic_adjudication(self) -> None:
         cookie = self.login("13500135004")
         other_cookie = self.login("13500135005")
-        harness_origin = "http://example.test:3080"
+        harness_origin = "https://example.test"
         self.call(
             "/v1/harness/sessions/bind", method="POST",
             payload={"session_id": "session-reference-review"}, cookie=cookie, origin=harness_origin,
@@ -496,7 +506,7 @@ class NotebookE2ETests(unittest.TestCase):
         cookie = self.login("13500135006")
         user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
         assert user is not None
-        harness_origin = "http://example.test:3080"
+        harness_origin = "https://example.test"
         self.call(
             "/v1/harness/sessions/bind", method="POST",
             payload={"session_id": "session-historical-conflict"}, cookie=cookie, origin=harness_origin,

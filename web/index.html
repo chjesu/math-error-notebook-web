@@ -39,7 +39,7 @@
           }
           if (!response.ok) throw new Error("session unavailable");
           frame.addEventListener("load", () => { status.hidden = true; frame.hidden = false; }, {once: true});
-          frame.src = "http://127.0.0.1:3080/";
+          frame.src = "/harness/";
           setTimeout(() => { if (frame.hidden) showError(); }, 10000);
         })
         .catch(showError);

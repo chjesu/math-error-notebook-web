@@ -31,6 +31,7 @@ from services.web_domain import (
     reference_conflict_resolved,
 )
 from .codex_model import ModelUnavailableError
+from .gateway import LoopbackHarnessGateway
 
 
 Receive = Callable[[], Awaitable[dict[str, Any]]]
@@ -49,6 +50,7 @@ class NotebookAsgiApp:
         max_upload_bytes: int = 26 * 1024 * 1024,
         model_runner: Any | None = None,
         harness_internal_token: str | None = None,
+        harness_upstream: tuple[str, int] | None = None,
     ) -> None:
         self.auth = AuthAsgiApp(auth_service, allowed_hosts=allowed_hosts, require_https=require_https, session_cookie=session_cookie)
         self.auth_service = auth_service
@@ -59,7 +61,7 @@ class NotebookAsgiApp:
         self.max_upload_bytes = max_upload_bytes
         self.model_runner = model_runner
         self.harness_internal_token = harness_internal_token
-        self.harness_origins = {f"http://{host}:3080" for host in self.allowed_hosts}
+        self.harness_gateway = LoopbackHarnessGateway(*harness_upstream) if harness_upstream is not None else None
         self._harness_sessions: dict[str, str] = {}
         self._harness_sessions_lock = Lock()
         self._turn_cancellations: dict[tuple[str, str], Event] = {}
@@ -81,9 +83,17 @@ class NotebookAsgiApp:
             "/web/nav-icons.svg": (root / "web" / "nav-icons.svg", "image/svg+xml", False),
             "/web/vendor/katex/katex.min.js": (root / "web" / "vendor" / "katex" / "katex.min.js", "text/javascript; charset=utf-8", False),
             "/web/vendor/katex/auto-render.min.js": (root / "web" / "vendor" / "katex" / "auto-render.min.js", "text/javascript; charset=utf-8", False),
+            "/manifest.webmanifest": (root / "web" / "manifest.webmanifest", "application/manifest+json", False),
             "/assets/branding/favicon-v1.ico": (root / "assets" / "branding" / "favicon-v1.ico", "image/x-icon", True),
             "/assets/branding/logo-symbol-color-64-v1.png": (root / "assets" / "branding" / "logo-symbol-color-64-v1.png", "image/png", True),
             "/assets/branding/logo-symbol-color-128-v1.png": (root / "assets" / "branding" / "logo-symbol-color-128-v1.png", "image/png", True),
+        }
+        self.public_static_paths = {
+            "/login", "/register", "/legal/terms", "/legal/privacy",
+            "/web/app.css", "/web/auth.js",
+            "/manifest.webmanifest",
+            "/assets/branding/favicon-v1.ico", "/assets/branding/logo-symbol-color-64-v1.png",
+            "/assets/branding/logo-symbol-color-128-v1.png",
         }
 
     def resume_pending_deletions(self) -> int:
@@ -105,10 +115,10 @@ class NotebookAsgiApp:
         return resumed
 
     async def __call__(self, scope: dict[str, Any], receive: Receive, send: Send) -> None:
-        path = str(scope.get("path", ""))
-        if path == "/healthz" or path.startswith("/v1/auth/") or path in {"/v1/session", "/v1/sessions"}:
-            await self.auth(scope, receive, send)
+        if scope.get("type") == "websocket":
+            await self._websocket(scope, receive, send)
             return
+        path = str(scope.get("path", ""))
         headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
         host = headers.get("host", "").split(":", 1)[0].lower()
         if host not in self.allowed_hosts:
@@ -117,17 +127,10 @@ class NotebookAsgiApp:
         if self.require_https and scope.get("scheme") != "https":
             await self._error(send, 400, "https_required")
             return
-        method = str(scope.get("method", ""))
-        origin = headers.get("origin", "")
-        harness_origin = origin if origin in self.harness_origins else None
-        if path == "/v1/harness/sessions/bind" and method == "OPTIONS":
-            if harness_origin is None:
-                await self._error(send, 403, "forbidden")
-            else:
-                await self._json(send, 200, {"status": "ok"}, extra_headers=self._harness_cors(harness_origin))
-            return
-        if path == "/v1/harness/sessions/bind" and method == "POST" and harness_origin is None:
-            await self._error(send, 403, "forbidden")
+        method = str(scope.get("method", "")).upper()
+        safe_methods = {"GET", "HEAD", "OPTIONS"}
+        if method not in safe_methods | {"POST", "PATCH", "PUT", "DELETE"}:
+            await self._error(send, 405, "method_not_allowed")
             return
         if path == "/v1/internal/harness/intakes/process" and method == "POST":
             await self._internal_harness_process(scope, receive, send, headers)
@@ -141,20 +144,44 @@ class NotebookAsgiApp:
         if path == "/v1/internal/harness/reference-conflicts/recheck" and method == "POST":
             await self._internal_harness_recheck(scope, receive, send, headers)
             return
+        expected_origin = f"{scope.get('scheme', 'https')}://{headers.get('host', '')}"
+        supplied_origin = headers.get("origin")
+        if (method not in safe_methods or supplied_origin is not None) and supplied_origin != expected_origin:
+            await self._error(send, 403, "forbidden")
+            return
+        if path == "/manifest.webmanifest":
+            if method != "GET":
+                await self._error(send, 405, "method_not_allowed")
+                return
+            await self._asset(send, *self.static_files[path])
+            return
+        if path == "/healthz" or path.startswith("/v1/auth/") or path in {"/v1/session", "/v1/sessions"}:
+            await self.auth(scope, receive, send)
+            return
         static = self.static_files.get(path)
-        if method == "GET" and static:
+        if method == "GET" and static and path in self.public_static_paths:
             await self._asset(send, *static)
             return
         token = self._cookie(headers.get("cookie", ""), self.session_cookie)
         user = await asyncio.to_thread(self.auth_service.authenticate_session, token or "")
         if user is None:
+            if method == "GET" and (static is not None or self._is_harness_http_path(path)):
+                await self._redirect(send, "/login")
+                return
             await self._error(send, 401, "authentication_required")
             return
-        if method in {"POST", "PATCH", "PUT", "DELETE"}:
-            expected_origin = f"{scope.get('scheme', 'https')}://{headers.get('host', '')}"
-            if headers.get("origin") != expected_origin and not (path == "/v1/harness/sessions/bind" and harness_origin):
-                await self._error(send, 403, "forbidden")
+        if method == "GET" and static and path != "/":
+            await self._asset(send, *static)
+            return
+        if self._is_harness_http_path(path):
+            if self.harness_gateway is None:
+                if path == "/" and method == "GET":
+                    await self._asset(send, *self.static_files["/"])
+                else:
+                    await self._error(send, 503, "harness_unavailable")
                 return
+            await self.harness_gateway.http(scope, receive, send, self._harness_target(path))
+            return
         try:
             if path == "/v1/harness/sessions/bind" and method == "POST":
                 payload = await self._json_body(receive)
@@ -165,7 +192,6 @@ class NotebookAsgiApp:
                     send,
                     200,
                     {"status": "bound"},
-                    extra_headers=self._harness_cors(harness_origin),
                 )
             elif path == "/v1/intakes" and method == "GET":
                 intakes = await self._sync(self.notebook.store.list_pending_intakes, user_id=user.user_id)
@@ -1415,15 +1441,52 @@ class NotebookAsgiApp:
             raise ValueError("invalid harness session id")
         return session_id
 
+    async def _websocket(self, scope: dict[str, Any], receive: Receive, send: Send) -> None:
+        connection = await receive()
+        if connection.get("type") != "websocket.connect":
+            return
+        path = str(scope.get("path", ""))
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", ())
+        }
+        host = headers.get("host", "").split(":", 1)[0].lower()
+        scheme = str(scope.get("scheme", "ws"))
+        if host not in self.allowed_hosts:
+            await send({"type": "websocket.close", "code": 1008, "reason": "invalid host"})
+            return
+        if self.require_https and scheme != "wss":
+            await send({"type": "websocket.close", "code": 1008, "reason": "secure transport required"})
+            return
+        browser_scheme = "https" if scheme == "wss" else "http"
+        if headers.get("origin") != f"{browser_scheme}://{headers.get('host', '')}":
+            await send({"type": "websocket.close", "code": 1008, "reason": "forbidden origin"})
+            return
+        token = self._cookie(headers.get("cookie", ""), self.session_cookie)
+        user = await asyncio.to_thread(self.auth_service.authenticate_session, token or "")
+        if user is None:
+            await send({"type": "websocket.close", "code": 4401, "reason": "authentication required"})
+            return
+        if self.harness_gateway is None:
+            await send({"type": "websocket.close", "code": 1013, "reason": "Harness unavailable"})
+            return
+        await self.harness_gateway.websocket(scope, receive, send, path)
+
     @staticmethod
-    def _harness_cors(origin: str) -> list[tuple[bytes, bytes]]:
-        return [
-            (b"access-control-allow-origin", origin.encode("ascii")),
-            (b"access-control-allow-credentials", b"true"),
-            (b"access-control-allow-methods", b"POST,OPTIONS"),
-            (b"access-control-allow-headers", b"content-type"),
-            (b"vary", b"Origin"),
-        ]
+    def _is_harness_http_path(path: str) -> bool:
+        if path in {"/", "/harness", "/harness/", "/api", "/favicon.svg"}:
+            return True
+        if path.startswith(("/harness/", "/api/", "/plugins/")):
+            return True
+        return path.startswith("/assets/") and not path.startswith("/assets/branding/")
+
+    @staticmethod
+    def _harness_target(path: str) -> str:
+        if path in {"/harness", "/harness/"}:
+            return "/"
+        if path.startswith("/harness/"):
+            return path[len("/harness"):]
+        return path
 
     @staticmethod
     def _grade_receipt(candidate: GradeCandidate) -> dict[str, Any]:
@@ -1561,6 +1624,20 @@ class NotebookAsgiApp:
 
     async def _error(self, send: Send, status: int, code: str) -> None:
         await self._json(send, status, {"error": {"code": code, "message": code, "retryable": code in {"failed_retryable", "temporarily_unavailable", "model_unavailable", "model_network_error", "model_rate_limited", "rate_limited"}, "request_id": secrets.token_hex(8)}})
+
+    @staticmethod
+    async def _redirect(send: Send, location: str) -> None:
+        await send({
+            "type": "http.response.start",
+            "status": 303,
+            "headers": [
+                (b"location", location.encode("ascii")),
+                (b"content-length", b"0"),
+                (b"cache-control", b"no-store"),
+                (b"x-content-type-options", b"nosniff"),
+            ],
+        })
+        await send({"type": "http.response.body", "body": b""})
 
     @staticmethod
     async def _json(

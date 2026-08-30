@@ -98,12 +98,10 @@ if [[ "${DAEMON}" == true ]]; then
     "${PYTHON_EXE}" "${ARGS[@]}"
     sleep 2
     echo -e "${GREEN}[OK] Services started in background.${NC}"
-    echo -e "     - Web API Gateway: ${CYAN}http://${HOST}:${PORT}${NC}"
-    echo -e "     - Harness UI: ${CYAN}http://127.0.0.1:3080${NC}"
+    echo -e "     - Web URL: ${CYAN}http://${HOST}:${PORT}${NC}"
     echo -e "     - Log file: data/runtime/service.stdout.log"
 else
     echo -e "${CYAN}[*] Starting services in foreground (Press Ctrl+C to stop)...${NC}"
     echo -e "     - Web URL: ${GREEN}http://${HOST}:${PORT}${NC}"
-    echo -e "     - Harness UI: ${GREEN}http://127.0.0.1:3080${NC}"
     exec "${PYTHON_EXE}" "${ARGS[@]}"
 fi

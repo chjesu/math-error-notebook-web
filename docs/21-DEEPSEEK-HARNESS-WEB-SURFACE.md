@@ -10,12 +10,14 @@
 
 ```text
 浏览器 http://127.0.0.1:8000/
-  ├─ GET /v1/session：复用产品登录态，未登录跳转 /login
-  └─ iframe http://127.0.0.1:3080/
-       └─ 官方 dsh --profile web Host + 官方 Web 前端
+  ├─ /login、/register、协议页及其固定样式/脚本：公开认证外壳
+  ├─ /assets/branding/*：公开品牌资源
+  ├─ /manifest.webmanifest：产品层公开静态清单
+  └─ 已登录的 /、/assets/*、/plugins/*、/api/*、WebSocket
+       └─ 8000 同源网关 → 随机回环端口上的官方 dsh --profile web Host
 ```
 
-`scripts/local_env.py serve --enable-harness-ui` 负责启动和停止 3080 端口的官方 Host。其 `DSH_HOME` 固定为 Git 忽略的 `data/runtime/deepseek-harness-web-home`，避免读取用户电脑上其他 Harness 项目的会话。标准本地启动命令为：
+`scripts/local_env.py serve --enable-harness-ui` 负责启动和停止官方 Host，并在启动时分配不向浏览器公开的回环端口。端口只从子进程私有 stdout 读取；stdout 与 stderr 都先经过私有管道，将回环 URL 中的端口掩码后才写日志。Windows 使用非零 `CREATE_SUSPENDED` 创建标志，在绑定 Job Object 后验证线程确实从挂起状态恢复；Unix 使用独立进程组。其 `DSH_HOME` 固定为 Git 忽略的 `data/runtime/deepseek-harness-web-home`，避免读取用户电脑上其他 Harness 项目的会话。标准本地启动命令为：
 
 ```powershell
 python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enable-harness-model --enable-harness-ui
@@ -31,7 +33,8 @@ python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enab
 - `config/deepseek-harness/web-product.patch.yml` 注入数学错题助手提示，并禁用 Shell、文件系统写入、子智能体、工作流、目标和编程编辑器等学生产品不需要的能力。
 - Harness Web 运行在只读 sandbox、`approval=never`、关闭遥测的本地配置下。
 - 账号注册、登录、短信、限流、用户数据归属、题目版本冻结和正式入库仍由 Python/MySQL 确定性代码负责，模型与前端不能绕过这些边界。
-- 当前 8000/3080 双端口嵌入只用于 localhost 测试。生产必须通过同源网关统一认证、WebSocket 和安全响应头，不能直接暴露 3080。
+- 浏览器只访问 8000 同源网关；Harness 页面、资源、HTTP API 和 WebSocket 在服务端会话校验后转发。内部随机端口只接受回环连接，不是用户入口，也不进入启动输出。
+- 网关对请求与响应头使用正向白名单，不把产品 Cookie、授权头、身份头或上游 `Set-Cookie` 带过边界；允许返回的 `Location`、`Content-Location`、`Link` 与 CSP 中如含上游权威地址，必须改写为 8000 公共同源地址，不能泄露内部端口。WebSocket 上游在升级后异常消失统一返回可重试的 `1013`，浏览器断开时取消并收集全部桥接任务。Uvicorn 必须安装 `requirements.txt` 声明的 `websockets` 传输实现。浏览器默认不带会话 Cookie 请求 PWA manifest，因此该无敏感信息清单仅接受 `GET`，由产品层直接公开提供，不反向代理 Harness。
 - 本地 Harness 会在浏览器中把当前不透明会话编号绑定到 8000 端口已经认证的个人账号。最新用户消息含图片时，模型必须完整识别本轮全部图片中的全部题目，并恰好调用一次 `process_error_notebook_attachments`；Host 读取实际附件字节，按图片逐次调用仅限回环地址和启动期随机令牌保护的内部接口。Python 服务复用现有文件隔离、题目冻结、判题候选、题库交叉验证、错因/知识点持久化、错题提交和复习排程，不再发起第二次模型调用。工具结果是权威业务结果和入本回执，并直接成为原 Harness 会话事件，因此刷新、翻页和重新打开会话后仍可查看。`confirm_error_notebook_entry` 只保留给其他已经生成冻结候选的流程；令牌不写入仓库、日志或浏览器。
 - 题库答案不会在独立解题前交给模型。只有冻结答案未通过确定性一致性校验时，服务端才在 `reference_review` 中返回已验证当前版本的答案与解析；会话必须恰好调用一次 `adjudicate_error_notebook_reference_conflicts`，批量提交“一致、确有冲突、无法确认”及具体依据。该接口重新校验登录用户、Harness 会话、候选、输入版本与两份答案哈希；只有复核一致才可越过原冲突门，其他结论保持未入本。
 
