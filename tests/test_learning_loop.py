@@ -31,6 +31,19 @@ class LearningLoopTests(unittest.TestCase):
         self.store.question_rules[good.question_id] = ("retired", "open", True)
         self.assertEqual(self.store.list_recommendations(user_id=self.user_id, error_id=self.error_id), [])
 
+    def test_question_already_recommended_for_account_is_not_repeated_for_another_error(self) -> None:
+        question = Question("1" * 32, "解方程 x+2=5", "x=3", 10, 2.0, "授权题库")
+        other_error_id = "f" * 32
+        self.store.add_question(question)
+        self.store.errors[other_error_id] = ErrorEntry(other_error_id, self.user_id, "t" * 32, "解方程 x+3=6", "x=1", "计算错误", "open", datetime.now(timezone.utc))
+
+        first, _ = self.store.assign_recommendations(user_id=self.user_id, error_id=self.error_id, limit=1)
+        repeated, gap = self.store.assign_recommendations(user_id=self.user_id, error_id=other_error_id, limit=1)
+
+        self.assertEqual([item.question.question_id for item in first], [question.question_id])
+        self.assertEqual(repeated, [])
+        self.assertTrue(gap)
+
     def test_daily_grade_quota_counts_unique_successes_and_keeps_a_started_batch(self) -> None:
         now = datetime(2026, 8, 29, 4, tzinfo=timezone.utc)
         first = [f"{index:032x}" for index in range(39)]

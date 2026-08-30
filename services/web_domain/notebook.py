@@ -468,19 +468,20 @@ class InMemoryNotebookStore:
             for question_id, question in self.questions.items()
             if self.question_rules.get(question_id) in {("verified", "open", True), ("verified", "user_authorized", True)}
             and not any(attempt.user_id == user_id and getattr(attempt, "question_id", None) == question_id for attempt in self.attempts.values())
+            and not any(item.user_id == user_id and item.question.question_id == question_id for item in self.recommendations.values())
         ]
         ranked = rank_questions(error.question_text, eligible, limit)
         day = learning_day()
         current = self.learning_usage(user_id=user_id)["recommendation"]["count"]
         new_ranked = [
             (question, reason) for question, reason in ranked
-            if not any(item.user_id == user_id and item.error_id == error_id and item.question.question_id == question.question_id for item in self.recommendations.values())
+            if not any(item.user_id == user_id and item.question.question_id == question.question_id for item in self.recommendations.values())
         ]
         if new_ranked and current >= DAILY_RECOMMENDATION_LIMIT:
             items = self.list_recommendations(user_id=user_id, error_id=error_id)
             return items[:limit], True
         for question, reason in new_ranked[: max(0, DAILY_RECOMMENDATION_LIMIT - current)]:
-            existing = next((item for item in self.recommendations.values() if item.user_id == user_id and item.error_id == error_id and item.question.question_id == question.question_id), None)
+            existing = next((item for item in self.recommendations.values() if item.user_id == user_id and item.question.question_id == question.question_id), None)
             if not existing:
                 existing = Recommendation(uuid.uuid4().hex, user_id, error_id, question, reason, "assigned")
                 self.recommendations[existing.recommendation_id] = existing
@@ -492,8 +493,16 @@ class InMemoryNotebookStore:
     def list_recommendations(self, *, user_id: str, error_id: str) -> list[Recommendation]:
         if not self.get_error(user_id=user_id, error_id=error_id):
             raise LookupError("error not found")
+        active = [item for item in self.recommendations.values() if item.user_id == user_id and item.status in {"assigned", "completed"}]
+        preferred = {
+            item.question.question_id: min(
+                (candidate for candidate in active if candidate.question.question_id == item.question.question_id),
+                key=lambda candidate: (candidate.status != "completed", candidate.recommendation_id),
+            ).recommendation_id
+            for item in active
+        }
         return sorted(
-            (item for item in self.recommendations.values() if item.user_id == user_id and item.error_id == error_id and item.status in {"assigned", "completed"} and self.question_rules.get(item.question.question_id) in {("verified", "open", True), ("verified", "user_authorized", True)}),
+            (item for item in active if item.error_id == error_id and preferred[item.question.question_id] == item.recommendation_id and self.question_rules.get(item.question.question_id) in {("verified", "open", True), ("verified", "user_authorized", True)}),
             key=lambda item: item.recommendation_id,
         )
 

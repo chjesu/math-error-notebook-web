@@ -231,10 +231,17 @@ class MySqlDomainStore:
                 (user_id, day),
             )
             counts = {(str(kind), str(status)): int(count) for kind, status, count in cursor.fetchall()}
+            cursor.execute(
+                "SELECT COUNT(DISTINCT r.question_id) FROM daily_learning_usage d JOIN recommendations r "
+                "ON r.user_id=d.user_id AND d.resource_id=SHA2(CONCAT(r.error_id,':',r.question_id),256) "
+                "WHERE d.user_id=%s AND d.usage_date=%s AND d.kind='recommendation' AND d.status='counted'",
+                (user_id, day),
+            )
+            recommendation_count = int((cursor.fetchone() or (0,))[0])
             return learning_usage_payload(
                 day,
                 counts.get(("grade", "counted"), 0),
-                counts.get(("recommendation", "counted"), 0),
+                recommendation_count,
                 counts.get(("grade", "reserved"), 0),
             )
         finally:
@@ -1041,8 +1048,8 @@ class MySqlDomainStore:
                 "WHERE q.status='verified' AND s.license_status IN ('open','user_authorized') "
                 "AND EXISTS (SELECT 1 FROM question_verifications x WHERE x.question_version_id=v.id AND x.verdict='verified') "
                 "AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.user_id=%s AND a.question_id=q.id) "
-                "AND NOT EXISTS (SELECT 1 FROM recommendations r WHERE r.user_id=%s AND r.error_id=%s AND r.question_id=q.id) LIMIT 200",
-                (user_id, user_id, error_id),
+                "AND NOT EXISTS (SELECT 1 FROM recommendations r WHERE r.user_id=%s AND r.question_id=q.id) LIMIT 200",
+                (user_id, user_id),
             )
             candidates = [Question(str(row[0]), str(row[1]), row[2], int(row[3]) if row[3] is not None else None, float(row[4]) if row[4] is not None else None, str(row[5])) for row in cursor.fetchall()]
         finally:
@@ -1066,6 +1073,9 @@ class MySqlDomainStore:
                     items = self.list_recommendations(user_id=user_id, error_id=error_id)
                     return items[:limit], True
                 for question, reason in ranked[: DAILY_RECOMMENDATION_LIMIT - used]:
+                    cursor.execute("SELECT 1 FROM recommendations WHERE user_id=%s AND question_id=%s LIMIT 1", (user_id, question.question_id))
+                    if cursor.fetchone():
+                        continue
                     recommendation_id = uuid.uuid4().hex
                     resource_id = hashlib.sha256(f"{error_id}:{question.question_id}".encode("ascii")).hexdigest()
                     cursor.execute(
@@ -1099,6 +1109,10 @@ class MySqlDomainStore:
                 "JOIN question_sources s ON s.id=q.source_id "
                 "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
                 "WHERE r.user_id=%s AND r.error_id=%s AND r.status IN ('assigned','completed') "
+                "AND NOT EXISTS (SELECT 1 FROM recommendations preferred WHERE preferred.user_id=r.user_id "
+                "AND preferred.question_id=r.question_id AND preferred.status IN ('assigned','completed') AND ("
+                "(preferred.status='completed')>(r.status='completed') OR ((preferred.status='completed')=(r.status='completed') "
+                "AND (preferred.created_at<r.created_at OR (preferred.created_at=r.created_at AND preferred.id<r.id))))) "
                 "AND q.status='verified' AND s.license_status IN ('open','user_authorized') "
                 "AND EXISTS (SELECT 1 FROM question_verifications x WHERE x.question_version_id=v.id AND x.verdict='verified') "
                 "ORDER BY r.created_at,r.id",

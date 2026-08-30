@@ -103,6 +103,14 @@ class DomainContractTests(unittest.TestCase):
         self.assertIn("WHERE user_id=%s", query)
         self.assertEqual(args, ("a" * 32,))
 
+    def test_learning_usage_counts_distinct_recommended_questions(self) -> None:
+        connection = FakeConnection([[("recommendation", "counted", 24)], (16,)])
+
+        usage = MySqlDomainStore(lambda: connection).learning_usage(user_id="a" * 32)
+
+        self.assertEqual(usage["recommendation"]["count"], 16)
+        self.assertIn("COUNT(DISTINCT r.question_id)", connection.cursor_instance.executed[-1][0])
+
     def test_practice_pdf_history_is_scoped_to_server_user(self) -> None:
         connection = FakeConnection([[]])
         items = MySqlDomainStore(lambda: connection).list_practice_pdfs(user_id="a" * 32)
