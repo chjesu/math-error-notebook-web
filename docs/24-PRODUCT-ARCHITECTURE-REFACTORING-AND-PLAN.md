@@ -259,7 +259,9 @@ gantt
   2. `T3.2` 封装 `DeepSeekHarnessProvider` 与 `AliyunDashscopeProvider` 实现；
   3. `T3.3` 将 AST 算术独立验算逻辑挂载为通用的求解验证过滤器；
   4. `T3.4` 在 `.env.example` 和配置文件中加入供应商声明，支持一键切换通道。
-- **质量门验收**：切换 `HARNESS_PROVIDER=dashscope` 与 `HARNESS_PROVIDER=deepseek`，同一组测试试卷的识别率、判题准确度与 AST 校验结果完全一致。
+- **质量门验收**：切换 `MODEL_PROVIDER=dashscope` 与 `MODEL_PROVIDER=deepseek` 后，以冻结标注集的漏题率、判题一致率、安全失败率、P95 延迟和单题成本阈值验收；AST 确定性校验语义必须一致。
+- **实现结果（2026-08-30）**：已新增供应商无关 `ModelProvider` 契约、`NotebookAgent` 兼容解耦、DeepSeek/阿里百炼双配置档、安全端点校验、稳定错误归一化与可注入 AST 验算过滤器；API、异步摄取、Schema 和写库门未出现供应商分支。供应商选择改为语义明确的 `MODEL_PROVIDER=deepseek|dashscope`，`HARNESS_PROVIDER` 仅保留为内部路由 ID。
+- **当前门禁**：代码与聚焦契约检查已完成；真实百炼联网、标注集对比和生产灰度仍是外部验收门禁。
 
 ---
 

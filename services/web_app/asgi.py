@@ -1436,7 +1436,7 @@ class NotebookAsgiApp:
                     user_id=user_id,
                     intake_id=primary.intake_id,
                     items=extracted,
-                    evidence={"source": "deepseek_harness_tool", "attachment_id": attachment_id},
+                    evidence={"source": "notebook_harness_tool", "attachment_id": attachment_id},
                 )
             else:
                 existing = [(item.item_no, item.question_text, item.answer_text) for item in intakes]
@@ -1448,7 +1448,7 @@ class NotebookAsgiApp:
                             user_id=user_id,
                             intake_id=primary.intake_id,
                             items=extracted,
-                            evidence={"source": "deepseek_harness_tool", "attachment_id": attachment_id},
+                            evidence={"source": "notebook_harness_tool", "attachment_id": attachment_id},
                             replace_existing=True,
                         )
                     else:

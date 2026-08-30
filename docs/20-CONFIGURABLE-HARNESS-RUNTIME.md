@@ -4,7 +4,7 @@
 
 工作台使用固定版本 `0.1.1-rc.2` 的 DeepSeek Harness 核心组件承载持续会话、JSONL 持久化、事件、上下文计量、自动压缩和有界重试。DeepSeek 只是当前默认模型通道，错题业务不依赖供应商名称。
 
-统一入口是 `services/web_app/harness_runtime.py`，组合配置是 `config/deepseek-harness/cordis.yml`。`NotebookAsgiApp` 仍只调用既有的 `extract`、`grade`、`chat_turn`、`history` 和 `compact`，认证、用户归属、版本冻结、判题质量门和正式写库均由确定性 Python 代码负责。
+应用模型入口是 `services/web_domain/model_provider/` 的稳定契约，DeepSeek 与百炼适配器位于 `services/web_app/model_providers.py`；底层仍由 `services/web_app/harness_runtime.py` 和 `config/deepseek-harness/cordis.yml` 承载会话。`NotebookAsgiApp` 仍只调用既有的 `extract`、`grade`、`chat_turn`、`history` 和 `compact`，认证、用户归属、版本冻结、判题质量门和正式写库均由确定性 Python 代码负责。
 
 ## 启动
 
@@ -23,12 +23,16 @@ python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enab
 
 | 变量 | 用途 | 默认值 |
 |---|---|---|
-| `HARNESS_PROVIDER` | Harness 路由 ID | `notebook-provider` |
+| `MODEL_PROVIDER` | 应用供应商，只允许 `deepseek` / `dashscope` | `deepseek` |
+| `DEEPSEEK_API_KEY` | DeepSeek 密钥，仅运行环境读取 | 无 |
+| `DEEPSEEK_BASE_URL` | DeepSeek 官方兼容端点 | `https://api.deepseek.com` |
+| `DEEPSEEK_MODEL` | DeepSeek 模型 ID | `deepseek-v4-flash-vision-exp` |
+| `DASHSCOPE_API_KEY` | 百炼密钥，仅运行环境读取 | 无 |
+| `DASHSCOPE_BASE_URL` | 百炼 HTTPS 兼容端点 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| `DASHSCOPE_MODEL` | 经评测的 Qwen-VL 模型 ID | `qwen-vl-max` |
+| `HARNESS_PROVIDER` | Harness 内部路由 ID，不是供应商选择 | `notebook-provider` |
 | `HARNESS_PROVIDER_NAME` | 供应商显示名 | `Notebook model provider` |
-| `HARNESS_API_KEY_ENV` | 保存 API Key 的环境变量名称 | `DEEPSEEK_API_KEY` |
 | `HARNESS_API_PROTOCOL` | pi-ai 协议 | `openai-completions` |
-| `HARNESS_BASE_URL` | OpenAI 兼容网关根地址 | `https://api.deepseek.com` |
-| `HARNESS_MODEL` | 模型 ID | `deepseek-v4-flash-vision-exp` |
 | `HARNESS_INPUT_MODALITIES` | 模型输入能力 | `text,image` |
 | `HARNESS_REASONING` | 可选推理强度 | 未设置，沿用供应商默认 |
 | `HARNESS_MAX_TOKENS` | 单轮输出上限 | `32768` |
@@ -40,13 +44,10 @@ python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enab
 Qwen 使用 OpenAI 兼容通道时只需替换运行环境，例如：
 
 ```powershell
-$env:HARNESS_PROVIDER = "qwen-compatible"
-$env:HARNESS_PROVIDER_NAME = "Qwen"
-$env:HARNESS_API_KEY_ENV = "DASHSCOPE_API_KEY"
-$env:HARNESS_API_PROTOCOL = "openai-completions"
-$env:HARNESS_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-$env:HARNESS_MODEL = "<经离线评测的多模态模型 ID>"
-$env:HARNESS_INPUT_MODALITIES = "text,image"
+$env:MODEL_PROVIDER = "dashscope"
+$env:DASHSCOPE_BASE_URL = "https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+$env:DASHSCOPE_MODEL = "<经离线评测的多模态模型 ID>"
+# DASHSCOPE_API_KEY 由运行环境或密钥服务注入，不写入脚本。
 python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enable-harness-model --enable-harness-ui
 ```
 
@@ -64,3 +65,6 @@ python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enab
 - DeepSeek Vision 指南：<https://api-docs.deepseek.com/guides/vision/>
 - DeepSeek 2026-08-21 更新记录：<https://api-docs.deepseek.com/updates/>
 - DeepSeek Chat Completions API：<https://api-docs.deepseek.com/api/create-chat-completion/>
+- 阿里云百炼 OpenAI 兼容 Chat：<https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions>
+- 阿里云百炼结构化输出：<https://help.aliyun.com/zh/model-studio/qwen-structured-output>
+- 阿里云百炼错误码：<https://help.aliyun.com/zh/model-studio/error-code>

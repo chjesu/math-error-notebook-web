@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from services.web_app.math_verifier import verify_equations
+from services.web_app.math_verifier import MathVerificationFilter, verify_equations
 
 
 class MathVerifierTests(unittest.TestCase):
@@ -21,6 +21,10 @@ class MathVerifierTests(unittest.TestCase):
             {"left": "open(1)", "right": "1", "variables": []},
         ])
         self.assertEqual([value["status"] for value in values], ["unsupported"] * 3)
+
+    def test_filter_exposes_the_same_provider_independent_result(self) -> None:
+        checks = [{"left": "(x+1)**2", "right": "x**2+2*x+1", "variables": ["x"]}]
+        self.assertEqual(MathVerificationFilter().verify(checks), verify_equations(checks))
 
 
 if __name__ == "__main__":

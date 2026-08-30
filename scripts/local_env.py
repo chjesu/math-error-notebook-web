@@ -1677,7 +1677,7 @@ def serve(
     if host not in {"127.0.0.1", "localhost"}:
         raise RuntimeError("local simulation may only bind to localhost")
     start()
-    from services.web_app import CodexNotebookModel, HarnessRuntimeAdapter, NotebookAsgiApp
+    from services.web_app import CodexNotebookModel, NotebookAgent, NotebookAsgiApp, build_model_provider
     from services.web_auth import (
         AuthConfig,
         InMemoryCaptchaVerifier,
@@ -1699,16 +1699,10 @@ def serve(
     harness_internal_token = secrets.token_urlsafe(32) if enable_harness_ui else None
     if enable_codex_model and enable_harness_model:
         raise RuntimeError("choose either the Harness model or the legacy Codex model")
+    provider = None
     if enable_harness_model:
-        harness = HarnessRuntimeAdapter.from_environment(ROOT)
-        model_runner = CodexNotebookModel(
-            RUNTIME / "model-candidates",
-            review=harness.run_structured_turn,
-            harness_review=harness.run_structured_turn,
-            conversation_review=harness.run_conversation_turn,
-            history_reader=harness.read_history,
-            compactor=harness.compact,
-        )
+        provider = build_model_provider(ROOT)
+        model_runner = NotebookAgent(RUNTIME / "model-candidates", provider=provider)
     else:
         model_runner = CodexNotebookModel(RUNTIME / "model-candidates") if enable_codex_model else None
     harness_web = None
@@ -1736,6 +1730,8 @@ def serve(
     finally:
         if app is not None:
             app.stop_pending_batches()
+        if provider is not None:
+            provider.close()
         _stop_harness_web(harness_web)
 
 

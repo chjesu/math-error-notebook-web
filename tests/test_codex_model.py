@@ -7,7 +7,7 @@ import tempfile
 from threading import Event, Thread
 import unittest
 
-from services.web_app.codex_model import CodexNotebookModel, ModelUnavailableError
+from services.web_app.codex_model import CodexNotebookModel, ModelUnavailableError, NotebookAgent
 from services.web_domain import VerifiedQuestionReference
 
 
@@ -22,6 +22,58 @@ def solution_review(route, review_input, output, images, thread_id=None, event_c
 
 
 class CodexNotebookModelTests(unittest.TestCase):
+    def test_notebook_agent_accepts_one_provider_without_leaking_it_to_callers(self) -> None:
+        class Provider:
+            run_structured_turn = staticmethod(lambda *args, **kwargs: {})
+            run_conversation_turn = staticmethod(lambda *args, **kwargs: {})
+            read_history = staticmethod(lambda *args, **kwargs: {"items": []})
+            compact = staticmethod(lambda thread_id: {"status": "completed"})
+
+        with tempfile.TemporaryDirectory() as directory:
+            provider = Provider()
+            model = NotebookAgent(Path(directory), provider=provider)
+        self.assertIs(CodexNotebookModel, NotebookAgent)
+        self.assertEqual(model.review, provider.run_structured_turn)
+        self.assertEqual(model.harness_review, provider.run_structured_turn)
+        self.assertEqual(model.conversation_review, provider.run_conversation_turn)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "cannot be combined"):
+                NotebookAgent(Path(directory), provider=provider, review=lambda *args: {})
+
+    def test_grade_uses_the_injected_deterministic_verification_filter(self) -> None:
+        captured = {}
+
+        class VerificationFilter:
+            @staticmethod
+            def verify(checks):
+                return [{"status": "filtered", "count": len(checks)}]
+
+        def grade_review(route, review_input, output, images, thread_id=None, event_callback=None):
+            frozen = json.loads(review_input)
+            captured.update(frozen["evidence"])
+            return {"route": route, "thread_id": "thread-grade", "result": {
+                "attempt_id": frozen["attempt_id"], "input_version": frozen["input_version"],
+                "verdict": "correct", "first_error": None, "cause_code": None,
+                "cause_evidence": None, "knowledge_points": [], "correct_solution": "过程",
+                "final_answer": "答案", "prevention_cue": None, "confidence": 0.99,
+            }}
+
+        with tempfile.TemporaryDirectory() as directory:
+            model = NotebookAgent(
+                Path(directory), harness_review=grade_review, verification_filter=VerificationFilter(),
+                route_selector=lambda task, risks: {"task": task, "model": "test", "reasoning_effort": "low"},
+            )
+            attempt = SimpleNamespace(attempt_id="f" * 32, input_version=1, question_text="题目", answer_text="作答")
+            model.grade_with_solution(
+                attempt=attempt,
+                image_path=Path(directory) / "q.png",
+                solution={
+                    "difficulty": "normal", "solution": "过程", "final_answer": "答案",
+                    "verification_checks": [{"left": "1", "right": "1", "variables": []}],
+                },
+            )
+        self.assertEqual(captured["verification_report"], [{"status": "filtered", "count": 1}])
+
     def test_extract_and_grade_return_bounded_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

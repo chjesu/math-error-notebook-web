@@ -16,7 +16,7 @@ import shutil
 import subprocess
 from threading import Lock, Thread
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 import uuid
 
 
@@ -45,13 +45,28 @@ class HarnessRuntimeConfig:
     model: str = "deepseek-v4-flash-vision-exp"
     max_tokens: int = 32_768
     request_timeout_seconds: float = 900.0
+    provider_name: str = "deepseek"
+    provider_environment: tuple[tuple[str, str], ...] = ()
+    reasoning: str | None = None
 
     @classmethod
-    def from_environment(cls, project_root: Path) -> "HarnessRuntimeConfig":
+    def from_environment(
+        cls, project_root: Path, *, environ: Mapping[str, str] | None = None,
+    ) -> "HarnessRuntimeConfig":
+        environment = os.environ if environ is None else environ
         root = project_root.resolve()
-        max_tokens = int(os.environ.get("HARNESS_MAX_TOKENS", "32768"))
+        max_tokens = int(environment.get("HARNESS_MAX_TOKENS", "32768"))
         if not 1 <= max_tokens <= 256_000:
             raise ValueError("HARNESS_MAX_TOKENS must be between 1 and 256000")
+        provider_environment = tuple(
+            (name, environment[name])
+            for name in (
+                "HARNESS_PROVIDER", "HARNESS_PROVIDER_NAME", "HARNESS_API_KEY_ENV",
+                "HARNESS_API_PROTOCOL", "HARNESS_BASE_URL", "HARNESS_MODEL",
+                "HARNESS_INPUT_MODALITIES", "HARNESS_MAX_TOKENS", "HARNESS_REASONING",
+            )
+            if environment.get(name)
+        )
         return cls(
             project_root=root,
             cordis_config=root / "config" / "deepseek-harness" / "cordis.yml",
@@ -60,9 +75,12 @@ class HarnessRuntimeConfig:
             session_root=root / "data" / "runtime" / "deepseek-harness",
             attachment_home=root / "data" / "runtime" / "deepseek-harness-home",
             projection_root=root / "data" / "runtime" / "deepseek-harness-projection",
-            provider=os.environ.get("HARNESS_PROVIDER", "notebook-provider"),
-            model=os.environ.get("HARNESS_MODEL", "deepseek-v4-flash-vision-exp"),
+            provider=environment.get("HARNESS_PROVIDER", "notebook-provider"),
+            model=environment.get("HARNESS_MODEL", "deepseek-v4-flash-vision-exp"),
             max_tokens=max_tokens,
+            provider_name=environment.get("MODEL_PROVIDER") or environment.get("HARNESS_PROVIDER") or "deepseek",
+            provider_environment=provider_environment,
+            reasoning=environment.get("HARNESS_REASONING") or None,
         )
 
 
@@ -102,6 +120,7 @@ class HarnessRuntimeAdapter:
             self.config.attachment_home.mkdir(parents=True, exist_ok=True)
             self.config.projection_root.mkdir(parents=True, exist_ok=True)
             environment = os.environ.copy()
+            environment.update(dict(self.config.provider_environment))
             environment.update({
                 "DSH_CORDIS_CONFIG": str(self.config.cordis_config),
                 "DSH_SESSION_ROOT": str(self.config.session_root),
@@ -328,9 +347,9 @@ class HarnessRuntimeAdapter:
             self._append_projection(resolved_session, "assistant", json.dumps(result, ensure_ascii=False, separators=(",", ":")))
             self._audit(route, "success", started)
             exposed_route = {
-                "task": route.get("task"), "provider": self.config.provider,
+                "task": route.get("task"), "provider": self.config.provider_name,
                 "model": self.config.model, "runtime": "deepseek-harness", "version": "0.1.1-rc.2",
-                "reasoning_effort": route.get("reasoning_effort") or os.environ.get("HARNESS_REASONING") or "provider-default",
+                "reasoning_effort": route.get("reasoning_effort") or self.config.reasoning or "provider-default",
             }
             return {"route": exposed_route, "result": result, "thread_id": resolved_session, "session_id": resolved_session}
         except HarnessRuntimeError as exc:
@@ -494,7 +513,7 @@ class HarnessRuntimeAdapter:
         path.parent.mkdir(parents=True, exist_ok=True)
         event = {
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "task": route.get("task"), "provider": self.config.provider, "model": self.config.model,
+            "task": route.get("task"), "provider": self.config.provider_name, "model": self.config.model,
             "runtime_version": "0.1.1-rc.2", "outcome": outcome,
             "elapsed_seconds": round(time.monotonic() - started, 3), "code": code,
             "provider_code": provider_code,

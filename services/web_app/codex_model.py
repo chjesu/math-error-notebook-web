@@ -1,4 +1,4 @@
-"""Optional localhost Codex app-server adapter; it only returns uncommitted candidates."""
+"""Supplier-independent notebook orchestration; it only returns uncommitted candidates."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ import uuid
 
 from scripts.codex_task_router import compact_conversation, read_conversation_history, run_conversation_turn, run_structured_harness_turn, select
 from services.web_domain.learning import VerifiedQuestionReference, cross_validate_reference
-from .math_verifier import verify_equations
+from services.web_domain.model_provider import ModelProvider
+from .math_verifier import MathVerificationFilter
 
 
 CAUSE_CODES = {
@@ -28,26 +29,32 @@ class ModelUnavailableError(Exception):
         self.code = code
 
 
-class CodexNotebookModel:
+class NotebookAgent:
     def __init__(
         self,
         output_root: Path,
         *,
-        review: Callable[..., dict[str, Any]] = run_structured_harness_turn,
-        harness_review: Callable[..., dict[str, Any]] = run_structured_harness_turn,
-        conversation_review: Callable[..., dict[str, Any]] = run_conversation_turn,
-        history_reader: Callable[..., dict[str, Any]] = read_conversation_history,
-        compactor: Callable[[str], dict[str, Any]] = compact_conversation,
+        provider: ModelProvider | None = None,
+        review: Callable[..., dict[str, Any]] | None = None,
+        harness_review: Callable[..., dict[str, Any]] | None = None,
+        conversation_review: Callable[..., dict[str, Any]] | None = None,
+        history_reader: Callable[..., dict[str, Any]] | None = None,
+        compactor: Callable[[str], dict[str, Any]] | None = None,
         route_selector: Callable[[str, list[str]], dict[str, Any]] = select,
+        verification_filter: MathVerificationFilter | None = None,
         max_active: int = 2,
     ) -> None:
+        callbacks = (review, harness_review, conversation_review, history_reader, compactor)
+        if provider is not None and any(callback is not None for callback in callbacks):
+            raise ValueError("provider and direct model callbacks cannot be combined")
         self.output_root = output_root.resolve()
-        self.review = review
-        self.harness_review = harness_review
-        self.conversation_review = conversation_review
-        self.history_reader = history_reader
-        self.compactor = compactor
+        self.review = provider.run_structured_turn if provider is not None else review or run_structured_harness_turn
+        self.harness_review = provider.run_structured_turn if provider is not None else harness_review or run_structured_harness_turn
+        self.conversation_review = provider.run_conversation_turn if provider is not None else conversation_review or run_conversation_turn
+        self.history_reader = provider.read_history if provider is not None else history_reader or read_conversation_history
+        self.compactor = provider.compact if provider is not None else compactor or compact_conversation
         self.route_selector = route_selector
+        self.verification_filter = verification_filter or MathVerificationFilter()
         self.max_active = max_active
         self._active: set[tuple[str, str, int]] = set()
         self._grade_active: set[tuple[str, int]] = set()
@@ -227,7 +234,7 @@ class CodexNotebookModel:
                 "evidence": {
                     "source": "user_confirmed_with_original_image",
                     "independent_solution": solution,
-                    "verification_report": verify_equations(solution["verification_checks"]),
+                    "verification_report": self.verification_filter.verify(solution["verification_checks"]),
                     "difficulty": difficulty,
                 },
             }
@@ -547,3 +554,7 @@ class CodexNotebookModel:
             if name in route:
                 metadata[name] = route[name]
         return metadata
+
+
+# Backward-compatible name for existing imports and integrations.
+CodexNotebookModel = NotebookAgent

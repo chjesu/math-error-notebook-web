@@ -31,7 +31,10 @@ class HarnessRuntimeTests(unittest.TestCase):
             "HARNESS_MAX_TOKENS": "4096",
         }, clear=False):
             value = HarnessRuntimeConfig.from_environment(Path(directory))
-        self.assertEqual((value.provider, value.model, value.max_tokens), ("qwen-compatible", "qwen-vl-test", 4096))
+        self.assertEqual(
+            (value.provider, value.provider_name, value.model, value.max_tokens),
+            ("qwen-compatible", "qwen-compatible", "qwen-vl-test", 4096),
+        )
 
     def test_history_projection_is_durable_and_cursor_paginated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -16,6 +16,14 @@ class UnsupportedExpression(ValueError):
     pass
 
 
+class MathVerificationFilter:
+    """Provider-independent gate for bounded deterministic verification evidence."""
+
+    @staticmethod
+    def verify(checks: Any) -> list[dict[str, Any]]:
+        return verify_equations(checks)
+
+
 def verify_equations(checks: Any) -> list[dict[str, Any]]:
     """Check at most eight bounded identities; unsupported input is reported, never executed."""
     if not isinstance(checks, list):

@@ -57,7 +57,7 @@ flowchart TB
 | 手机验证码注册、会话、限流 | `services/web_auth/` | v0.4.0 四接口、密码、协议、场景隔离已在本地验收；短信/CAPTCHA 仍为模拟，生产门禁未完成 |
 | 本地 MySQL 模拟环境 | `scripts/local_env.py` | 已实现；仅绑定 localhost，不是生产启动器 |
 | Codex 模型路由与团队 | `scripts/codex_task_router.py`、`scripts/codex_app_server.py`、`services/web_app/codex_model.py`、`config/model-routing.json`、`config/team-roles.json` | 已实现；本地启动须使用 `--enable-codex-model` 显式授权，首次 OCR/判题候选走 Terra→Sol 质量门，连续错题会话走官方 app-server 持久 Sol 线程、真实事件流和结构化候选 |
-| 模型供应商迁移与应用自有 Harness | `docs/18-MODEL-PROVIDER-MIGRATION.md`、后续 `NotebookAgent` / `ModelProvider` | 方案已记录，待标注集评测和实施批准；当前未接通百炼，不得标记为生产完成 |
+| 模型供应商迁移与应用自有 Harness | `services/web_domain/model_provider/`、`services/web_app/model_providers.py`、`docs/18-MODEL-PROVIDER-MIGRATION.md` | Phase 3 已落地统一契约、DeepSeek/百炼双配置档、安全端点与稳定错误语义，AST 验算保持确定性；真实百炼标注集评测、应用自有会话存储和生产灰度仍未完成，不得标记为生产完成 |
 | 任务领取、租约、证据、恢复 | `scripts/project_workflow.py` | 已实现注册模板和全项目模板 |
 | 个人账号与 user_id 数据隔离 | `services/web_domain/` | 已实现；API、Store、任务和下载均从服务端会话注入 `user_id` |
 | Web 题库、错题、作答和复习数据 | MySQL 个人 `user_id` 模型 | 权威桌面题库已同步到本地 MySQL：10,569 题，其中 10,278 题保持已验证、291 题按授权/质量门降级为候选；生产回滚未完成 |
@@ -78,6 +78,8 @@ flowchart TB
 | `services/web_auth/turnstile.py` | CAPTCHA 服务端验证 |
 | `services/web_auth/migrations/` | MySQL 迁移 |
 | `services/web_domain/` | 错题、推荐、复习调度、进度和 A4 PDF |
+| `services/web_domain/model_provider/` | 模型供应商无关契约、能力和稳定错误语义 |
+| `services/web_app/model_providers.py` | DeepSeek 与阿里百炼 Harness 适配器及安全配置工厂 |
 | `scripts/project_workflow.py` | 注册/全项目任务模板、依赖、领取、租约和证据 |
 | `scripts/codex_task_router.py` | Luna/Terra/Sol 分层只读审查 |
 | `scripts/local_env.py` | localhost MySQL、模拟短信/CAPTCHA 与端到端验收 |

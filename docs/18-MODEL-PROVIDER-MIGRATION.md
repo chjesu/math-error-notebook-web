@@ -4,7 +4,7 @@
 >
 > 日期：2026-08-26
 >
-> 状态：本地可配置 Harness 适配层已实施；Qwen 生产切换仍待离线评测
+> 状态：Phase 3 Provider 契约与 DeepSeek/百炼双配置档已实施；Qwen 真实评测和生产切换仍待完成
 >
 > 适用范围：阿里云环境无法稳定使用 Codex/OpenAI 服务时的数学模型替代
 
@@ -62,7 +62,7 @@ flowchart LR
 
 ### 4.1 模型边界
 
-当前 `services/web_app/codex_model.py` 同时承担模型调用和 Codex 会话编排。迁移时应把供应商调用抽象为 `ModelProvider`，把错题流程保留在供应商无关的 `NotebookAgent` 中。
+`services/web_domain/model_provider/` 已冻结供应商契约，`services/web_app/model_providers.py` 已实现 DeepSeek 与百炼配置档；`services/web_app/codex_model.py` 公开供应商无关的 `NotebookAgent`，并保留旧名称兼容导出。首版仍复用 Harness 会话运行时，后续再把产品会话历史收归应用自有 `ConversationStore`。
 
 Provider 最少需要提供：
 
@@ -123,20 +123,22 @@ Provider 的原始事件统一转换为当前产品事件，前端不感知供�
 
 ### 4.6 启动和模型路由
 
-`scripts/local_env.py serve --enable-harness-model` 已通过统一 Harness 适配层装配 Provider。实际冻结的环境配置为：
+`scripts/local_env.py serve --enable-harness-model` 已通过 `build_model_provider` 只装配一个 Provider。实际冻结的环境配置为：
 
 ```text
+MODEL_PROVIDER=<deepseek 或 dashscope，默认 deepseek>
+DEEPSEEK_API_KEY=<仅运行环境注入>
+DEEPSEEK_BASE_URL=<默认 https://api.deepseek.com>
+DEEPSEEK_MODEL=<模型 ID>
+DASHSCOPE_API_KEY=<仅运行环境注入>
+DASHSCOPE_BASE_URL=<百炼 HTTPS 兼容端点>
+DASHSCOPE_MODEL=<经离线评测的 Qwen-VL 模型 ID>
 HARNESS_PROVIDER=<内部路由名，默认 notebook-provider>
-HARNESS_PROVIDER_NAME=<显示名>
-HARNESS_API_PROTOCOL=<默认 openai-completions>
-HARNESS_BASE_URL=<OpenAI 兼容网关根地址>
-HARNESS_API_KEY_ENV=<密钥所在环境变量的名称>
-HARNESS_MODEL=<模型 ID>
 HARNESS_INPUT_MODALITIES=text,image
 HARNESS_REASONING=<可选；只有模型明确支持时才设置>
 ```
 
-当前实现只在 `config/deepseek-harness/cordis.yml` 和 `HarnessRuntimeConfig` 提供安全默认值，运行时以上述环境变量覆盖。API、intake、判题、自动入本和历史恢复代码不按供应商分支。
+Provider 工厂只允许官方 HTTPS 端点，配置对象只保存密钥环境变量名，不保存密钥值。API、intake、判题、自动入本和历史恢复代码不按供应商分支；不配置密钥或选择未知供应商时启动失败闭合。
 
 ## 5. 推荐模型路由原则
 
@@ -160,7 +162,7 @@ HARNESS_REASONING=<可选；只有模型明确支持时才设置>
 
 ### 阶段 B：Provider 最小接入
 
-实现 `ModelProvider` 和 `BailianProvider`，先接通无状态的 `extract`、独立解题和 `grade`，保持 API、Schema、页面和写库门不变。
+已实现 `ModelProvider`、`DeepSeekHarnessProvider` 和 `AliyunDashscopeProvider`，识题、独立解题、判题、会话、历史和压缩保持同一应用契约；真实百炼联网与标注集质量门仍待部署环境完成。
 
 退出条件：契约测试、失败恢复测试、跨用户隔离测试和标注集回归通过。
 
