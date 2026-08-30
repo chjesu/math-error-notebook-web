@@ -17,6 +17,23 @@ python -X utf8 -B scripts/codex_task_router.py route --task web-security-review 
 
 本地环境使用真实 MySQL 8，但短信和 CAPTCHA 均为模拟实现，不连接供应商、不产生费用：
 
+### 一键启停服务（推荐）
+
+项目已内置跨平台便捷脚本，自动识别环境、加载 `.env` 模型配置并支持后台守护运行：
+
+- **Windows 10 / 11**：
+  - 前台启动：`.\start.bat` 或 `powershell -ExecutionPolicy Bypass -File scripts\start.ps1`
+  - 后台守护启动：`.\start.bat -Daemon`
+  - 一键停止：`.\stop.bat` 或 `powershell -ExecutionPolicy Bypass -File scripts\stop.ps1`
+- **Linux / macOS / WSL**：
+  - 前台启动：`./start.sh`
+  - 后台守护启动：`./start.sh --daemon`
+  - 一键停止：`./stop.sh`
+
+详细使用参数、端口管理与 Systemd 扩展见 [跨平台服务启停与运维脚本手册](docs/23-SERVICE-MANAGEMENT-SCRIPTS.md)。
+
+### 新电脑初始化
+
 新电脑可直接执行以下命令完成依赖安装、空白数据初始化、smoke 和启动：
 
 ```powershell
@@ -67,3 +84,4 @@ powershell -ExecutionPolicy Bypass -File scripts\bootstrap_local.ps1
 - [当前实施证据与剩余上线门](docs/08-IMPLEMENTATION-EVIDENCE.md)
 - [可配置 Harness 运行时](docs/20-CONFIGURABLE-HARNESS-RUNTIME.md)
 - [阿里云部署与上线手册](docs/22-ALIYUN-DEPLOYMENT-RUNBOOK.md)
+- [跨平台服务启停与运维脚本手册](docs/23-SERVICE-MANAGEMENT-SCRIPTS.md)
