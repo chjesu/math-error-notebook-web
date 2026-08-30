@@ -56,12 +56,10 @@ if ($Daemon) {
     & $PythonExe @ArgsList | Out-Null
     Start-Sleep -Seconds 2
     Write-Host "[OK] Services started in background." -ForegroundColor Green
-    Write-Host "     - Web API Gateway: http://${Hostname}:${Port}" -ForegroundColor Cyan
-    Write-Host "     - Harness UI: http://127.0.0.1:3080" -ForegroundColor Cyan
+    Write-Host "     - Web URL: http://${Hostname}:${Port}" -ForegroundColor Cyan
     Write-Host "     - Log file: data\runtime\service.stdout.log" -ForegroundColor Gray
 } else {
     Write-Host "[*] Starting services in foreground (Press Ctrl+C to stop)..." -ForegroundColor Cyan
     Write-Host "     - Web URL: http://${Hostname}:${Port}" -ForegroundColor Green
-    Write-Host "     - Harness UI: http://127.0.0.1:3080" -ForegroundColor Green
     & $PythonExe @ArgsList
 }

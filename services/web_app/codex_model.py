@@ -172,19 +172,53 @@ class CodexNotebookModel:
         event_callback: Callable[[dict[str, Any]], None] | None = None,
         reference: VerifiedQuestionReference | None = None,
     ) -> dict[str, Any]:
+        solution = self.solve(attempt=attempt, image_path=image_path)
+        return self.grade_with_solution(
+            attempt=attempt,
+            image_path=image_path,
+            solution=solution,
+            thread_id=thread_id,
+            event_callback=event_callback,
+            reference=reference,
+        )
+
+    def solve(self, *, attempt: Any, image_path: Path) -> dict[str, Any]:
+        """Freeze the independent solution separately so the batch can resume before grading."""
+        difficulty = self._grade_difficulty(attempt.question_text)
+        suffix = "" if difficulty == "normal" else f"-{difficulty}"
+        solution = self._solve_independently(
+            attempt=attempt,
+            image_path=image_path,
+            task=f"math-grade-solution{suffix}",
+        )
+        return {**solution, "difficulty": difficulty}
+
+    def grade_with_solution(
+        self,
+        *,
+        attempt: Any,
+        image_path: Path,
+        solution: dict[str, Any],
+        thread_id: str | None = None,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+        reference: VerifiedQuestionReference | None = None,
+    ) -> dict[str, Any]:
         grade_key = (attempt.attempt_id, attempt.input_version)
         with self._active_lock:
             if grade_key in self._grade_active:
                 raise ModelUnavailableError("model candidate generation is already in progress")
             self._grade_active.add(grade_key)
         try:
-            difficulty = self._grade_difficulty(attempt.question_text)
+            difficulty = solution.get("difficulty")
+            if difficulty not in {"normal", "hard", "max"}:
+                raise ModelUnavailableError("independent solution returned invalid difficulty")
+            if (
+                not isinstance(solution.get("solution"), str)
+                or not isinstance(solution.get("final_answer"), str)
+                or not isinstance(solution.get("verification_checks"), list)
+            ):
+                raise ModelUnavailableError("independent solution is invalid")
             suffix = "" if difficulty == "normal" else f"-{difficulty}"
-            solution = self._solve_independently(
-                attempt=attempt,
-                image_path=image_path,
-                task=f"math-grade-solution{suffix}",
-            )
             frozen = {
                 "attempt_id": attempt.attempt_id,
                 "input_version": attempt.input_version,

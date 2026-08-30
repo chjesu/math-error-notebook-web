@@ -1,0 +1,53 @@
+{
+  "objective": "Review the frozen Phase 2 contract for a recoverable asynchronous image-intake and grading pipeline.",
+  "states": ["pending", "slicing", "solving", "grading", "completed", "failed"],
+  "transitions": [
+    "pending to slicing only after an atomic database slot claim; emit progress",
+    "slicing to solving only after all file extraction results commit; freeze total_items and emit progress",
+    "solving to grading only after each stable item operation has an independently solved result; emit progress",
+    "grading emits one item_completed per persisted item and moves to completed only after all grading and permitted notebook commits finish idempotently; emit batch_completed and release the slot",
+    "any nonterminal state to immutable failed on a terminal error or the third stage failure; emit exactly one batch_failed and release the slot",
+    "all other transitions are rejected; same-state file and solve updates emit progress"
+  ],
+  "invariants": [
+    "The server-persisted batch is the only authority for state, ordered files, progress, lease and terminal outcome.",
+    "Every transition and its event commit atomically; event sequence is strictly increasing within one batch.",
+    "The authenticated session owns all authorization decisions; cross-user reads return the same 404 as missing resources.",
+    "POST creation validates owned ready image files and an Idempotency-Key, then returns 202 without waiting for model work.",
+    "SSE replays after Last-Event-ID. Batch events contain only stages, counts and stable error codes. Owner-only item_completed includes a bounded question/answer snapshot, verdict and notebook status, but no internal IDs, images, prompts or account data.",
+    "Exactly two deployment-wide database slots exist. Claiming a slot and batch is atomic and increments claim_epoch. Every write compares slot, fencing token, database-time lease validity and expected state.",
+    "The scheduler continuously recovers every due nonterminal batch. The lease is five minutes and is renewed before stage commit. A stage gets at most three attempts with 5/10 second backoff, then atomically fails once.",
+    "Creation idempotency is permanently scoped by owner and operation. A canonical request fingerprint, batch, initial event and response commit atomically; mismatched reuse returns idempotency_conflict.",
+    "Creation snapshots the ordered file ID, object key, media type, byte size and SHA-256. Workers consume and verify only this immutable snapshot.",
+    "SSE event IDs are batch-scoped decimal sequences retained for batch lifetime. Missing means zero; malformed or future IDs return invalid_event_cursor. Every reconnect authenticates and authorizes.",
+    "GET and SSE expose the same monotonic snapshot: total_files, total_items after slicing freezes it, completed_files, completed_items, state, terminal flag, last event and stable error code.",
+    "Model output remains an untrusted candidate; deterministic code validates all transitions and writes.",
+    "Duplicate creation, claiming, worker retry and SSE reconnect must not duplicate business results."
+    ,"Stable operation identity is batch plus stage plus file or item ordinal. Duplicate billable model computation is tolerated because the provider has no frozen idempotency contract, while fenced conditional persistence permits exactly one business-result commit."
+  ],
+  "scope": [
+    "MySQL 8 migration and in-memory test store",
+    "task engine and recovery",
+    "POST and GET batch APIs",
+    "replayable SSE",
+    "frontend progress and reconnect"
+  ],
+  "out_of_scope": [
+    "authentication redesign",
+    "object-storage migration",
+    "deployment",
+    "Phase 3 or later features"
+  ],
+  "acceptance": [
+    "Creation returns 202 immediately",
+    "SSE replay is ordered and refresh retains progress",
+    "ownership is enforced",
+    "two processes competing still allow only two active database slots and stale fencing tokens cannot commit",
+    "a stage retries at most three times and then emits exactly one terminal failed event",
+    "the same repository conformance suite covers both stores, plus MySQL locking and isolation evidence"
+  ],
+  "questions": [
+    "Identify missing invariants, ambiguous state transitions, idempotency gaps, recovery gaps, or acceptance criteria that would make the contract unsafe or unverifiable.",
+    "Recommend only concrete contract changes required before implementation."
+  ]
+}

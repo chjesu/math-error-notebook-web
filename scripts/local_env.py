@@ -6,17 +6,22 @@ import argparse
 import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from datetime import datetime, timezone
 import json
 import hashlib
 import os
 from pathlib import Path
+from queue import Empty, Queue
+import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+from threading import Thread
 import time
 from typing import Any
 
@@ -49,6 +54,7 @@ MIGRATIONS = (
     ROOT / "services" / "web_domain" / "migrations" / "0009_file_upload_idempotency.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0010_codex_harness.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0011_daily_learning_usage.sql",
+    ROOT / "services" / "web_domain" / "migrations" / "0012_async_intake_batches.sql",
 )
 HARNESS_WEB_HOME = ROOT / "data" / "runtime" / "deepseek-harness-web-home"
 HARNESS_PRODUCT_WORKSPACE = HARNESS_WEB_HOME / "math-notebook-workspace"
@@ -57,10 +63,14 @@ HARNESS_RUNTIME_PRESET = HARNESS_WEB_HOME / ".agent-presets" / "math-notebook" /
 HARNESS_WEB_PATCH = ROOT / "config" / "deepseek-harness" / "web-product.patch.yml"
 HARNESS_WEB_STDOUT = ROOT / "data" / "runtime" / "deepseek-harness-web.stdout.log"
 HARNESS_WEB_STDERR = ROOT / "data" / "runtime" / "deepseek-harness-web.stderr.log"
-HARNESS_WEB_PORT = 3080
 SERVICE_PID_FILE = ROOT / "data" / "runtime" / "service.pid"
 SERVICE_STDOUT = ROOT / "data" / "runtime" / "service.stdout.log"
 SERVICE_STDERR = ROOT / "data" / "runtime" / "service.stderr.log"
+WINDOWS_CREATE_SUSPENDED = 0x00000004
+_HARNESS_LOOPBACK_AUTHORITY = re.compile(
+    r"((?:(?:https?|wss?)://)?(?:127\.0\.0\.1|localhost|\[::1\]):)\d{1,5}",
+    re.IGNORECASE,
+)
 
 
 def _load_env_file() -> None:
@@ -446,50 +456,311 @@ def start() -> None:
     _wait_running()
 
 
-def stop() -> None:
-    if SERVICE_PID_FILE.is_file():
-        try:
-            pid = int(SERVICE_PID_FILE.read_text(encoding="ascii").strip())
-            if sys.platform == "win32":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else:
-                try:
-                    os.kill(pid, 15)
-                except OSError:
-                    pass
-        except Exception:
-            pass
-        try:
-            SERVICE_PID_FILE.unlink()
-        except Exception:
-            pass
+def _pid_is_running(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
 
-    if not _is_running():
-        return
-    binary_path = _binary("mysqladmin")
-    if binary_path.is_file():
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return ctypes.get_last_error() == 5
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _process_group_is_running(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _stop_service_tree(pid: int) -> None:
+    if pid <= 0 or pid == os.getpid():
+        raise ValueError("invalid service process id")
+    if sys.platform == "win32":
+        if not _pid_is_running(pid):
+            return
         result = subprocess.run(
-            [
-                str(binary_path),
-                f"--defaults-extra-file={ROOT_CLIENT}",
-                "--protocol=TCP",
-                "--host=127.0.0.1",
-                f"--port={PORT}",
-                "--user=root",
-                "shutdown",
-            ],
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=30,
-            check=False,
+            timeout=15,
         )
-        if result.returncode:
-            raise RuntimeError("local MySQL shutdown failed")
+        if result.returncode != 0:
+            raise RuntimeError("service process tree shutdown failed")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if not _pid_is_running(pid):
+                return
+            time.sleep(0.1)
+        raise RuntimeError("service process tree remained after shutdown")
+    if not _process_group_is_running(pid):
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if not _process_group_is_running(pid):
+            return
+        time.sleep(0.1)
+    os.killpg(pid, signal.SIGKILL)
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if not _process_group_is_running(pid):
+            return
+        time.sleep(0.1)
+    raise RuntimeError("service process group remained after shutdown")
+
+
+def _process_identity(pid: int) -> dict[str, Any] | None:
+    try:
+        import psutil
+    except ImportError as exc:
+        raise RuntimeError("psutil is required to verify service process identity") from exc
+    try:
+        process = psutil.Process(pid)
+        executable = process.exe()
+        created_at_us = int(round(process.create_time() * 1_000_000))
+    except psutil.NoSuchProcess:
+        return None
+    except psutil.Error as exc:
+        raise RuntimeError("service process identity could not be verified") from exc
+    if not executable or created_at_us <= 0:
+        raise RuntimeError("service process identity is incomplete")
+    return {
+        "version": 1,
+        "state": "running",
+        "pid": pid,
+        "created_at_us": created_at_us,
+        "executable": os.path.normcase(os.path.realpath(executable)),
+    }
+
+
+def _claim_service_pid() -> str:
+    SERVICE_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    claim_token = secrets.token_urlsafe(32)
+    claim = {
+        "version": 1,
+        "state": "starting",
+        "owner_pid": os.getpid(),
+        "claim_token": claim_token,
+    }
+    try:
+        descriptor = os.open(
+            str(SERVICE_PID_FILE),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+    except FileExistsError as exc:
+        raise RuntimeError(
+            "service PID ownership is already claimed; run stop before daemon start"
+        ) from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(claim, output, ensure_ascii=True, separators=(",", ":"))
+            output.flush()
+            os.fsync(output.fileno())
+    except Exception:
+        with suppress(OSError):
+            SERVICE_PID_FILE.unlink()
+        raise
+    return claim_token
+
+
+def _release_service_pid_claim(claim_token: str) -> None:
+    try:
+        recorded = json.loads(SERVICE_PID_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("service PID ownership claim could not be released") from exc
+    if (
+        not isinstance(recorded, dict)
+        or recorded.get("version") != 1
+        or recorded.get("state") != "starting"
+        or not isinstance(recorded.get("claim_token"), str)
+        or not secrets.compare_digest(recorded["claim_token"], claim_token)
+    ):
+        raise RuntimeError("service PID ownership claim changed before release")
+    SERVICE_PID_FILE.unlink()
+
+
+def _require_service_pid_claim(claim_token: str) -> None:
+    try:
+        claim = json.loads(SERVICE_PID_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("service PID ownership claim is invalid") from exc
+    if (
+        not isinstance(claim, dict)
+        or claim.get("version") != 1
+        or claim.get("state") != "starting"
+        or not isinstance(claim.get("claim_token"), str)
+        or not secrets.compare_digest(claim["claim_token"], claim_token)
+    ):
+        raise RuntimeError("service PID ownership claim does not match this starter")
+
+
+def _replace_service_pid_record(record: dict[str, Any]) -> None:
+    temporary = SERVICE_PID_FILE.with_name(
+        f".{SERVICE_PID_FILE.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    )
+    try:
+        temporary.write_text(
+            json.dumps(record, ensure_ascii=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temporary, SERVICE_PID_FILE)
+    finally:
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+
+
+def _write_service_pid(pid: int, claim_token: str) -> None:
+    _require_service_pid_claim(claim_token)
+    identity = _process_identity(pid)
+    if identity is None:
+        raise RuntimeError("service process exited before its identity was recorded")
+    _replace_service_pid_record(identity)
+
+
+def _preserve_service_recovery_pid(pid: int, claim_token: str) -> None:
+    _require_service_pid_claim(claim_token)
+    identity = _process_identity(pid)
+    if identity is None:
+        raise RuntimeError("spawned service exited before recovery identity was recorded")
+    identity["state"] = "recovery"
+    _replace_service_pid_record(identity)
+
+
+def _handle_failed_daemon_start(
+    process: subprocess.Popen[Any] | None,
+    claim_token: str,
+) -> None:
+    child_stopped = process is None or process.poll() is not None
+    if not child_stopped and process is not None:
+        try:
+            _stop_service_tree(process.pid)
+            child_stopped = True
+        except Exception as cleanup_error:
+            try:
+                _preserve_service_recovery_pid(process.pid, claim_token)
+            except Exception as recovery_error:
+                raise RuntimeError(
+                    "daemon startup failed; spawned process cleanup and recovery recording failed"
+                ) from recovery_error
+            raise RuntimeError(
+                "daemon startup failed; spawned process cleanup failed; recovery identity retained"
+            ) from cleanup_error
+    if child_stopped:
+        _release_service_pid_claim(claim_token)
+
+
+def _read_service_pid() -> int | None:
+    try:
+        recorded = json.loads(SERVICE_PID_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("service PID identity record is invalid") from exc
+    if not isinstance(recorded, dict):
+        raise RuntimeError("service PID identity record is invalid")
+    pid = recorded.get("pid")
+    created_at_us = recorded.get("created_at_us")
+    executable = recorded.get("executable")
+    if (
+        recorded.get("version") != 1
+        or recorded.get("state") not in {"running", "recovery"}
+        or isinstance(pid, bool)
+        or not isinstance(pid, int)
+        or pid <= 0
+        or isinstance(created_at_us, bool)
+        or not isinstance(created_at_us, int)
+        or created_at_us <= 0
+        or not isinstance(executable, str)
+        or not executable
+    ):
+        raise RuntimeError("service PID identity record is invalid")
+    current = _process_identity(pid)
+    if current is None:
+        return None
+    if (
+        current["created_at_us"] != created_at_us
+        or current["executable"] != executable
+    ):
+        raise RuntimeError("service PID identity does not match the current process")
+    return pid
+
+
+def stop() -> None:
+    service_stop_error: Exception | None = None
+    if SERVICE_PID_FILE.is_file():
+        service_tree_stopped = False
+        try:
+            pid = _read_service_pid()
+            if pid is not None:
+                try:
+                    _stop_service_tree(pid)
+                except Exception as exc:
+                    raise RuntimeError("service process tree shutdown failed") from exc
+            service_tree_stopped = True
+        except Exception as exc:
+            service_stop_error = exc
+        if service_tree_stopped:
+            try:
+                SERVICE_PID_FILE.unlink()
+            except Exception as exc:
+                service_stop_error = RuntimeError("service PID record cleanup failed")
+                service_stop_error.__cause__ = exc
+
+    if not _is_running():
+        if service_stop_error is not None:
+            raise service_stop_error
+        return
+    database_stop_error: Exception | None = None
+    binary_path = _binary("mysqladmin")
+    if binary_path.is_file():
+        try:
+            result = subprocess.run(
+                [
+                    str(binary_path),
+                    f"--defaults-extra-file={ROOT_CLIENT}",
+                    "--protocol=TCP",
+                    "--host=127.0.0.1",
+                    f"--port={PORT}",
+                    "--user=root",
+                    "shutdown",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+            if result.returncode:
+                database_stop_error = RuntimeError("local MySQL shutdown failed")
+        except Exception as exc:
+            database_stop_error = exc
     else:
         try:
             subprocess.run(["docker", "stop", "lzlm-mysql"], check=True, timeout=15)
         except Exception as exc:
-            raise RuntimeError(f"local MySQL shutdown failed: {exc}") from exc
+            database_stop_error = exc
+    if service_stop_error is not None:
+        raise service_stop_error
+    if database_stop_error is not None:
+        raise RuntimeError("local MySQL shutdown failed") from database_stop_error
 
 
 def init() -> None:
@@ -555,8 +826,13 @@ def _clear_test_data() -> None:
     connection = _connection_factory()()
     cursor = connection.cursor()
     try:
+        cursor.execute("UPDATE intake_worker_slots SET batch_id=NULL,lease_owner=NULL,lease_expires_at=NULL")
         for table in (
             "account_deletions",
+            "intake_batch_events",
+            "intake_batch_operations",
+            "intake_batch_files",
+            "intake_batches",
             "file_upload_idempotency",
             "daily_learning_usage",
             "review_attempts",
@@ -798,13 +1074,13 @@ def _domain_smoke(service: Any, sender: Any, session_cookie: str, phone: str) ->
             "/v1/harness/sessions/bind",
             {"session_id": "local-smoke-session"},
             cookie=session_cookie,
-            origin="http://local.test:3080",
+            origin="http://local.test",
         ))
         if bound[0] != 200:
             raise RuntimeError("Harness session binding smoke test failed")
         internal = {
             "extra_headers": {"authorization": f"Bearer {harness_token}"},
-            "client": ("127.0.0.1", 3080),
+            "client": ("127.0.0.1", 43123),
         }
         committed = asyncio.run(_asgi_call(
             app,
@@ -886,6 +1162,11 @@ def _clear_domain_smoke_data(user_id: str) -> None:
     cursor = connection.cursor()
     try:
         cursor.execute("DELETE FROM account_deletions WHERE user_id=%s", (user_id,))
+        cursor.execute("UPDATE intake_worker_slots SET batch_id=NULL,lease_owner=NULL,lease_expires_at=NULL WHERE batch_id IN (SELECT id FROM intake_batches WHERE user_id=%s)", (user_id,))
+        cursor.execute("DELETE FROM intake_batch_events WHERE batch_id IN (SELECT id FROM intake_batches WHERE user_id=%s)", (user_id,))
+        cursor.execute("DELETE FROM intake_batch_operations WHERE batch_id IN (SELECT id FROM intake_batches WHERE user_id=%s)", (user_id,))
+        cursor.execute("DELETE FROM intake_batch_files WHERE batch_id IN (SELECT id FROM intake_batches WHERE user_id=%s)", (user_id,))
+        cursor.execute("DELETE FROM intake_batches WHERE user_id=%s", (user_id,))
         for table in ("file_upload_idempotency", "daily_learning_usage", "review_attempts", "recommendations", "review_tasks", "domain_audit_events", "error_notebook_entries", "grade_candidates", "attempts", "web_jobs", "intake_items", "web_files"):
             cursor.execute(f"DELETE FROM `{table}` WHERE user_id=%s", (user_id,))
         cursor.execute("DELETE FROM question_verifications WHERE id=%s AND question_version_id=%s", (verification_id, version_id))
@@ -1074,7 +1355,7 @@ class LocalOtpDisclosureApp:
         await send({"type": "http.response.body", "body": encoded})
 
 
-def _harness_web_command() -> list[str]:
+def _harness_web_command(port: int) -> list[str]:
     executable = shutil.which("node")
     entry = ROOT / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js"
     if not executable or not entry.is_file():
@@ -1087,12 +1368,186 @@ def _harness_web_command() -> list[str]:
         "--profile", "web",
         "--patch", str(HARNESS_WEB_PATCH),
         "--host", "127.0.0.1",
-        "--port", str(HARNESS_WEB_PORT),
+        "--port", str(port),
         "--no-open",
     ]
 
 
-def _start_harness_web(internal_token: str) -> subprocess.Popen[Any]:
+def _harness_web_port_from_line(line: str) -> int | None:
+    match = re.match(r"^dsh web: http://127\.0\.0\.1:(\d{1,5})(?:/)?(?:\s|$)", line)
+    if match is None:
+        return None
+    port = int(match.group(1))
+    return port if 1 <= port <= 65535 else None
+
+
+def _capture_harness_web_output(
+    stream: Any,
+    log_path: Path,
+    ready_ports: Queue[int] | None = None,
+) -> None:
+    with log_path.open("a", encoding="utf-8") as output:
+        for line in stream:
+            port = _harness_web_port_from_line(line)
+            if port is not None and ready_ports is not None and ready_ports.empty():
+                ready_ports.put_nowait(port)
+            output.write(_HARNESS_LOOPBACK_AUTHORITY.sub(r"\1<internal>", line))
+            output.flush()
+    stream.close()
+
+
+def _assign_windows_kill_job(process: subprocess.Popen[Any]) -> None:
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class BasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimitInformation),
+            ("IoInfo", IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+    ]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.CreateJobObjectW(None, None)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    information = ExtendedLimitInformation()
+    information.BasicLimitInformation.LimitFlags = 0x00002000
+    if not kernel32.SetInformationJobObject(
+        handle, 9, ctypes.byref(information), ctypes.sizeof(information)
+    ):
+        error = ctypes.WinError(ctypes.get_last_error())
+        kernel32.CloseHandle(handle)
+        raise error
+    if not kernel32.AssignProcessToJobObject(handle, wintypes.HANDLE(process._handle)):
+        error = ctypes.WinError(ctypes.get_last_error())
+        kernel32.CloseHandle(handle)
+        raise error
+    process._lzlm_job_handle = int(handle)  # type: ignore[attr-defined]
+
+
+def _terminate_windows_job(process: subprocess.Popen[Any]) -> bool:
+    handle = getattr(process, "_lzlm_job_handle", None)
+    if not isinstance(handle, int) or handle <= 0:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    try:
+        if not kernel32.TerminateJobObject(wintypes.HANDLE(handle), 1):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
+        process._lzlm_job_handle = None  # type: ignore[attr-defined]
+    return True
+
+
+def _resume_windows_process(process: subprocess.Popen[Any]) -> None:
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class ThreadEntry32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ThreadID", wintypes.DWORD),
+            ("th32OwnerProcessID", wintypes.DWORD),
+            ("tpBasePri", wintypes.LONG),
+            ("tpDeltaPri", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry32)]
+    kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry32)]
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+    kernel32.ResumeThread.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000004, 0)
+    if snapshot == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    resumed = False
+    entry = ThreadEntry32()
+    entry.dwSize = ctypes.sizeof(entry)
+    try:
+        has_entry = bool(kernel32.Thread32First(snapshot, ctypes.byref(entry)))
+        while has_entry:
+            if entry.th32OwnerProcessID == process.pid:
+                thread_handle = kernel32.OpenThread(0x0002, False, entry.th32ThreadID)
+                if not thread_handle:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                try:
+                    previous_suspend_count = kernel32.ResumeThread(thread_handle)
+                    if previous_suspend_count == 0xFFFFFFFF:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    if previous_suspend_count == 0:
+                        raise RuntimeError("Harness process thread was not suspended")
+                    resumed = True
+                finally:
+                    kernel32.CloseHandle(thread_handle)
+            has_entry = bool(kernel32.Thread32Next(snapshot, ctypes.byref(entry)))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    if not resumed:
+        raise RuntimeError("suspended Harness process thread was not found")
+
+
+def _close_windows_job(process: subprocess.Popen[Any]) -> None:
+    handle = getattr(process, "_lzlm_job_handle", None)
+    if not isinstance(handle, int) or handle <= 0:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle(wintypes.HANDLE(handle))
+    process._lzlm_job_handle = None  # type: ignore[attr-defined]
+
+
+def _start_harness_web(internal_token: str, product_origin: str) -> tuple[subprocess.Popen[Any], int]:
     HARNESS_WEB_HOME.mkdir(parents=True, exist_ok=True)
     HARNESS_PRODUCT_WORKSPACE.mkdir(parents=True, exist_ok=True)
     HARNESS_RUNTIME_PRESET.parent.mkdir(parents=True, exist_ok=True)
@@ -1103,43 +1558,112 @@ def _start_harness_web(internal_token: str) -> subprocess.Popen[Any]:
         "DSH_HOME": str(HARNESS_WEB_HOME),
         "LZLM_HARNESS_WORKSPACE_ROOT": str(HARNESS_PRODUCT_WORKSPACE),
         "LZLM_HARNESS_INTERNAL_TOKEN": internal_token,
-        "LZLM_PRODUCT_ORIGIN": "http://127.0.0.1:8000",
+        "LZLM_PRODUCT_ORIGIN": product_origin,
         "DSH_PERMISSION_MODE": "read-only",
         "DSH_TELEMETRY_DISABLED": "1",
     })
     creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    with HARNESS_WEB_STDOUT.open("a", encoding="utf-8") as stdout, HARNESS_WEB_STDERR.open("a", encoding="utf-8") as stderr:
-        process = subprocess.Popen(
-            _harness_web_command(),
-            cwd=str(ROOT),
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=stdout,
-            stderr=stderr,
-            creationflags=creationflags,
-        )
+    if sys.platform == "win32":
+        creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        creationflags |= WINDOWS_CREATE_SUSPENDED
+    ready_ports: Queue[int] = Queue(maxsize=1)
+    process = subprocess.Popen(
+        _harness_web_command(0),
+        cwd=str(ROOT),
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=creationflags,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        start_new_session=sys.platform != "win32",
+    )
+    try:
+        _assign_windows_kill_job(process)
+        _resume_windows_process(process)
+    except Exception:
+        terminated = False
+        if sys.platform == "win32":
+            try:
+                terminated = _terminate_windows_job(process)
+            except Exception:
+                terminated = False
+        if not terminated:
+            process.kill()
+        process.wait(timeout=5)
+        raise
+    if process.stdout is None or process.stderr is None:
+        _stop_harness_web(process)
+        raise RuntimeError("DeepSeek Harness Web output pipes were not created")
+    stdout_thread = Thread(
+        target=_capture_harness_web_output,
+        args=(process.stdout, HARNESS_WEB_STDOUT, ready_ports),
+        name="harness-web-stdout",
+        daemon=True,
+    )
+    stderr_thread = Thread(
+        target=_capture_harness_web_output,
+        args=(process.stderr, HARNESS_WEB_STDERR),
+        name="harness-web-stderr",
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    process._lzlm_output_threads = (stdout_thread, stderr_thread)  # type: ignore[attr-defined]
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         if process.poll() is not None:
+            _stop_harness_web(process)
             raise RuntimeError(f"DeepSeek Harness Web exited during startup; see {HARNESS_WEB_STDERR}")
         try:
-            with socket.create_connection(("127.0.0.1", HARNESS_WEB_PORT), timeout=0.2):
-                return process
-        except OSError:
-            time.sleep(0.1)
-    process.terminate()
+            port = ready_ports.get(timeout=0.1)
+        except Empty:
+            continue
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return process, port
+        except OSError as exc:
+            _stop_harness_web(process)
+            raise RuntimeError("DeepSeek Harness Web announced an unreachable port") from exc
+    _stop_harness_web(process)
     raise RuntimeError(f"DeepSeek Harness Web did not become ready; see {HARNESS_WEB_STDERR}")
 
 
 def _stop_harness_web(process: subprocess.Popen[Any] | None) -> None:
-    if process is None or process.poll() is not None:
+    if process is None:
         return
-    process.terminate()
     try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
+        if process.poll() is None:
+            if sys.platform == "win32":
+                if not _terminate_windows_job(process):
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=15,
+                    )
+                process.wait(timeout=5)
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+    finally:
+        if sys.platform == "win32":
+            _close_windows_job(process)
+        output_threads = getattr(process, "_lzlm_output_threads", ())
+        if isinstance(output_threads, (tuple, list)):
+            for output_thread in output_threads:
+                if isinstance(output_thread, Thread):
+                    output_thread.join(timeout=2)
 
 
 def serve(
@@ -1187,19 +1711,31 @@ def serve(
         )
     else:
         model_runner = CodexNotebookModel(RUNTIME / "model-candidates") if enable_codex_model else None
-    app = NotebookAsgiApp(
-        service,
-        notebook,
-        allowed_hosts={"127.0.0.1", "localhost"},
-        require_https=False,
-        model_runner=model_runner,
-        harness_internal_token=harness_internal_token,
-    )
-    app.resume_pending_deletions()
-    harness_web = _start_harness_web(harness_internal_token) if harness_internal_token else None
+    harness_web = None
+    app = None
     try:
+        harness_upstream = None
+        if harness_internal_token:
+            harness_web, harness_port = _start_harness_web(
+                harness_internal_token,
+                f"http://{host}:{port}",
+            )
+            harness_upstream = ("127.0.0.1", harness_port)
+        app = NotebookAsgiApp(
+            service,
+            notebook,
+            allowed_hosts={"127.0.0.1", "localhost"},
+            require_https=False,
+            model_runner=model_runner,
+            harness_internal_token=harness_internal_token,
+            harness_upstream=harness_upstream,
+        )
+        app.resume_pending_deletions()
+        app.resume_pending_batches()
         uvicorn.run(LocalOtpDisclosureApp(app, sender), host=host, port=port, access_log=False)
     finally:
+        if app is not None:
+            app.stop_pending_batches()
         _stop_harness_web(harness_web)
 
 
@@ -1218,7 +1754,9 @@ def doctor() -> dict[str, Any]:
     }
     try:
         import pymysql  # noqa: F401
+        import psutil  # noqa: F401
         import uvicorn  # noqa: F401
+        import websockets  # noqa: F401
         checks["python_dependencies"] = True
     except ImportError:
         checks["python_dependencies"] = False
@@ -1279,22 +1817,37 @@ def main() -> int:
                     for name in ("CREATE_NO_WINDOW", "DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
                         creationflags |= int(getattr(subprocess, name, 0))
 
-                out_fd = os.open(str(SERVICE_STDOUT), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-                err_fd = os.open(str(SERVICE_STDERR), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+                claim_token = _claim_service_pid()
+                proc: subprocess.Popen[Any] | None = None
                 try:
-                    proc = subprocess.Popen(
-                        cmd,
-                        cwd=str(ROOT),
-                        stdout=out_fd,
-                        stderr=err_fd,
-                        stdin=subprocess.DEVNULL,
-                        creationflags=creationflags,
-                        start_new_session=False if sys.platform == "win32" else True,
-                    )
-                finally:
-                    os.close(out_fd)
-                    os.close(err_fd)
-                SERVICE_PID_FILE.write_text(str(proc.pid), encoding="ascii")
+                    out_fd: int | None = None
+                    err_fd: int | None = None
+                    try:
+                        out_fd = os.open(
+                            str(SERVICE_STDOUT), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+                        )
+                        err_fd = os.open(
+                            str(SERVICE_STDERR), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+                        )
+                        proc = subprocess.Popen(
+                            cmd,
+                            cwd=str(ROOT),
+                            stdout=out_fd,
+                            stderr=err_fd,
+                            stdin=subprocess.DEVNULL,
+                            creationflags=creationflags,
+                            start_new_session=False if sys.platform == "win32" else True,
+                        )
+                    finally:
+                        if out_fd is not None:
+                            os.close(out_fd)
+                        if err_fd is not None:
+                            os.close(err_fd)
+                    _write_service_pid(proc.pid, claim_token)
+                except Exception:
+                    _handle_failed_daemon_start(proc, claim_token)
+                    raise
+                assert proc is not None
                 result = {"status": "ok", "mode": "daemon", "pid": proc.pid, "port": args.port}
             else:
                 serve(

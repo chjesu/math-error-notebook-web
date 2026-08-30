@@ -36,55 +36,15 @@ else
     PYTHON_EXE="$(command -v python || true)"
 fi
 
-# 2. 调用 local_env.py 安全停止数据库与会话
-if [[ -n "${PYTHON_EXE}" && -x "${PYTHON_EXE}" ]]; then
-    echo -e "${YELLOW}[*] 正在安全停止本地数据库和会话...${NC}"
-    "${PYTHON_EXE}" -X utf8 -B scripts/local_env.py stop >/dev/null 2>&1 || true
+# 2. 只由 local_env.py 裁决并验证完整服务树；失败时保留 PID 恢复证据。
+if [[ -z "${PYTHON_EXE}" || ! -x "${PYTHON_EXE}" ]]; then
+    echo -e "${RED}[✗] 未找到可用 Python，未执行停止。${NC}"
+    exit 1
 fi
-
-# 3. 停止通过 PID 文件记录的后台进程
-PID_FILE="${PROJECT_ROOT}/data/runtime/service.pid"
-if [[ -f "${PID_FILE}" ]]; then
-    SAVED_PID="$(cat "${PID_FILE}" 2>/dev/null || true)"
-    if [[ -n "${SAVED_PID}" ]] && kill -0 "${SAVED_PID}" >/dev/null 2>&1; then
-        echo -e "${YELLOW}[*] 正在停止后台主进程 (PID: ${SAVED_PID})...${NC}"
-        kill "${SAVED_PID}" >/dev/null 2>&1 || true
-        sleep 1
-        if kill -0 "${SAVED_PID}" >/dev/null 2>&1; then
-            kill -9 "${SAVED_PID}" >/dev/null 2>&1 || true
-        fi
-    fi
-    rm -f "${PID_FILE}"
-fi
-
-# 4. 检查并清理端口占用 (8000, 3080, 3307)
-PORTS=(8000 3080 3307)
-for PORT in "${PORTS[@]}"; do
-    if command -v lsof >/dev/null 2>&1; then
-        PIDS=$(lsof -ti tcp:"${PORT}" 2>/dev/null || true)
-    elif command -v fuser >/dev/null 2>&1; then
-        PIDS=$(fuser "${PORT}"/tcp 2>/dev/null || true)
-    elif command -v ss >/dev/null 2>&1; then
-        PIDS=$(ss -lptn "sport = :${PORT}" 2>/dev/null | grep -oP 'pid=\K\d+' || true)
-    else
-        PIDS=""
-    fi
-
-    if [[ -n "${PIDS}" ]]; then
-        for PID in ${PIDS}; do
-            echo -e "${YELLOW}[*] 正在释放端口 ${PORT} (PID: ${PID})...${NC}"
-            kill -15 "${PID}" >/dev/null 2>&1 || true
-            sleep 0.5
-            kill -9 "${PID}" >/dev/null 2>&1 || true
-        done
-    fi
-done
-
-# 5. 强制模式下清理匹配的残留进程
-if [[ "${FORCE}" == true ]]; then
-    echo -e "${YELLOW}[*] 执行强制模式：扫描并清理残留进程...${NC}"
-    pkill -f "scripts/local_env.py serve" >/dev/null 2>&1 || true
-    pkill -f "deepseek-harness" >/dev/null 2>&1 || true
+echo -e "${YELLOW}[*] 正在安全停止完整服务树和本地数据库...${NC}"
+if ! "${PYTHON_EXE}" -X utf8 -B scripts/local_env.py stop; then
+    echo -e "${RED}[✗] 停止失败；恢复状态已保留。${NC}"
+    exit 1
 fi
 
 echo -e "${GREEN}[✓] 所有服务已停止，端口资源已完全释放。${NC}"

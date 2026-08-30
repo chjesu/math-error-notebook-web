@@ -1,0 +1,44 @@
+{
+  "packet_policy": "Semantic implementation summary only. No source code, credentials, private data, prompts, uploads, database rows, or secrets are included.",
+  "objective": "Fresh-context implementation review of Phase 2 durable asynchronous image intake, solving, grading, replayable progress, and recovery.",
+  "frozen_contract": {
+    "state_machine": "pending -> slicing -> solving -> grading -> completed; any nonterminal state may enter immutable failed",
+    "ownership": "all public batch reads and event replay are scoped to the authenticated user; missing and cross-owner are both 404",
+    "concurrency": "exactly two deployment-wide MySQL slot rows; claims increment claim_epoch; every worker operation, transition, renewal, terminal write and release requires the same slot, owner, epoch, lease owner, unexpired database-time lease, and expected state. The only exception is the separately specified, batch-row-serialized account-deletion cancellation authority.",
+    "recovery": "continuous 500ms due-work scan, 300s lease, heartbeat at no more than 60s, durable per-stage attempt counters incremented at claim, 5/10s retry delay for reported failures, and direct failed/retry_exhausted reconciliation when an expired claim leaves three consumed attempts",
+    "idempotency": "creation uniqueness is user plus operation version plus key with an SHA-256 fingerprint of ordered file IDs; an exact fingerprint replays the original batch and a different fingerprint atomically returns idempotency_conflict without a new batch. Stage operations use stage:ordinal and reconcile existing intake, attempt, candidate and notebook entry before retry",
+    "events": "persisted per-batch sequence; progress and item_completed commit with their operation/count change; batch_completed or batch_failed commit with terminal state; Last-Event-ID replay always queries sequence greater than the last delivered ID"
+  },
+  "implemented_storage": [
+    "The forward migration adds batch, immutable file snapshot, operation receipt, event and fixed-slot tables; a reverse-order rollback artifact is present.",
+    "Creation locks owned ready image-file rows, snapshots ID/order/object key/hash/media type/size, inserts the initial progress event in the same transaction, and returns matching replays.",
+    "Claim locks a free or expired slot and one due batch using MySQL 8 SKIP LOCKED, increments the stage attempt and epoch, then assigns both rows atomically.",
+    "Every fenced UPDATE checks that exactly one row changed before appending an event. A stale claim rolls the whole transaction back. Release compares slot, batch, epoch and lease owner.",
+    "Operation insertion, progress counters, event sequence and event JSON commit in one transaction under a unique operation key. Duplicate operations return without a second count or event.",
+    "Account deletion is an explicitly separate high-priority cancellation authority. Following the claim lock order, it locks both fixed slot rows in ascending order before locking active user batches in ID order, reads each current claim tuple, conditionally releases by slot ID plus batch ID plus epoch plus lease owner, conditionally terminalizes that exact tuple (or an unclaimed batch), and appends failed/account_deleted in the same transaction. It may override an expired lease so deletion never waits for an absent worker. Candidate and commit writes reject the cancelled attempts."
+  ],
+  "implemented_pipeline": [
+    "Two daemon workers consume file snapshots in order and run slicing, independent solving, then grading. A heartbeat renews during long model calls.",
+    "Before and after model work, the processor verifies the owner file is still ready and exactly matches the immutable snapshot.",
+    "Slicing and solving results are durable operation receipts. Grading validates all model fields and cross-validation hashes/ranges before candidate persistence.",
+    "A retry after an ambiguous grading boundary looks up the existing candidate and notebook entry by attempt, finishes the idempotent usage record, and only then records the operation receipt.",
+    "Correct answers are not saved, partial/incorrect answers are saved only when deterministic reference checks allow it, unclear/conflict outcomes remain for review."
+  ],
+  "implemented_interfaces": [
+    "POST batch creation validates exact JSON plus Idempotency-Key and returns 202 with a stable batch snapshot and owner-scoped event URL.",
+    "GET batch and active batch are owner-scoped. SSE authenticates and authorizes before validating the cursor, rejects malformed/future cursors, streams stored events in sequence and closes after the terminal high-water mark.",
+    "Owner-only item_completed events contain a maximum 2000-character question/answer snapshot, item number, verdict, automatic-save boolean and notebook status; they exclude candidate, attempt, error and batch internals, images, prompts and account data.",
+    "The official student UI discovers an active batch every second; its page-start millisecond cursor also lets the endpoint return a batch that became terminal between discovery polls. It then uses EventSource with credentials, replays by event sequence and displays batch plus per-item progress. The official image tool creates one batch immediately and polls only the protected loopback bridge for final authoritative receipts."
+  ],
+  "verification_so_far": [
+    "Python compilation succeeded for every changed Python module.",
+    "Node syntax checks succeeded for both changed plugin files.",
+    "Focused repository, engine, real processor, owner isolation, cursor replay, HTTP contract, OpenAPI, frontend and model compatibility checks passed.",
+    "The project-mandated full unit suite is intentionally deferred until reviews are resolved so it runs once at the end."
+  ],
+  "review_request": [
+    "Identify concrete P0, P1 or P2 correctness gaps in transitions, MySQL transaction sequencing, fencing, retry accounting, crash reconciliation, replay continuity, API semantics or frontend recovery.",
+    "Do not request unrelated refactors, Phase 3 provider abstraction, deployment, load testing or broader product scope.",
+    "Return pass only if this semantic implementation satisfies the frozen contract; otherwise give a precise failure interleaving and required correction."
+  ]
+}

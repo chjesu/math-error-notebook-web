@@ -1,0 +1,33 @@
+{
+  "packet_policy": "Security and concurrency behavior summary only. No source code, credentials, private data, prompts, uploads, database rows, or secrets are included.",
+  "objective": "Fresh-context T1 security review of Phase 2 before the single final integration test.",
+  "trust_boundaries": [
+    "The browser batch API trusts only the server session. Request user IDs are never accepted. Every batch snapshot and SSE query filters by the session user.",
+    "Authorization occurs before Last-Event-ID format or high-water validation, so another user cannot use cursor errors as a resource oracle.",
+    "The Harness bridge is separate from the browser API: it requires a startup-random bearer token, a loopback client, and a server-held mapping from opaque Harness session to authenticated user.",
+    "The internal create endpoint accepts one to five PNG/JPEG images, validates exact object keys, base64, declared SHA-256, media type, nonempty content, per-file size, total size and name length before owner-scoped upload.",
+    "Model output is untrusted. Deterministic code validates extraction order, verdict, diagnosis completeness, field lengths, knowledge-point count, confidence, reference schema, identifiers, hashes and match score before writes."
+  ],
+  "isolation_and_privacy": [
+    "Creation snapshots only current-user ready question images while holding file-row locks. Worker reads revalidate owner and immutable metadata before and after model calls.",
+    "Public events expose counters and stable codes. Owner-only item events expose a bounded question/answer snapshot and outcome but no internal IDs, raw images, model prompts, phone, token or infrastructure details.",
+    "Internal final receipts remain on the loopback bridge and are scoped again by the bound Harness session and batch owner.",
+    "Account deletion is a separate high-priority cancellation authority. It follows the claim lock order by locking both fixed slots in ascending order before active user batches in ID order, conditionally releases each current slot by slot ID, batch ID, epoch and lease owner, terminalizes that exact tuple (or an unclaimed batch), appends account_deleted in the transaction, then marks files/intakes/attempts inaccessible. It may override an expired lease so deletion does not wait for an absent worker. Candidate/commit paths reject cancelled attempts and stale workers cannot publish operations or events."
+  ],
+  "concurrency_and_failure_closure": [
+    "Only fixed slots 1 and 2 exist. The database row locks and unique keys prevent a third active claim across processes.",
+    "Claims use database-time expiry and monotonically increasing epochs. All business-observable batch writes require the batch and slot lease to remain valid; affected-row checks close the sub-millisecond expiry race between validation and UPDATE.",
+    "A heartbeat renews at most every 60 seconds during provider work. Renewal failure prevents further fenced persistence. Model calls may be recomputed after a crash, but receipts, counters, candidate writes, notebook entries and usage updates are idempotently reconciled.",
+    "A stage attempt is consumed when its claim commits, including a process crash immediately afterward. After the third crashed claim expires, the next scanner transaction writes failed/retry_exhausted and the sole terminal event without starting a fourth attempt.",
+    "Both completed and failed are immutable. The third failed stage attempt commits one terminal event and releases only its matching slot/epoch."
+  ],
+  "verification_so_far": [
+    "Focused tests cover two-slot exclusion, reclaim and stale writes, duplicate operations/events, third failure, account deletion fencing, full slice-solve-grade behavior, owner isolation, authorization-before-cursor validation, event replay and internal bridge ownership.",
+    "Static Python and JavaScript syntax checks pass. The one final project-wide unit run remains pending until review findings are resolved."
+  ],
+  "review_request": [
+    "Find concrete P0, P1 or P2 authorization, privacy, injection, resource-exhaustion, stale-worker, deletion-race, replay-oracle or fail-open flaws.",
+    "For every finding, state an executable attack or failure sequence and the minimum correction.",
+    "Exclude deployment hardening and Phase 3+ work unless the current local implementation falsely claims those controls."
+  ]
+}

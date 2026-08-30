@@ -54,7 +54,10 @@ class NotebookE2ETests(unittest.TestCase):
         responses: list[dict] = []
 
         async def receive():
-            return requests.pop(0)
+            if requests:
+                return requests.pop(0)
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
 
         async def send(message):
             responses.append(message)
@@ -62,8 +65,8 @@ class NotebookE2ETests(unittest.TestCase):
         headers = [(b"host", b"example.test"), (b"content-type", content_type.encode("latin-1")), (b"x-device-id", b"browser-device-001")]
         if cookie:
             headers.append((b"cookie", cookie.encode("ascii")))
-            if origin is not None:
-                headers.append((b"origin", origin.encode("ascii")))
+        if origin is not None:
+            headers.append((b"origin", origin.encode("ascii")))
         if idempotency_key:
             headers.append((b"idempotency-key", idempotency_key.encode("ascii")))
         for key, value in (extra_headers or {}).items():
@@ -76,23 +79,33 @@ class NotebookE2ETests(unittest.TestCase):
         parsed = json.loads(response_body) if response_headers.get("content-type", "").startswith("application/json") and response_body else response_body or None
         return started["status"], response_headers, parsed
 
-    def test_public_shell_serves_only_fixed_brand_assets(self) -> None:
+    def test_public_shell_exposes_auth_pages_but_protects_product_pages(self) -> None:
         home = self.call("/")
-        self.assertEqual(home[0], 200)
-        self.assertIn("李兆霖数学错题本".encode("utf-8"), home[2])
-        for route in ("/", "/login", "/register", "/legal/terms", "/legal/privacy", "/errors", "/practice", "/progress", "/settings"):
+        self.assertEqual((home[0], home[1]["location"]), (303, "/login"))
+        for route in ("/login", "/register", "/legal/terms", "/legal/privacy"):
             self.assertEqual(self.call(route)[0], 200)
+        cookie = self.login("13600136001")
+        for route in ("/", "/errors", "/practice", "/progress", "/settings"):
+            self.assertEqual(self.call(route, cookie=cookie)[0], 200)
         self.assertNotIn("/reviews", self.app.static_files)
         self.assertIn("/progress", self.app.static_files)
         logo = self.call("/assets/branding/logo-symbol-color-64-v1.png")
         self.assertEqual(logo[1]["content-type"], "image/png")
-        icons = self.call("/web/nav-icons.svg")
+        for route in (
+            "/web/app.js",
+            "/web/nav-icons.svg",
+            "/web/vendor/katex/katex.min.js",
+            "/web/vendor/katex/auto-render.min.js",
+        ):
+            protected = self.call(route)
+            self.assertEqual((protected[0], protected[1]["location"]), (303, "/login"))
+        icons = self.call("/web/nav-icons.svg", cookie=cookie)
         self.assertEqual((icons[0], icons[1]["content-type"]), (200, "image/svg+xml"))
         self.assertIn(b'<symbol id="workbench"', icons[2])
-        katex = self.call("/web/vendor/katex/katex.min.js")
+        katex = self.call("/web/vendor/katex/katex.min.js", cookie=cookie)
         self.assertEqual((katex[0], katex[1]["content-type"]), (200, "text/javascript; charset=utf-8"))
         self.assertIn(b"KaTeX", katex[2])
-        self.assertEqual(self.call("/web/vendor/katex/auto-render.min.js")[0], 200)
+        self.assertEqual(self.call("/web/vendor/katex/auto-render.min.js", cookie=cookie)[0], 200)
         self.assertEqual(self.call("/assets/branding/../README.md")[0], 401)
 
     def test_public_upload_cannot_claim_internal_pdf_purpose(self) -> None:
@@ -118,6 +131,257 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(first[2]["file_id"], replay[2]["file_id"])
         self.assertEqual(len(self.domain_store.files), 1)
         self.assertEqual(len([path for path in Path(self.temp.name).rglob("*") if path.is_file()]), 1)
+
+    def test_intake_batch_creation_snapshot_and_owned_get(self) -> None:
+        class RecordingEngine:
+            def __init__(self):
+                self.started = 0
+
+            def start(self):
+                self.started += 1
+
+        engine = RecordingEngine()
+        self.app.intake_batch_engine = engine
+        cookie = self.login("13100131001")
+        content_type, body = self.multipart("question.png", self.png_bytes())
+        uploaded = self.call(
+            "/v1/files", method="POST", body=body, content_type=content_type,
+            cookie=cookie, idempotency_key="batch-upload",
+        )
+        created = self.call(
+            "/v1/intake/batches", method="POST", payload={"file_ids": [uploaded[2]["file_id"]]},
+            cookie=cookie, idempotency_key="batch-create",
+        )
+        replay = self.call(
+            "/v1/intake/batches", method="POST", payload={"file_ids": [uploaded[2]["file_id"]]},
+            cookie=cookie, idempotency_key="batch-create",
+        )
+        self.assertEqual((created[0], replay[0], engine.started), (202, 202, 2))
+        self.assertEqual(created[2], replay[2])
+        self.assertEqual(created[2]["status"], "pending")
+        self.assertEqual(created[2]["events_url"], f"/v1/intake/batches/{created[2]['batch_id']}/events")
+        fetched = self.call(f"/v1/intake/batches/{created[2]['batch_id']}", cookie=cookie)
+        self.assertEqual((fetched[0], fetched[2]["last_event_id"]), (200, 1))
+        other = self.login("13100131002")
+        self.assertEqual(self.call(f"/v1/intake/batches/{created[2]['batch_id']}", cookie=other)[0], 404)
+
+    def test_intake_batch_creation_returns_rate_limit_after_three_active_batches(self) -> None:
+        class RecordingEngine:
+            def start(self):
+                pass
+
+        self.app.intake_batch_engine = RecordingEngine()
+        cookie = self.login("13100131009")
+        content_type, body = self.multipart("question.png", self.png_bytes())
+        uploaded = self.call(
+            "/v1/files", method="POST", body=body, content_type=content_type,
+            cookie=cookie, idempotency_key="batch-limit-upload",
+        )
+        created = [
+            self.call(
+                "/v1/intake/batches",
+                method="POST",
+                payload={"file_ids": [uploaded[2]["file_id"]]},
+                cookie=cookie,
+                idempotency_key=f"batch-limit-{index}",
+            )
+            for index in range(3)
+        ]
+        replay = self.call(
+            "/v1/intake/batches",
+            method="POST",
+            payload={"file_ids": [uploaded[2]["file_id"]]},
+            cookie=cookie,
+            idempotency_key="batch-limit-0",
+        )
+        rejected = self.call(
+            "/v1/intake/batches",
+            method="POST",
+            payload={"file_ids": [uploaded[2]["file_id"]]},
+            cookie=cookie,
+            idempotency_key="batch-limit-overflow",
+        )
+        self.assertEqual([response[0] for response in created], [202, 202, 202])
+        self.assertEqual((replay[0], replay[2]["batch_id"]), (202, created[0][2]["batch_id"]))
+        self.assertEqual((rejected[0], rejected[2]["error"]["code"]), (429, "batch_limit_reached"))
+
+    def test_intake_batch_sse_replays_terminal_events_and_hides_cursor_from_other_users(self) -> None:
+        cookie = self.login("13100131003")
+        content_type, body = self.multipart("question.png", self.png_bytes())
+        uploaded = self.call(
+            "/v1/files", method="POST", body=body, content_type=content_type,
+            cookie=cookie, idempotency_key="sse-upload",
+        )
+        user_id = next(iter(self.auth_store.users_by_phone.values())).user_id
+        batch = self.domain_store.batch_repository.create_batch(
+            user_id=user_id,
+            file_ids=[uploaded[2]["file_id"]],
+            idempotency_key="sse-batch",
+        )[0]
+        claim = self.domain_store.batch_repository.claim_next(worker_id="test-worker", lease_seconds=300)
+        assert claim is not None
+        self.domain_store.batch_repository.transition(claim, expected="pending", target="slicing")
+        self.domain_store.batch_repository.record_operation(
+            claim, operation_key="slice:1", stage="slicing", ordinal=1,
+            result={"intake_ids": ["i1"]}, completed_files_delta=1,
+        )
+        self.domain_store.batch_repository.transition(claim, expected="slicing", target="solving", total_items=1)
+        self.domain_store.batch_repository.record_operation(
+            claim, operation_key="solve:1", stage="solving", ordinal=1, result={"ok": True},
+        )
+        self.domain_store.batch_repository.transition(claim, expected="solving", target="grading")
+        self.domain_store.batch_repository.record_operation(
+            claim, operation_key="grade:1", stage="grading", ordinal=1,
+            result={"ok": True}, completed_items_delta=1,
+            event_data={
+                "item_no": 1, "question_text": "1+1=?", "answer_text": "3",
+                "verdict": "incorrect", "auto_saved": True, "notebook_status": "saved",
+                "snapshot_truncated": False,
+            },
+        )
+        self.domain_store.batch_repository.transition(claim, expected="grading", target="completed")
+
+        discovery = self.call("/v1/intake/batches/active", cookie=cookie)
+        self.assertIsNone(discovery[2]["batch"])
+        self.assertRegex(discovery[2]["recovery_cursor"], r"^(0|[1-9][0-9]{0,15})$")
+        recovered = self.call("/v1/intake/batches/active?updated_after=0", cookie=cookie)
+        self.assertEqual((recovered[0], recovered[2]["batch"]["batch_id"]), (200, batch.batch_id))
+        self.assertIn("recovery_cursor", recovered[2])
+        self.assertEqual(
+            self.call("/v1/intake/batches/active?updated_after=9999999999999", cookie=cookie)[0],
+            400,
+        )
+
+        replay = self.call(
+            f"/v1/intake/batches/{batch.batch_id}/events", cookie=cookie,
+            extra_headers={"Last-Event-ID": "2"},
+        )
+        self.assertEqual((replay[0], replay[1]["content-type"]), (200, "text/event-stream; charset=utf-8"))
+        self.assertIn(b"event: item_completed", replay[2])
+        self.assertIn(b'"auto_saved":true', replay[2])
+        self.assertIn(b"event: batch_completed", replay[2])
+        self.assertNotIn(b"id: 1\n", replay[2])
+        other = self.login("13100131004")
+        hidden = self.call(
+            f"/v1/intake/batches/{batch.batch_id}/events", cookie=other,
+            extra_headers={"Last-Event-ID": "999999"},
+        )
+        self.assertEqual((hidden[0], hidden[2]["error"]["code"]), (404, "not_found"))
+
+    def test_intake_batch_sse_caps_live_connections_and_releases_on_disconnect(self) -> None:
+        cookie = self.login("13100131010")
+        content_type, body = self.multipart("question.png", self.png_bytes())
+        uploaded = self.call(
+            "/v1/files", method="POST", body=body, content_type=content_type,
+            cookie=cookie, idempotency_key="sse-limit-upload",
+        )
+        user_id = next(iter(self.auth_store.users_by_phone.values())).user_id
+        batch = self.domain_store.batch_repository.create_batch(
+            user_id=user_id,
+            file_ids=[uploaded[2]["file_id"]],
+            idempotency_key="sse-limit-batch",
+        )[0]
+
+        async def scenario() -> None:
+            route = f"/v1/intake/batches/{batch.batch_id}/events"
+            scope = {
+                "type": "http", "method": "GET", "path": route, "query_string": b"",
+                "scheme": "https", "client": ("203.0.113.7", 12345),
+                "headers": [
+                    (b"host", b"example.test"),
+                    (b"content-type", b"application/json"),
+                    (b"x-device-id", b"browser-device-001"),
+                    (b"cookie", cookie.encode("ascii")),
+                    (b"origin", b"https://example.test"),
+                ],
+            }
+
+            async def open_stream(disconnect: asyncio.Event):
+                first_request = True
+                messages: list[dict] = []
+                started = asyncio.Event()
+
+                async def receive():
+                    nonlocal first_request
+                    if first_request:
+                        first_request = False
+                        return {"type": "http.request", "body": b"", "more_body": False}
+                    await disconnect.wait()
+                    return {"type": "http.disconnect"}
+
+                async def send(message):
+                    messages.append(message)
+                    if message["type"] == "http.response.start":
+                        started.set()
+
+                task = asyncio.create_task(self.app(scope, receive, send))
+                await asyncio.wait_for(started.wait(), timeout=1)
+                return task, messages
+
+            first_disconnect = asyncio.Event()
+            second_disconnect = asyncio.Event()
+            first_task, first_messages = await open_stream(first_disconnect)
+            second_task, second_messages = await open_stream(second_disconnect)
+            third_disconnect = asyncio.Event()
+            third_task, third_messages = await open_stream(third_disconnect)
+            await asyncio.wait_for(third_task, timeout=1)
+            self.assertEqual(third_messages[0]["status"], 429)
+
+            first_disconnect.set()
+            second_disconnect.set()
+            await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=1)
+            self.assertEqual(first_messages[0]["status"], 200)
+            self.assertEqual(second_messages[0]["status"], 200)
+
+            fourth_disconnect = asyncio.Event()
+            fourth_task, fourth_messages = await open_stream(fourth_disconnect)
+            self.assertEqual(fourth_messages[0]["status"], 200)
+            fourth_disconnect.set()
+            await asyncio.wait_for(fourth_task, timeout=1)
+
+        asyncio.run(scenario())
+
+    def test_harness_bridge_enqueues_one_async_batch_and_returns_owned_status(self) -> None:
+        class RecordingEngine:
+            def __init__(self):
+                self.started = 0
+
+            def start(self):
+                self.started += 1
+
+        engine = RecordingEngine()
+        self.app.intake_batch_engine = engine
+        cookie = self.login("13100131005")
+        bound = self.call(
+            "/v1/harness/sessions/bind", method="POST", payload={"session_id": "harness-session-1"}, cookie=cookie,
+        )
+        self.assertEqual(bound[0], 200)
+        content = self.png_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        created = self.call(
+            "/v1/internal/harness/intake-batches",
+            method="POST",
+            payload={
+                "session_id": "harness-session-1",
+                "attachments": [{
+                    "attachment_id": f"sha256:{digest}", "name": "question.png",
+                    "media_type": "image/png", "data": base64.b64encode(content).decode("ascii"),
+                }],
+            },
+            extra_headers={"Authorization": "Bearer test-internal-token"},
+            client=("127.0.0.1", 12345),
+        )
+        self.assertEqual((created[0], created[2]["status"], engine.started), (202, "pending", 1))
+        fetched = self.call(
+            f"/v1/internal/harness/intake-batches/{created[2]['batch_id']}",
+            method="GET",
+            extra_headers={
+                "Authorization": "Bearer test-internal-token",
+                "X-LZLM-Session-ID": "harness-session-1",
+            },
+            client=("127.0.0.1", 12345),
+        )
+        self.assertEqual((fetched[0], fetched[2]["batch_id"]), (200, created[2]["batch_id"]))
 
     def test_refresh_history_restores_owned_image_attachment_and_preview(self) -> None:
         class EmptyHistoryModel:
@@ -214,10 +478,10 @@ class NotebookE2ETests(unittest.TestCase):
             "prevention_cue": "代回验算",
         }, cookie=cookie)
         candidate_id = graded[2]["result_id"]
-        harness_origin = "http://example.test:3080"
+        harness_origin = "https://example.test"
         bound = self.call("/v1/harness/sessions/bind", method="POST", payload={"session_id": "session-receipt"}, cookie=cookie, origin=harness_origin)
         self.assertEqual((bound[0], bound[2]), (200, {"status": "bound"}))
-        self.assertEqual(bound[1]["access-control-allow-origin"], harness_origin)
+        self.assertNotIn("access-control-allow-origin", bound[1])
 
         internal = {
             "origin": None,
@@ -272,7 +536,7 @@ class NotebookE2ETests(unittest.TestCase):
 
     def test_harness_attachment_bridge_freezes_grades_and_writes_authoritative_receipts(self) -> None:
         cookie = self.login("13500135003")
-        harness_origin = "http://example.test:3080"
+        harness_origin = "https://example.test"
         bound = self.call(
             "/v1/harness/sessions/bind",
             method="POST",
@@ -376,7 +640,7 @@ class NotebookE2ETests(unittest.TestCase):
     def test_harness_reference_conflict_requires_frozen_semantic_adjudication(self) -> None:
         cookie = self.login("13500135004")
         other_cookie = self.login("13500135005")
-        harness_origin = "http://example.test:3080"
+        harness_origin = "https://example.test"
         self.call(
             "/v1/harness/sessions/bind", method="POST",
             payload={"session_id": "session-reference-review"}, cookie=cookie, origin=harness_origin,
@@ -496,7 +760,7 @@ class NotebookE2ETests(unittest.TestCase):
         cookie = self.login("13500135006")
         user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
         assert user is not None
-        harness_origin = "http://example.test:3080"
+        harness_origin = "https://example.test"
         self.call(
             "/v1/harness/sessions/bind", method="POST",
             payload={"session_id": "session-historical-conflict"}, cookie=cookie, origin=harness_origin,

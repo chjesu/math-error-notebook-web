@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesParser
 import hashlib
@@ -26,11 +27,15 @@ from services.web_domain import (
     NotebookService,
     Recommendation,
     ReviewTask,
+    IntakeBatch,
+    IntakeBatchEngine,
     cross_validate_reference,
     reference_adjudication_from_evidence,
     reference_conflict_resolved,
 )
 from .codex_model import ModelUnavailableError
+from .gateway import LoopbackHarnessGateway
+from .intake_pipeline import NotebookIntakeBatchProcessor
 
 
 Receive = Callable[[], Awaitable[dict[str, Any]]]
@@ -49,6 +54,8 @@ class NotebookAsgiApp:
         max_upload_bytes: int = 26 * 1024 * 1024,
         model_runner: Any | None = None,
         harness_internal_token: str | None = None,
+        harness_upstream: tuple[str, int] | None = None,
+        intake_batch_engine: Any | None = None,
     ) -> None:
         self.auth = AuthAsgiApp(auth_service, allowed_hosts=allowed_hosts, require_https=require_https, session_cookie=session_cookie)
         self.auth_service = auth_service
@@ -59,11 +66,16 @@ class NotebookAsgiApp:
         self.max_upload_bytes = max_upload_bytes
         self.model_runner = model_runner
         self.harness_internal_token = harness_internal_token
-        self.harness_origins = {f"http://{host}:3080" for host in self.allowed_hosts}
+        self.harness_gateway = LoopbackHarnessGateway(*harness_upstream) if harness_upstream is not None else None
+        self.intake_batch_engine = intake_batch_engine
         self._harness_sessions: dict[str, str] = {}
         self._harness_sessions_lock = Lock()
         self._turn_cancellations: dict[tuple[str, str], Event] = {}
         self._turn_cancellations_lock = Lock()
+        self._sse_connections_total = 0
+        self._sse_connections_by_user: dict[str, int] = {}
+        self._sse_connections_by_batch: dict[tuple[str, str], int] = {}
+        self._sse_connections_lock = Lock()
         root = Path(__file__).resolve().parents[2]
         self.static_files = {
             "/": (root / "web" / "index.html", "text/html; charset=utf-8", False),
@@ -81,9 +93,17 @@ class NotebookAsgiApp:
             "/web/nav-icons.svg": (root / "web" / "nav-icons.svg", "image/svg+xml", False),
             "/web/vendor/katex/katex.min.js": (root / "web" / "vendor" / "katex" / "katex.min.js", "text/javascript; charset=utf-8", False),
             "/web/vendor/katex/auto-render.min.js": (root / "web" / "vendor" / "katex" / "auto-render.min.js", "text/javascript; charset=utf-8", False),
+            "/manifest.webmanifest": (root / "web" / "manifest.webmanifest", "application/manifest+json", False),
             "/assets/branding/favicon-v1.ico": (root / "assets" / "branding" / "favicon-v1.ico", "image/x-icon", True),
             "/assets/branding/logo-symbol-color-64-v1.png": (root / "assets" / "branding" / "logo-symbol-color-64-v1.png", "image/png", True),
             "/assets/branding/logo-symbol-color-128-v1.png": (root / "assets" / "branding" / "logo-symbol-color-128-v1.png", "image/png", True),
+        }
+        self.public_static_paths = {
+            "/login", "/register", "/legal/terms", "/legal/privacy",
+            "/web/app.css", "/web/auth.js",
+            "/manifest.webmanifest",
+            "/assets/branding/favicon-v1.ico", "/assets/branding/logo-symbol-color-64-v1.png",
+            "/assets/branding/logo-symbol-color-128-v1.png",
         }
 
     def resume_pending_deletions(self) -> int:
@@ -104,11 +124,23 @@ class NotebookAsgiApp:
                 pass  # The domain service preserves its specific retryable error code.
         return resumed
 
+    def resume_pending_batches(self) -> bool:
+        """Start the continuous scanner; MySQL decides which pending or expired work is due."""
+        if self.model_runner is None and self.intake_batch_engine is None:
+            return False
+        self._ensure_intake_batch_engine().start()
+        return True
+
+    def stop_pending_batches(self) -> None:
+        """Stop local scanner threads during an orderly process shutdown."""
+        if self.intake_batch_engine is not None:
+            self.intake_batch_engine.stop()
+
     async def __call__(self, scope: dict[str, Any], receive: Receive, send: Send) -> None:
-        path = str(scope.get("path", ""))
-        if path == "/healthz" or path.startswith("/v1/auth/") or path in {"/v1/session", "/v1/sessions"}:
-            await self.auth(scope, receive, send)
+        if scope.get("type") == "websocket":
+            await self._websocket(scope, receive, send)
             return
+        path = str(scope.get("path", ""))
         headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
         host = headers.get("host", "").split(":", 1)[0].lower()
         if host not in self.allowed_hosts:
@@ -117,20 +149,19 @@ class NotebookAsgiApp:
         if self.require_https and scope.get("scheme") != "https":
             await self._error(send, 400, "https_required")
             return
-        method = str(scope.get("method", ""))
-        origin = headers.get("origin", "")
-        harness_origin = origin if origin in self.harness_origins else None
-        if path == "/v1/harness/sessions/bind" and method == "OPTIONS":
-            if harness_origin is None:
-                await self._error(send, 403, "forbidden")
-            else:
-                await self._json(send, 200, {"status": "ok"}, extra_headers=self._harness_cors(harness_origin))
-            return
-        if path == "/v1/harness/sessions/bind" and method == "POST" and harness_origin is None:
-            await self._error(send, 403, "forbidden")
+        method = str(scope.get("method", "")).upper()
+        safe_methods = {"GET", "HEAD", "OPTIONS"}
+        if method not in safe_methods | {"POST", "PATCH", "PUT", "DELETE"}:
+            await self._error(send, 405, "method_not_allowed")
             return
         if path == "/v1/internal/harness/intakes/process" and method == "POST":
             await self._internal_harness_process(scope, receive, send, headers)
+            return
+        if path == "/v1/internal/harness/intake-batches" and method == "POST":
+            await self._internal_harness_batch_create(scope, receive, send, headers)
+            return
+        if path.startswith("/v1/internal/harness/intake-batches/") and method == "GET":
+            await self._internal_harness_batch_get(scope, send, headers)
             return
         if path.startswith("/v1/internal/harness/grade-results/") and path.endswith("/commit") and method == "POST":
             await self._internal_harness_commit(scope, receive, send, headers)
@@ -141,20 +172,44 @@ class NotebookAsgiApp:
         if path == "/v1/internal/harness/reference-conflicts/recheck" and method == "POST":
             await self._internal_harness_recheck(scope, receive, send, headers)
             return
+        expected_origin = f"{scope.get('scheme', 'https')}://{headers.get('host', '')}"
+        supplied_origin = headers.get("origin")
+        if (method not in safe_methods or supplied_origin is not None) and supplied_origin != expected_origin:
+            await self._error(send, 403, "forbidden")
+            return
+        if path == "/manifest.webmanifest":
+            if method != "GET":
+                await self._error(send, 405, "method_not_allowed")
+                return
+            await self._asset(send, *self.static_files[path])
+            return
+        if path == "/healthz" or path.startswith("/v1/auth/") or path in {"/v1/session", "/v1/sessions"}:
+            await self.auth(scope, receive, send)
+            return
         static = self.static_files.get(path)
-        if method == "GET" and static:
+        if method == "GET" and static and path in self.public_static_paths:
             await self._asset(send, *static)
             return
         token = self._cookie(headers.get("cookie", ""), self.session_cookie)
         user = await asyncio.to_thread(self.auth_service.authenticate_session, token or "")
         if user is None:
+            if method == "GET" and (static is not None or self._is_harness_http_path(path)):
+                await self._redirect(send, "/login")
+                return
             await self._error(send, 401, "authentication_required")
             return
-        if method in {"POST", "PATCH", "PUT", "DELETE"}:
-            expected_origin = f"{scope.get('scheme', 'https')}://{headers.get('host', '')}"
-            if headers.get("origin") != expected_origin and not (path == "/v1/harness/sessions/bind" and harness_origin):
-                await self._error(send, 403, "forbidden")
+        if method == "GET" and static and path != "/":
+            await self._asset(send, *static)
+            return
+        if self._is_harness_http_path(path):
+            if self.harness_gateway is None:
+                if path == "/" and method == "GET":
+                    await self._asset(send, *self.static_files["/"])
+                else:
+                    await self._error(send, 503, "harness_unavailable")
                 return
+            await self.harness_gateway.http(scope, receive, send, self._harness_target(path))
+            return
         try:
             if path == "/v1/harness/sessions/bind" and method == "POST":
                 payload = await self._json_body(receive)
@@ -165,7 +220,6 @@ class NotebookAsgiApp:
                     send,
                     200,
                     {"status": "bound"},
-                    extra_headers=self._harness_cors(harness_origin),
                 )
             elif path == "/v1/intakes" and method == "GET":
                 intakes = await self._sync(self.notebook.store.list_pending_intakes, user_id=user.user_id)
@@ -275,6 +329,63 @@ class NotebookAsgiApp:
                 purpose, filename, content = await self._multipart(receive, headers)
                 record = await self._sync(self.notebook.upload, user_id=user.user_id, purpose=purpose, original_name=filename, content=content, idempotency_key=key)
                 await self._json(send, 201, {"file_id": record.file_id, "status": record.status, "content_sha256": record.content_sha256})
+            elif path == "/v1/intake/batches" and method == "POST":
+                payload = await self._json_body(receive)
+                if set(payload) != {"file_ids"} or not isinstance(payload["file_ids"], list):
+                    raise ValueError("invalid intake batch request")
+                engine = self._ensure_intake_batch_engine()
+                batch, _ = await self._sync(
+                    self.notebook.store.batch_repository.create_batch,
+                    user_id=user.user_id,
+                    file_ids=payload["file_ids"],
+                    idempotency_key=self._key(headers),
+                )
+                engine.start()
+                await self._json(send, 202, self._batch(batch))
+            elif path == "/v1/intake/batches/active" and method == "GET":
+                query = parse_qs(scope.get("query_string", b"").decode("ascii"), keep_blank_values=True, strict_parsing=True)
+                if set(query) - {"updated_after"} or any(len(values) != 1 for values in query.values()):
+                    raise ValueError("invalid recovery cursor")
+                recovery_time = await self._sync(self.notebook.store.batch_repository.recovery_cursor)
+                if "updated_after" in query:
+                    raw_updated_after = query["updated_after"][0]
+                    if re.fullmatch(r"0|[1-9][0-9]{0,12}", raw_updated_after) is None:
+                        raise ValueError("invalid recovery cursor")
+                    cursor_millis = int(raw_updated_after)
+                    if cursor_millis > int(recovery_time.timestamp() * 1_000):
+                        raise ValueError("invalid recovery cursor")
+                    try:
+                        updated_after = datetime.fromtimestamp(cursor_millis / 1000, timezone.utc)
+                    except (OverflowError, OSError) as exc:
+                        raise ValueError("invalid recovery cursor") from exc
+                    batch = await self._sync(
+                        self.notebook.store.batch_repository.find_recoverable_batch,
+                        user_id=user.user_id,
+                        updated_after=updated_after,
+                    )
+                else:
+                    batch = await self._sync(
+                        self.notebook.store.batch_repository.find_active_batch,
+                        user_id=user.user_id,
+                    )
+                recovery_cursor = str(int(recovery_time.timestamp() * 1_000))
+                await self._json(send, 200, {
+                    "batch": self._batch(batch) if batch else None,
+                    "recovery_cursor": recovery_cursor,
+                })
+            elif path.startswith("/v1/intake/batches/") and path.endswith("/events") and method == "GET":
+                batch_id = path.split("/")[-2]
+                await self._batch_events(receive, send, headers, user.user_id, batch_id)
+            elif path.startswith("/v1/intake/batches/") and method == "GET":
+                batch_id = path.rsplit("/", 1)[1]
+                batch = await self._sync(
+                    self.notebook.store.batch_repository.get_batch,
+                    user_id=user.user_id,
+                    batch_id=batch_id,
+                )
+                if batch is None:
+                    raise LookupError
+                await self._json(send, 200, self._batch(batch))
             elif path == "/v1/intakes" and method == "POST":
                 payload = await self._json_body(receive)
                 intake, job = await self._sync(self.notebook.store.create_intake, user_id=user.user_id, file_id=str(payload["file_id"]), idempotency_key=self._key(headers))
@@ -595,10 +706,147 @@ class NotebookAsgiApp:
         except ModelUnavailableError as exc:
             await self._error(send, 503, exc.code)
         except RuntimeError as exc:
-            code = str(exc) if str(exc) in {"input_version_changed", "waiting_confirmation", "failed_final", "reference_conflict", "conflict", "daily_grade_limit", "daily_recommendation_limit"} else "conflict"
-            await self._error(send, 429 if code.startswith("daily_") else 422 if code == "failed_final" else 409, code)
+            code = str(exc) if str(exc) in {
+                "input_version_changed", "waiting_confirmation", "failed_final", "reference_conflict",
+                "conflict", "idempotency_conflict", "daily_grade_limit", "daily_recommendation_limit",
+                "batch_limit_reached", "batch_rate_limited",
+            } else "conflict"
+            limited = code.startswith("daily_") or code in {"batch_limit_reached", "batch_rate_limited"}
+            await self._error(send, 429 if limited else 422 if code == "failed_final" else 409, code)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
+
+    def _ensure_intake_batch_engine(self) -> Any:
+        if self.intake_batch_engine is not None:
+            return self.intake_batch_engine
+        if self.model_runner is None:
+            raise ModelUnavailableError("local model processing is disabled")
+        self.intake_batch_engine = IntakeBatchEngine(
+            self.notebook.store.batch_repository,
+            NotebookIntakeBatchProcessor(self.notebook, self.model_runner),
+        )
+        return self.intake_batch_engine
+
+    async def _batch_events(
+        self,
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+        user_id: str,
+        batch_id: str,
+    ) -> None:
+        repository = self.notebook.store.batch_repository
+        current = await self._sync(repository.get_batch, user_id=user_id, batch_id=batch_id)
+        if current is None:
+            await self._error(send, 404, "not_found")
+            return
+        raw_cursor = headers.get("last-event-id", "")
+        if raw_cursor and re.fullmatch(r"0|[1-9][0-9]{0,18}", raw_cursor) is None:
+            await self._error(send, 400, "invalid_event_cursor")
+            return
+        cursor = int(raw_cursor) if raw_cursor else 0
+        if cursor > current.last_event_id:
+            await self._error(send, 400, "invalid_event_cursor")
+            return
+        if not self._claim_sse_connection(user_id=user_id, batch_id=batch_id):
+            await self._error(send, 429, "rate_limited")
+            return
+        disconnect = asyncio.create_task(self._wait_for_disconnect(receive))
+        try:
+            await send({
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/event-stream; charset=utf-8"),
+                    (b"cache-control", b"no-store"),
+                    (b"x-accel-buffering", b"no"),
+                ],
+            })
+            while True:
+                if disconnect.done():
+                    return
+                events = await self._sync(
+                    repository.list_events,
+                    user_id=user_id,
+                    batch_id=batch_id,
+                    after_sequence=cursor,
+                )
+                for event in events:
+                    payload = json.dumps(event.data, ensure_ascii=False, separators=(",", ":"))
+                    body = f"id: {event.sequence}\nevent: {event.event_type}\ndata: {payload}\n\n".encode("utf-8")
+                    await send({"type": "http.response.body", "body": body, "more_body": True})
+                    cursor = event.sequence
+                current = await self._sync(repository.get_batch, user_id=user_id, batch_id=batch_id)
+                if current is None:
+                    await send({"type": "http.response.body", "body": b"", "more_body": False})
+                    return
+                if current.terminal and cursor >= current.last_event_id:
+                    await send({"type": "http.response.body", "body": b"", "more_body": False})
+                    return
+                if disconnect in (await asyncio.wait({disconnect}, timeout=1.0))[0]:
+                    return
+        finally:
+            disconnect.cancel()
+            try:
+                await disconnect
+            except asyncio.CancelledError:
+                pass
+            self._release_sse_connection(user_id=user_id, batch_id=batch_id)
+
+    def _claim_sse_connection(self, *, user_id: str, batch_id: str) -> bool:
+        key = (user_id, batch_id)
+        with self._sse_connections_lock:
+            if (
+                self._sse_connections_total >= 200
+                or self._sse_connections_by_user.get(user_id, 0) >= 4
+                or self._sse_connections_by_batch.get(key, 0) >= 2
+            ):
+                return False
+            self._sse_connections_total += 1
+            self._sse_connections_by_user[user_id] = self._sse_connections_by_user.get(user_id, 0) + 1
+            self._sse_connections_by_batch[key] = self._sse_connections_by_batch.get(key, 0) + 1
+            return True
+
+    def _release_sse_connection(self, *, user_id: str, batch_id: str) -> None:
+        key = (user_id, batch_id)
+        with self._sse_connections_lock:
+            self._sse_connections_total = max(0, self._sse_connections_total - 1)
+            for counters, counter_key in (
+                (self._sse_connections_by_user, user_id),
+                (self._sse_connections_by_batch, key),
+            ):
+                remaining = counters.get(counter_key, 0) - 1
+                if remaining > 0:
+                    counters[counter_key] = remaining
+                else:
+                    counters.pop(counter_key, None)
+
+    @staticmethod
+    async def _wait_for_disconnect(receive: Receive) -> None:
+        while True:
+            message = await receive()
+            if message.get("type") == "http.disconnect":
+                return
+
+    @staticmethod
+    def _batch(value: IntakeBatch) -> dict[str, Any]:
+        return {
+            "schema": "intake-batch/v1",
+            "batch_id": value.batch_id,
+            "status": value.status,
+            "current_stage": None if value.terminal else value.status,
+            "total_files": value.total_files,
+            "completed_files": value.completed_files,
+            "total_items": value.total_items,
+            "completed_items": value.completed_items,
+            "stage_completed_items": value.stage_completed_items,
+            "terminal": value.terminal,
+            "last_event_id": value.last_event_id,
+            "error_code": value.error_code,
+            "created_at": value.created_at.isoformat(),
+            "updated_at": value.updated_at.isoformat(),
+            "events_url": f"/v1/intake/batches/{value.batch_id}/events",
+        }
 
     def _chat_turn_core(
         self,
@@ -913,6 +1161,190 @@ class NotebookAsgiApp:
         except (TypeError, json.JSONDecodeError):
             return {"correct_solution": value}
         return payload if isinstance(payload, dict) and payload.get("schema") == "math-error-diagnosis/v1" else {"correct_solution": value}
+
+    async def _internal_harness_batch_create(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            engine = self._ensure_intake_batch_engine()
+            payload = await self._json_body(receive, max_bytes=self.max_upload_bytes * 7)
+            if set(payload) != {"session_id", "attachments"}:
+                raise ValueError("invalid Harness batch request")
+            session_id = self._harness_session_id(payload)
+            with self._harness_sessions_lock:
+                user_id = self._harness_sessions.get(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            attachments = payload["attachments"]
+            if not isinstance(attachments, list) or not 1 <= len(attachments) <= 5:
+                raise ValueError("invalid Harness attachments")
+            file_ids: list[str] = []
+            digests: list[str] = []
+            total_bytes = 0
+            for attachment in attachments:
+                if not isinstance(attachment, dict) or set(attachment) != {"attachment_id", "name", "media_type", "data"}:
+                    raise ValueError("invalid Harness attachment")
+                if not all(isinstance(attachment[key], str) for key in attachment):
+                    raise ValueError("invalid Harness attachment")
+                digest_match = re.fullmatch(r"sha256:([0-9a-f]{64})", attachment["attachment_id"])
+                if (
+                    digest_match is None
+                    or attachment["media_type"] not in {"image/png", "image/jpeg"}
+                    or not 1 <= len(attachment["name"]) <= 255
+                ):
+                    raise ValueError("invalid Harness attachment")
+                try:
+                    content = base64.b64decode(attachment["data"], validate=True)
+                except (ValueError, TypeError) as exc:
+                    raise ValueError("invalid Harness attachment") from exc
+                total_bytes += len(content)
+                digest = digest_match.group(1)
+                if (
+                    not content
+                    or len(content) > self.max_upload_bytes
+                    or total_bytes > self.max_upload_bytes * 5
+                    or hashlib.sha256(content).hexdigest() != digest
+                ):
+                    raise ValueError("invalid Harness attachment")
+                record = await self._sync(
+                    self.notebook.upload,
+                    user_id=user_id,
+                    purpose="question_image",
+                    original_name=attachment["name"],
+                    content=content,
+                    idempotency_key=f"harness-file-{digest[:51]}",
+                )
+                file_ids.append(record.file_id)
+                digests.append(digest)
+            request_hash = hashlib.sha256(":".join(digests).encode("ascii")).hexdigest()
+            batch, _ = await self._sync(
+                self.notebook.store.batch_repository.create_batch,
+                user_id=user_id,
+                file_ids=file_ids,
+                idempotency_key=f"harness-batch-{request_hash[:50]}",
+            )
+            engine.start()
+            await self._json(send, 202, self._batch(batch))
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except ModelUnavailableError as exc:
+            await self._error(send, 503, exc.code)
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except RuntimeError as exc:
+            code = str(exc) if str(exc) in {
+                "idempotency_conflict", "batch_limit_reached", "batch_rate_limited",
+            } else "conflict"
+            await self._error(send, 429 if code in {"batch_limit_reached", "batch_rate_limited"} else 409, code)
+        except RequestTooLarge:
+            await self._error(send, 413, "request_too_large")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    async def _internal_harness_batch_get(
+        self,
+        scope: dict[str, Any],
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            session_id = self._harness_session_id({"session_id": headers.get("x-lzlm-session-id")})
+            with self._harness_sessions_lock:
+                user_id = self._harness_sessions.get(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            batch_id = str(scope.get("path", "")).rsplit("/", 1)[1]
+            batch = await self._sync(
+                self.notebook.store.batch_repository.get_batch,
+                user_id=user_id,
+                batch_id=batch_id,
+            )
+            if batch is None:
+                raise LookupError
+            response = self._batch(batch)
+            if batch.status == "completed":
+                response["results"] = await self._harness_batch_results(user_id, batch_id)
+                response["usage"] = await self._sync(self.notebook.store.learning_usage, user_id=user_id)
+            await self._json(send, 200, response)
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except (KeyError, TypeError, ValueError):
+            await self._error(send, 400, "invalid_request")
+
+    async def _harness_batch_results(self, user_id: str, batch_id: str) -> list[dict[str, Any]]:
+        repository = self.notebook.store.batch_repository
+        snapshots = await self._sync(repository.list_files, batch_id=batch_id)
+        file_ordinals = {snapshot.file_id: snapshot.ordinal for snapshot in snapshots}
+        operations = await self._sync(
+            repository.list_operations, user_id=user_id, batch_id=batch_id, stage="grading",
+        )
+        results = []
+        for operation in operations:
+            intake_id = str(operation.result["intake_id"])
+            candidate_id = str(operation.result["candidate_id"])
+            intake = await self._sync(self.notebook.store.get_intake, user_id=user_id, intake_id=intake_id)
+            candidate = await self._sync(
+                self.notebook.store.get_grade_candidate, user_id=user_id, candidate_id=candidate_id,
+            )
+            if intake is None or candidate is None:
+                raise LookupError("batch result not found")
+            diagnosis = self._diagnosis(candidate.evidence)
+            error_id = str(operation.result.get("error_id") or "")
+            if candidate.verdict in {"correct"}:
+                receipt_status, receipt_message = "not_saved_correct", "本题作答正确，未计入错题本。"
+            elif candidate.verdict == "unclear":
+                receipt_status, receipt_message = "needs_review", "证据不足，需要补充或人工确认。"
+            elif error_id:
+                receipt_status, receipt_message = "saved", "已计入错题本并安排首次复习。"
+            else:
+                receipt_status, receipt_message = "needs_review", "参考证据存在冲突，等待复核。"
+            reference_review = None
+            validation = diagnosis.get("cross_validation")
+            if isinstance(validation, dict) and validation.get("status") == "conflict":
+                reference = await self._sync(
+                    self.notebook.store.find_verified_question, question_text=intake.question_text,
+                )
+                if reference is not None:
+                    reference_review = {
+                        "source_title": reference.source_title,
+                        "version_no": reference.version_no,
+                        "independent_answer": str(diagnosis.get("final_answer") or ""),
+                        "reference_answer": reference.answer_text,
+                        "reference_solution": reference.solution_text or "",
+                    }
+            results.append({
+                "attachment_index": file_ordinals.get(intake.file_id, 1),
+                "item_no": intake.item_no,
+                "candidate_id": candidate.candidate_id,
+                "input_version": candidate.input_version,
+                "verdict": candidate.verdict,
+                "question_text": intake.question_text,
+                "answer_text": intake.answer_text,
+                "first_error": candidate.first_error or "",
+                "cause_code": str(diagnosis.get("cause_code") or ""),
+                "cause_evidence": str(diagnosis.get("cause_evidence") or ""),
+                "knowledge_points": diagnosis.get("knowledge_points") if isinstance(diagnosis.get("knowledge_points"), list) else [],
+                "correct_solution": str(diagnosis.get("correct_solution") or ""),
+                "final_answer": str(diagnosis.get("final_answer") or ""),
+                "prevention_cue": str(diagnosis.get("prevention_cue") or ""),
+                "receipt_status": receipt_status,
+                "receipt_message": receipt_message,
+                "error_id": error_id,
+                "reference_review": reference_review,
+            })
+        return results
 
     async def _internal_harness_process(
         self,
@@ -1415,15 +1847,52 @@ class NotebookAsgiApp:
             raise ValueError("invalid harness session id")
         return session_id
 
+    async def _websocket(self, scope: dict[str, Any], receive: Receive, send: Send) -> None:
+        connection = await receive()
+        if connection.get("type") != "websocket.connect":
+            return
+        path = str(scope.get("path", ""))
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", ())
+        }
+        host = headers.get("host", "").split(":", 1)[0].lower()
+        scheme = str(scope.get("scheme", "ws"))
+        if host not in self.allowed_hosts:
+            await send({"type": "websocket.close", "code": 1008, "reason": "invalid host"})
+            return
+        if self.require_https and scheme != "wss":
+            await send({"type": "websocket.close", "code": 1008, "reason": "secure transport required"})
+            return
+        browser_scheme = "https" if scheme == "wss" else "http"
+        if headers.get("origin") != f"{browser_scheme}://{headers.get('host', '')}":
+            await send({"type": "websocket.close", "code": 1008, "reason": "forbidden origin"})
+            return
+        token = self._cookie(headers.get("cookie", ""), self.session_cookie)
+        user = await asyncio.to_thread(self.auth_service.authenticate_session, token or "")
+        if user is None:
+            await send({"type": "websocket.close", "code": 4401, "reason": "authentication required"})
+            return
+        if self.harness_gateway is None:
+            await send({"type": "websocket.close", "code": 1013, "reason": "Harness unavailable"})
+            return
+        await self.harness_gateway.websocket(scope, receive, send, path)
+
     @staticmethod
-    def _harness_cors(origin: str) -> list[tuple[bytes, bytes]]:
-        return [
-            (b"access-control-allow-origin", origin.encode("ascii")),
-            (b"access-control-allow-credentials", b"true"),
-            (b"access-control-allow-methods", b"POST,OPTIONS"),
-            (b"access-control-allow-headers", b"content-type"),
-            (b"vary", b"Origin"),
-        ]
+    def _is_harness_http_path(path: str) -> bool:
+        if path in {"/", "/harness", "/harness/", "/api", "/favicon.svg"}:
+            return True
+        if path.startswith(("/harness/", "/api/", "/plugins/")):
+            return True
+        return path.startswith("/assets/") and not path.startswith("/assets/branding/")
+
+    @staticmethod
+    def _harness_target(path: str) -> str:
+        if path in {"/harness", "/harness/"}:
+            return "/"
+        if path.startswith("/harness/"):
+            return path[len("/harness"):]
+        return path
 
     @staticmethod
     def _grade_receipt(candidate: GradeCandidate) -> dict[str, Any]:
@@ -1560,7 +2029,21 @@ class NotebookAsgiApp:
         return {key: payload[key] for key in ("job_id", "download_url", "expires_at")}
 
     async def _error(self, send: Send, status: int, code: str) -> None:
-        await self._json(send, status, {"error": {"code": code, "message": code, "retryable": code in {"failed_retryable", "temporarily_unavailable", "model_unavailable", "model_network_error", "model_rate_limited", "rate_limited"}, "request_id": secrets.token_hex(8)}})
+        await self._json(send, status, {"error": {"code": code, "message": code, "retryable": code in {"failed_retryable", "temporarily_unavailable", "model_unavailable", "model_network_error", "model_rate_limited", "rate_limited", "batch_limit_reached", "batch_rate_limited"}, "request_id": secrets.token_hex(8)}})
+
+    @staticmethod
+    async def _redirect(send: Send, location: str) -> None:
+        await send({
+            "type": "http.response.start",
+            "status": 303,
+            "headers": [
+                (b"location", location.encode("ascii")),
+                (b"content-length", b"0"),
+                (b"cache-control", b"no-store"),
+                (b"x-content-type-options", b"nosniff"),
+            ],
+        })
+        await send({"type": "http.response.body", "body": b""})
 
     @staticmethod
     async def _json(

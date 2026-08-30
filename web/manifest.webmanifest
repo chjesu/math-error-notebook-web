@@ -1,0 +1,16 @@
+{
+  "name": "李兆霖数学错题本",
+  "short_name": "数学错题本",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f8fb",
+  "theme_color": "#3159c8",
+  "icons": [
+    {
+      "src": "/assets/branding/logo-symbol-color-128-v1.png",
+      "sizes": "128x128",
+      "type": "image/png"
+    }
+  ]
+}

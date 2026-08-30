@@ -69,10 +69,10 @@ math-error-notebook-web/
   powershell -ExecutionPolicy Bypass -File scripts\stop.ps1
   ```
 
-停止脚本会自动执行以下步骤：
-1. 优雅通知并关闭本地私有 MySQL 实例（端口 3307）；
-2. 终止记录于 `data/runtime/service.pid` 中的后台服务；
-3. 检查并强制释放 Web 端口 `8000`、Harness 端口 `3080` 及数据库端口 `3307`，防止孤儿进程残留。
+停止脚本只把停止请求交给 `scripts/local_env.py stop`，由它作为唯一裁决者执行以下步骤：
+1. 后台启动会先以独占创建方式领取 `data/runtime/service.pid` 所有权，再创建服务子进程；已有正常、失效或启动中记录都失败闭合，重复/并发启动不会覆盖旧服务身份。停止时读取其中的 PID、进程创建时间与可执行文件身份，三者与当前进程一致后才终止并验证后台服务进程树已经消失；身份不匹配时视为 PID 已复用，拒绝杀进程并保留记录；Harness 子进程及其随机回环端口随进程树一起回收；
+2. 无论服务进程树停止是否成功，都继续尝试关闭本地私有 MySQL 实例（端口 3307）；
+3. 只有确认服务进程树已停止才删除 PID 文件；若后台启动落正式身份失败且新进程树也无法回收，记录会转为含 PID、创建时间和可执行文件的 `recovery` 状态，后续 `stop` 仍可验证并精确回收。删除失败也返回非零退出码，任何失败均保留恢复状态，不按端口或宽泛进程名误杀其他程序。
 
 ---
 
@@ -153,9 +153,10 @@ HARNESS_INPUT_MODALITIES=text,image
 
 | 端口 | 协议 | 关联服务 | 职责 |
 | :--- | :--- | :--- | :--- |
-| **`8000`** | HTTP/ASGI | FastAPI / Uvicorn | 业务核心 API、认证状态机、导出与练习接口 |
-| **`3080`** | HTTP | DeepSeek Harness Host | 官方前端交互工作台、多模态视觉会话组件 |
+| **`8000`** | HTTP/ASGI | 统一网关 / Uvicorn | 登录注册、业务 API、产品页面、Harness 静态资源、HTTP API 与 WebSocket |
 | **`3307`** | TCP/MySQL | 本地隔离 MySQL 8 | 业务数据持久化，数据隔离于 `.runtime/local-mysql/` |
+
+Harness Host 使用启动期随机回环端口，仅由 8000 网关访问，不构成用户可依赖的固定端口。
 
 ### 健康检查命令
 

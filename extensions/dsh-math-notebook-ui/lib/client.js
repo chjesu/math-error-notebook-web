@@ -163,6 +163,27 @@ window.__ModuleLoader__.load({
           [data-lzlm-selection-actions] button:focus-visible {
             background: var(--dsw-alias-interactive-bg-hover);
           }
+          [data-lzlm-batch-progress] {
+            position: fixed;
+            z-index: 900;
+            top: 18px;
+            right: 18px;
+            display: none;
+            width: min(340px, calc(100vw - 36px));
+            padding: 13px 14px;
+            border: 1px solid var(--dsw-alias-border-l2);
+            border-radius: 12px;
+            background: color-mix(in srgb, var(--dsw-alias-bg-base) 94%, transparent);
+            box-shadow: var(--dsw-shadow-lv2);
+            color: var(--dsw-alias-label-primary);
+            backdrop-filter: blur(12px);
+          }
+          [data-lzlm-batch-progress][data-open] { display: grid; gap: 8px; }
+          [data-lzlm-batch-progress] strong { font-size: 13px; }
+          [data-lzlm-batch-progress] span { color: var(--dsw-alias-label-secondary); font-size: 12px; }
+          [data-lzlm-batch-progress] progress { width: 100%; height: 6px; accent-color: #356ad8; }
+          [data-lzlm-batch-progress] ul { display: grid; gap: 5px; max-height: 160px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+          [data-lzlm-batch-progress] li { padding: 7px 8px; border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover); font-size: 12px; }
         `;
         document.head.appendChild(style);
         return () => style.remove();
@@ -236,6 +257,111 @@ window.__ModuleLoader__.load({
         bind();
         return unsubscribe;
       }, "math-notebook: bind product session");
+    }
+
+    function installIntakeBatchProgress(ctx) {
+      ctx.effect(() => {
+        const card = document.createElement("aside");
+        card.dataset.lzlmBatchProgress = "";
+        card.setAttribute("role", "status");
+        card.setAttribute("aria-live", "polite");
+        const title = document.createElement("strong");
+        const detail = document.createElement("span");
+        const progress = document.createElement("progress");
+        const items = document.createElement("ul");
+        progress.max = 1;
+        card.append(title, detail, progress, items);
+        document.body.appendChild(card);
+        let source = null;
+        let activeBatchId = null;
+        let displayedBatchId = null;
+        let hideTimer = null;
+        let recoveryCursor = null;
+        let discoveryPending = false;
+        const seenTerminalBatches = new Set();
+        const completedItems = new Map();
+        const stageLabels = {pending: "等待处理", slicing: "正在识别题目", solving: "正在独立求解", grading: "正在判题"};
+
+        const render = (batch) => {
+          if (!batch) return;
+          if (batch.item && Number.isInteger(batch.last_event_id)) {
+            completedItems.set(batch.last_event_id, batch.item);
+            items.replaceChildren(...Array.from(completedItems.values()).map((item) => {
+              const row = document.createElement("li");
+              const labels = {saved: "已入本", not_saved_correct: "作答正确", needs_review: "待复核"};
+              const question = String(item.question_text || "").replace(/\s+/g, " ").slice(0, 64);
+              row.textContent = `第 ${item.item_no} 题 · ${labels[item.notebook_status] || "已处理"} · ${question}`;
+              return row;
+            }));
+          }
+          const total = batch.total_items || batch.total_files || 1;
+          const completed = batch.total_items === null ? batch.completed_files : batch.completed_items;
+          progress.max = total;
+          progress.value = Math.min(total, completed);
+          title.textContent = batch.terminal
+            ? batch.status === "completed" ? "图片处理完成" : "图片处理未完成"
+            : stageLabels[batch.current_stage] || "正在处理图片";
+          detail.textContent = batch.terminal
+            ? batch.status === "completed" ? `已完成 ${batch.completed_items} 道题` : `错误代码：${batch.error_code || "pipeline_failed"}`
+            : batch.total_items === null
+              ? `图片 ${batch.completed_files}/${batch.total_files}`
+              : `题目 ${batch.completed_items}/${batch.total_items}`;
+          card.setAttribute("data-open", "");
+          if (batch.terminal) {
+            seenTerminalBatches.add(batch.batch_id);
+            source?.close();
+            source = null;
+            activeBatchId = null;
+            clearTimeout(hideTimer);
+            hideTimer = setTimeout(() => card.removeAttribute("data-open"), 5000);
+          }
+        };
+        const connect = (batch) => {
+          if (displayedBatchId !== batch.batch_id) {
+            completedItems.clear();
+            items.replaceChildren();
+            displayedBatchId = batch.batch_id;
+          }
+          render(batch);
+          if (batch.terminal || activeBatchId === batch.batch_id) return;
+          source?.close();
+          activeBatchId = batch.batch_id;
+          source = new EventSource(`${productOrigin}${batch.events_url}`, {withCredentials: true});
+          const receive = (event) => {
+            try { render(JSON.parse(event.data)); }
+            catch (reason) { console.warn("math notebook batch event invalid:", reason); }
+          };
+          ["progress", "item_completed", "batch_completed", "batch_failed"]
+            .forEach((name) => source.addEventListener(name, receive));
+          source.addEventListener("error", () => {
+            if (source?.readyState === EventSource.CLOSED) activeBatchId = null;
+          });
+        };
+        const discover = () => {
+          if (ctx.sessions.list.getSnapshot().current === undefined || activeBatchId !== null || discoveryPending) return;
+          discoveryPending = true;
+          const recoveryQuery = recoveryCursor === null ? "" : `?updated_after=${recoveryCursor}`;
+          fetch(`${productOrigin}/v1/intake/batches/active${recoveryQuery}`, {credentials: "include"})
+            .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+            .then(({batch, recovery_cursor: nextCursor}) => {
+              if (!/^(0|[1-9][0-9]{0,12})$/.test(nextCursor)) throw new Error("invalid recovery cursor");
+              recoveryCursor = nextCursor;
+              if (batch && (!batch.terminal || !seenTerminalBatches.has(batch.batch_id))) connect(batch);
+            })
+            .catch((reason) => console.warn("math notebook batch discovery failed:", reason))
+            .finally(() => { discoveryPending = false; });
+        };
+        const unsubscribe = ctx.sessions.list.subscribe(discover);
+        const timer = setInterval(discover, 1000);
+        discover();
+        return () => {
+          unsubscribe();
+          clearInterval(timer);
+          clearTimeout(hideTimer);
+          source?.close();
+          card.remove();
+        };
+      }, "math-notebook: intake batch progress");
     }
 
     function closeProductOnSessionClick(ctx) {
@@ -381,6 +507,7 @@ window.__ModuleLoader__.load({
       restrictStudentSettings(ctx);
       openProductWorkspace(ctx);
       bindProductSession(ctx);
+      installIntakeBatchProgress(ctx);
       closeProductOnSessionClick(ctx);
       installSelectionToConversation(ctx);
       ctx.effect(() => {
