@@ -202,9 +202,8 @@ class NotebookAsgiApp:
                 if set(payload) != expected:
                     raise ValueError("invalid model usage request")
                 session_id = self._harness_session_id(payload)
-                with self._harness_sessions_lock:
-                    if self._harness_sessions.get(session_id) != user.user_id:
-                        raise PermissionError("unbound model session")
+                if await self._harness_user_id(session_id) != user.user_id:
+                    raise PermissionError("unbound model session")
                 await self._sync(
                     self.notebook.store.record_model_session_usage,
                     user_id=user.user_id,
@@ -985,8 +984,7 @@ class NotebookAsgiApp:
             if set(payload) != {"session_id", "attachment", "items"}:
                 raise ValueError("invalid Harness processing request")
             session_id = self._harness_session_id(payload)
-            with self._harness_sessions_lock:
-                user_id = self._harness_sessions.get(session_id)
+            user_id = await self._harness_user_id(session_id)
             if user_id is None:
                 raise PermissionError("unbound harness session")
             attachment = payload["attachment"]
@@ -1184,8 +1182,7 @@ class NotebookAsgiApp:
             if set(payload) != {"session_id", "input_version"}:
                 raise ValueError("invalid receipt request")
             session_id = self._harness_session_id(payload)
-            with self._harness_sessions_lock:
-                user_id = self._harness_sessions.get(session_id)
+            user_id = await self._harness_user_id(session_id)
             if user_id is None:
                 raise PermissionError("unbound harness session")
             candidate = await self._sync(
@@ -1224,8 +1221,7 @@ class NotebookAsgiApp:
             if set(payload) != {"session_id", "items"}:
                 raise ValueError("invalid reference adjudication request")
             session_id = self._harness_session_id(payload)
-            with self._harness_sessions_lock:
-                user_id = self._harness_sessions.get(session_id)
+            user_id = await self._harness_user_id(session_id)
             if user_id is None:
                 raise PermissionError("unbound harness session")
             items = payload["items"]
@@ -1352,8 +1348,7 @@ class NotebookAsgiApp:
             question_text = payload["question_text"]
             if not isinstance(question_text, str) or not 1 <= len(question_text.strip()) <= 200000:
                 raise ValueError("invalid reference recheck request")
-            with self._harness_sessions_lock:
-                user_id = self._harness_sessions.get(session_id)
+            user_id = await self._harness_user_id(session_id)
             if user_id is None:
                 raise PermissionError("unbound harness session")
             candidate = await self._sync(
@@ -1429,6 +1424,16 @@ class NotebookAsgiApp:
         supplied = headers.get("authorization", "")
         expected = f"Bearer {self.harness_internal_token}" if self.harness_internal_token else ""
         return client_host in {"127.0.0.1", "::1"} and bool(expected) and hmac.compare_digest(supplied, expected)
+
+    async def _harness_user_id(self, session_id: str) -> str | None:
+        with self._harness_sessions_lock:
+            user_id = self._harness_sessions.get(session_id)
+        if user_id is None:
+            user_id = await self._sync(self.notebook.store.model_session_user, session_id=session_id)
+            if user_id is not None:
+                with self._harness_sessions_lock:
+                    self._harness_sessions[session_id] = user_id
+        return user_id
 
     async def _commit_candidate_receipt(self, user_id: str, candidate: GradeCandidate) -> dict[str, Any]:
         receipt = self._grade_receipt(candidate)

@@ -91,6 +91,10 @@ class InMemoryNotebookStore:
             "updated_at": current,
         })
 
+    def model_session_user(self, *, session_id: str) -> str | None:
+        record = self.model_usage_sessions.get(hashlib.sha256(session_id.encode("utf-8")).hexdigest())
+        return str(record["user_id"]) if record is not None else None
+
     def record_model_session_usage(
         self,
         *,

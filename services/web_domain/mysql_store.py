@@ -167,6 +167,18 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def model_session_user(self, *, session_id: str) -> str | None:
+        session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT user_id FROM model_usage_sessions WHERE session_hash=%s", (session_hash,))
+            row = cursor.fetchone()
+            return str(row[0]) if row is not None else None
+        finally:
+            cursor.close()
+            connection.close()
+
     def record_model_session_usage(
         self,
         *,

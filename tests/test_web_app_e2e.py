@@ -412,6 +412,7 @@ class NotebookE2ETests(unittest.TestCase):
             "client": ("127.0.0.1", 3080),
             "extra_headers": {"authorization": "Bearer test-internal-token"},
         }
+        self.app._harness_sessions.clear()
         first = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
         replay = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
 
