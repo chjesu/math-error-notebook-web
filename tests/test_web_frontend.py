@@ -10,14 +10,17 @@ WEB = ROOT / "web"
 
 
 class FrontendContractTests(unittest.TestCase):
-    def test_calendar_close_is_a_borderless_accessible_icon(self) -> None:
+    def test_calendar_controls_are_borderless_accessible_icons(self) -> None:
         html = (WEB / "progress.html").read_text(encoding="utf-8")
         css = (WEB / "app.css").read_text(encoding="utf-8")
-        button = html.split('<button id="calendar-day-close"', 1)[1].split('</button>', 1)[0]
-        self.assertIn('aria-label="关闭日期详情"', button)
-        self.assertIn('<svg ', button)
-        self.assertIn('aria-hidden="true"', button)
-        self.assertNotIn('class="ghost"', button)
+        for control, label in (("calendar-day-close", "关闭日期详情"), ("calendar-prev", "上个月"), ("calendar-next", "下个月")):
+            button = html.split(f'<button id="{control}"', 1)[1].split('</button>', 1)[0]
+            self.assertIn(f'aria-label="{label}"', button)
+            self.assertIn('<svg ', button)
+            self.assertIn('aria-hidden="true"', button)
+            self.assertNotIn('class="ghost"', button)
+            self.assertIn(f'#{control}:hover', css)
+        self.assertIn('#calendar-prev, #calendar-next, #calendar-day-close {', css)
         rule = css.split('#calendar-day-close {', 1)[1].split('}', 1)[0]
         for style in ('width: 32px', 'height: 32px', 'border: 0', 'border-radius: 6px', 'background: transparent'):
             self.assertIn(style, rule)
@@ -106,6 +109,8 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   assert.ok($('#calendar-history-note').textContent.includes('选题不改变原定复习日期'));
   $('#calendar-day-close').handlers.click();
   assert.equal($('#calendar-day-detail').hidden,true);
+  $('#calendar-prev').handlers.click(); await tick();
+  assert.equal($('#calendar-month').textContent,'2026 年 8 月');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 """
         result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=15)

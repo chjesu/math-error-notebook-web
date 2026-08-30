@@ -309,7 +309,6 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .memory-principles strong { font-size: 13px; }
 .memory-principles span { color: var(--muted); font-size: 12px; }
 .calendar-controls { display: flex; align-items: center; gap: 8px; }
-.calendar-controls button { width: 36px; min-height: 36px; padding: 0; border-radius: 50%; }
 .calendar-controls strong { min-width: 112px; text-align: center; }
 .calendar-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); gap: 8px; margin: 18px 0 14px; }
 .calendar-stats p { display: grid; gap: 3px; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--brand-soft); }
@@ -354,9 +353,9 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .calendar-day-detail { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
 .calendar-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .calendar-detail-heading h3 { margin: 0; font-size: 16px; }
-#calendar-day-close { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; height: 32px; min-height: 32px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); line-height: 1; box-shadow: none; }
-#calendar-day-close:hover { background: #f0f1f3; color: var(--ink); }
-#calendar-day-close svg { width: 16px; height: 16px; pointer-events: none; }
+#calendar-prev, #calendar-next, #calendar-day-close { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; height: 32px; min-height: 32px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); line-height: 1; box-shadow: none; }
+#calendar-prev:hover, #calendar-next:hover, #calendar-day-close:hover { background: #f0f1f3; color: var(--ink); }
+#calendar-prev svg, #calendar-next svg, #calendar-day-close svg { width: 16px; height: 16px; pointer-events: none; }
 .calendar-day-items { display: grid; gap: 10px; margin-top: 12px; }
 .calendar-detail-item { display: grid; gap: 7px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
 .calendar-detail-item h4 { margin: 0; font-size: 14px; line-height: 1.55; }
