@@ -45,6 +45,40 @@
 - id: session-telemetry-otel
   disabled: true
 
+- id: agent-default-model
+  config:
+    provider: !!js process.env.HARNESS_PROVIDER ?? 'notebook-provider'
+    model: !!js process.env.HARNESS_MODEL ?? 'deepseek-v4-flash-vision-exp'
+
+- id: llm-pi-ai
+  config:
+    providers: !!js |
+      (() => {
+        const providerId = process.env.HARNESS_PROVIDER ?? 'notebook-provider';
+        const modelId = process.env.HARNESS_MODEL ?? 'deepseek-v4-flash-vision-exp';
+        const modalities = (process.env.HARNESS_INPUT_MODALITIES ?? 'text,image').split(',').map((v) => v.trim()).filter(Boolean);
+        return {
+          [providerId]: {
+            displayName: process.env.HARNESS_PROVIDER_NAME ?? 'Notebook model provider',
+            apiKeyEnv: process.env.HARNESS_API_KEY_ENV ?? 'DEEPSEEK_API_KEY',
+            api: process.env.HARNESS_API_PROTOCOL ?? 'openai-completions',
+            baseURL: process.env.HARNESS_BASE_URL ?? process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com',
+            defaultInput: modalities,
+            models: [
+              {
+                id: modelId,
+                input: modalities,
+              }
+            ],
+            reasoning: process.env.HARNESS_REASONING || undefined,
+            retryPolicy: {
+              mode: 'normal',
+              maxRetries: 2,
+            }
+          }
+        };
+      })()
+
 # Coding and orchestration tools are intentionally absent from the product UI.
 - id: tool-bash
   disabled: true
