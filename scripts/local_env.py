@@ -60,14 +60,40 @@ HARNESS_WEB_STDERR = ROOT / "data" / "runtime" / "deepseek-harness-web.stderr.lo
 HARNESS_WEB_PORT = 3080
 
 
+def _load_env_file() -> None:
+    env_file = ROOT / ".env"
+    if not env_file.is_file():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_env_file()
+
+
 def _basedir() -> Path:
-    return Path(os.environ.get("LZLM_LOCAL_MYSQL_HOME", DEFAULT_BASEDIR)).resolve()
+    if "LZLM_LOCAL_MYSQL_HOME" in os.environ:
+        return Path(os.environ["LZLM_LOCAL_MYSQL_HOME"]).resolve()
+    scoop_mysql = Path(os.path.expanduser("~")) / "scoop" / "apps" / "mysql-lts" / "current"
+    if (scoop_mysql / "bin" / "mysqld.exe").is_file():
+        return scoop_mysql
+    return DEFAULT_BASEDIR.resolve()
 
 
 def _binary(name: str) -> Path:
     path = _basedir() / "bin" / f"{name}.exe"
-    if not path.is_file():
-        raise RuntimeError(f"MySQL binary is missing: {path}")
+    if path.is_file():
+        return path
+    which_path = shutil.which(f"{name}.exe") or shutil.which(name)
+    if which_path:
+        return Path(which_path)
     return path
 
 
@@ -153,22 +179,64 @@ def _run_sql(
     password: bool = True,
     label: str = "MySQL command",
 ) -> str:
-    result = subprocess.run(
-        _client_args(root=root, database=database, password=password),
-        input=sql,
-        text=True,
-        encoding="utf-8",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=30,
-        check=False,
-    )
-    if result.returncode:
-        detail = " ".join(result.stderr.strip().splitlines()[-2:])
-        for secret in _load_secrets().values():
+    binary_path = _binary("mysql")
+    if binary_path.is_file():
+        result = subprocess.run(
+            _client_args(root=root, database=database, password=password),
+            input=sql,
+            text=True,
+            encoding="utf-8",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode:
+            detail = " ".join(result.stderr.strip().splitlines()[-2:])
+            for secret in _load_secrets().values():
+                detail = detail.replace(secret, "<redacted>")
+            raise RuntimeError(f"{label} failed: {detail or 'unknown MySQL error'}")
+        return result.stdout.strip()
+
+    import pymysql
+
+    values = _load_secrets()
+    try:
+        conn = pymysql.connect(
+            host="127.0.0.1",
+            port=PORT,
+            user="root" if root else APP_USER,
+            password=values["root_password"] if root else values["app_password"],
+            database=DATABASE if database else None,
+            charset="utf8mb4",
+            client_flag=pymysql.constants.CLIENT.MULTI_STATEMENTS,
+            autocommit=True,
+        )
+    except Exception as exc:
+        detail = str(exc)
+        for secret in values.values():
             detail = detail.replace(secret, "<redacted>")
-        raise RuntimeError(f"{label} failed: {detail or 'unknown MySQL error'}")
-    return result.stdout.strip()
+        raise RuntimeError(f"{label} failed: {detail or 'unknown MySQL error'}") from None
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            output_rows: list[str] = []
+            while True:
+                if cur.description:
+                    rows = cur.fetchall()
+                    for row in rows:
+                        output_rows.append("\t".join("" if v is None else str(v) for v in row))
+                if not cur.nextset():
+                    break
+            return "\n".join(output_rows).strip()
+    except Exception as exc:
+        detail = str(exc)
+        for secret in values.values():
+            detail = detail.replace(secret, "<redacted>")
+        raise RuntimeError(f"{label} failed: {detail or 'unknown MySQL error'}") from None
+    finally:
+        conn.close()
 
 
 def _ensure_root_password() -> None:
@@ -338,6 +406,13 @@ def _wait_running(timeout: float = 30.0) -> None:
 def start() -> None:
     if _is_running():
         return
+    try:
+        res = subprocess.run(["docker", "start", "lzlm-mysql"], capture_output=True, timeout=10)
+        if res.returncode == 0:
+            _wait_running()
+            return
+    except Exception:
+        pass
     if not DATA.is_dir() or not CONFIG.is_file():
         raise RuntimeError("local MySQL is not initialized; run local_env.py init")
     creationflags = 0
@@ -357,23 +432,30 @@ def start() -> None:
 def stop() -> None:
     if not _is_running():
         return
-    result = subprocess.run(
-        [
-            str(_binary("mysqladmin")),
-            f"--defaults-extra-file={ROOT_CLIENT}",
-            "--protocol=TCP",
-            "--host=127.0.0.1",
-            f"--port={PORT}",
-            "--user=root",
-            "shutdown",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=30,
-        check=False,
-    )
-    if result.returncode:
-        raise RuntimeError("local MySQL shutdown failed")
+    binary_path = _binary("mysqladmin")
+    if binary_path.is_file():
+        result = subprocess.run(
+            [
+                str(binary_path),
+                f"--defaults-extra-file={ROOT_CLIENT}",
+                "--protocol=TCP",
+                "--host=127.0.0.1",
+                f"--port={PORT}",
+                "--user=root",
+                "shutdown",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode:
+            raise RuntimeError("local MySQL shutdown failed")
+    else:
+        try:
+            subprocess.run(["docker", "stop", "lzlm-mysql"], check=True, timeout=15)
+        except Exception as exc:
+            raise RuntimeError(f"local MySQL shutdown failed: {exc}") from exc
 
 
 def init() -> None:
@@ -427,9 +509,9 @@ def _connection_factory():
             database=DATABASE,
             charset="utf8mb4",
             autocommit=False,
-            connect_timeout=3,
-            read_timeout=3,
-            write_timeout=3,
+            connect_timeout=10,
+            read_timeout=30,
+            write_timeout=30,
         )
 
     return connect
@@ -1089,15 +1171,16 @@ def serve(
 
 def doctor() -> dict[str, Any]:
     ready_migrations = set(READY.read_text(encoding="utf-8").splitlines()) if READY.is_file() else set()
+    is_running = _is_running()
     checks = {
-        "mysqld": _binary("mysqld").is_file(),
-        "mysql": _binary("mysql").is_file(),
+        "mysqld": _binary("mysqld").is_file() or is_running,
+        "mysql": _binary("mysql").is_file() or is_running,
         "migration": all(migration.is_file() for migration in MIGRATIONS),
-        "initialized": DATA.is_dir() and any(DATA.iterdir()),
+        "initialized": is_running or (DATA.is_dir() and any(DATA.iterdir())),
         "schema_ready": {migration.name for migration in MIGRATIONS} <= ready_migrations and _live_schema_ready(),
         "secrets": SECRETS.is_file(),
         "client_configs": ROOT_CLIENT.is_file() and APP_CLIENT.is_file(),
-        "running": _is_running(),
+        "running": is_running,
     }
     try:
         import pymysql  # noqa: F401
