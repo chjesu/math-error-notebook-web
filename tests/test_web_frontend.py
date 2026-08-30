@@ -260,6 +260,7 @@ assert.ok(!source.includes('plan_kind: "practice"'));
     def test_learning_progress_owns_review_rules_and_activity_calendar(self) -> None:
         html = (WEB / "progress.html").read_text(encoding="utf-8")
         script = (WEB / "app.js").read_text(encoding="utf-8")
+        style = (WEB / "app.css").read_text(encoding="utf-8")
         for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "错题与复习日历", "新增错题", "应复习", "需改错", "逾期", "复习正确率"):
             self.assertIn(text, html)
         self.assertNotIn("各复习阶段", html)
@@ -271,6 +272,8 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertIn('data-calendar-filter', html)
         self.assertIn('data-calendar-date', script)
         self.assertIn('knowledge_points', script)
+        self.assertIn('.calendar-filters { display: inline-flex; gap: 2px; padding: 4px;', style)
+        self.assertIn('.calendar-filters button[aria-pressed="true"] { background: var(--paper); color: var(--brand);', style)
 
     def test_workbench_is_the_official_deepseek_harness_surface(self) -> None:
         html = (WEB / "index.html").read_text(encoding="utf-8")
