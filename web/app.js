@@ -1127,6 +1127,7 @@ function bindErrors() {
   let selectionInitialized = false;
   let pdfReady = false;
   const selectedErrorIds = new Set();
+  let selectionScope = "";
 
   function stageLabel(item) {
     if (item.status === "mastered") return "已掌握";
@@ -1185,6 +1186,7 @@ function bindErrors() {
     try {
       const [errorResult, reviewResult, progressResult, pdfResult] = await Promise.all([api("/v1/errors"), api("/v1/reviews/today"), api("/v1/progress"), api("/v1/practice-pdfs")]);
       errors = errorResult.items;
+      selectionScope = errorResult.selection_scope;
       dueReviews = reviewResult.items;
       progress = progressResult;
       const today = new Date().toLocaleDateString("zh-CN", {timeZone: "Asia/Shanghai"});
@@ -1192,7 +1194,8 @@ function bindErrors() {
       const available = new Set(errors.map(item => item.error_id));
       for (const id of [...selectedErrorIds]) if (!available.has(id)) selectedErrorIds.delete(id);
       if (!selectionInitialized) {
-        dueReviews.slice(0, 12).forEach(item => selectedErrorIds.add(item.error_id));
+        const saved = readReviewSelection(selectionScope, available);
+        (saved ?? dueReviews.slice(0, 12).map(item => item.error_id)).forEach(id => selectedErrorIds.add(id));
         selectionInitialized = true;
       }
       renderPlan();
@@ -1210,6 +1213,7 @@ function bindErrors() {
     }
     if (event.target.checked) selectedErrorIds.add(event.target.value);
     else selectedErrorIds.delete(event.target.value);
+    if (!writeReviewSelection(selectionScope, selectedErrorIds)) status($("#page-status"), "当前浏览器无法保存选题，离开页面后需重新选择。", true);
     pdfReady = false;
     status($("#today-pdf-status"), "题目选择已变化，请重新生成 PDF。", false);
     renderPlan();
@@ -1281,12 +1285,55 @@ function bindErrors() {
   loadDashboard();
 }
 
+function chinaDate(value = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"}).formatToParts(new Date(value)).map(part => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function todayReviewSnapshot(errors, progress, now = new Date()) {
+  const date = chinaDate(now);
+  const pending = errors.filter(item => item.status === "open" && ["pending", "ready"].includes(item.review?.status) && Number.isFinite(Date.parse(item.review.due_at)));
+  const overdue = pending.filter(item => chinaDate(item.review.due_at) < date).sort((a, b) => Date.parse(a.review.due_at) - Date.parse(b.review.due_at));
+  return {
+    date, due_count: pending.filter(item => chinaDate(item.review.due_at) === date).length,
+    completed_count: progress.today_completed_review_count || 0,
+    overdue_items: overdue.map(item => ({type: "due", error_id: item.error_id, question_text: item.question_text, first_error: item.first_error,
+      knowledge_points: item.diagnosis?.knowledge_points || [], stage: item.review.stage, status: item.review.status, overdue: true, original_due_date: chinaDate(item.review.due_at)}))
+  };
+}
+
+function reviewSelectionKey(scope, now = new Date()) {
+  if (!/^[0-9a-f]{24}$/.test(scope || "")) throw new Error("selection_scope_unavailable");
+  return `lzlm-review-selection:${scope}:${chinaDate(now)}`;
+}
+
+function readReviewSelection(scope, available, now = new Date()) {
+  try {
+    const raw = sessionStorage.getItem(reviewSelectionKey(scope, now));
+    if (raw === null) return null;
+    const ids = JSON.parse(raw);
+    if (!Array.isArray(ids)) return null;
+    return [...new Set(ids)].filter(id => available.has(id)).slice(0, 12);
+  } catch { return null; }
+}
+
+function writeReviewSelection(scope, ids, now = new Date()) {
+  try {
+    sessionStorage.setItem(reviewSelectionKey(scope, now), JSON.stringify([...ids].slice(0, 12)));
+    return true;
+  } catch { return false; }
+}
+
 function bindProgress() {
-  let monthCursor = new Date();
+  let monthCursor = new Date(`${chinaDate()}T12:00:00`);
   monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
   let calendar = {days: [], summary: {}, total_error_count: 0};
   let activeFilter = "all";
   let selectedDate = "";
+  let selectedBacklog = false;
+  let todaySnapshot = {date: chinaDate(), due_count: 0, completed_count: 0, overdue_items: []};
+  let selectionScope = "";
+  let selectedErrorIds = new Set();
   const filterLabels = {all: "全部活动", new: "新增错题", due: "待复习", completed: "已完成", correction: "需改错"};
 
   function monthKey() {
@@ -1319,8 +1366,10 @@ function bindProgress() {
   function renderDayDetail() {
     const detail = $("#calendar-day-detail");
     const day = calendar.days.find(item => item.date === selectedDate);
-    const items = day ? filteredItems(day) : [];
-    if (!selectedDate || !items.length) {
+    const isToday = selectedDate === todaySnapshot.date;
+    const backlog = isToday && (selectedBacklog || ["all", "due"].includes(activeFilter)) ? todaySnapshot.overdue_items : [];
+    const items = [...(selectedBacklog ? [] : day ? filteredItems(day) : []), ...backlog];
+    if (!selectedDate || (!items.length && !isToday)) {
       detail.hidden = true;
       return;
     }
@@ -1328,21 +1377,25 @@ function bindProgress() {
     items.forEach(item => {
       if (!groups.has(item.error_id)) groups.set(item.error_id, {item, labels: [], knowledge: new Set()});
       const group = groups.get(item.error_id);
+      if (item.original_due_date) group.backlog = item;
       (item.knowledge_points || []).forEach(point => group.knowledge.add(point));
       if (item.type === "new") group.labels.push({text: "新增错题", className: ""});
-      else if (item.type === "due") group.labels.push({text: `S${item.stage} ${item.overdue ? "已逾期" : item.status === "completed" ? "已完成计划" : "应复习"}`, className: item.overdue ? "is-correction" : ""});
+      else if (item.type === "due") group.labels.push({text: item.original_due_date ? `第 ${item.stage} 阶段 · 原定 ${item.original_due_date} · 历史逾期` : `S${item.stage} ${item.overdue ? "已逾期" : item.status === "completed" ? "已完成计划" : "应复习"}`, className: item.overdue ? "is-correction" : ""});
       else {
         const result = {correct: "正确", partial: "部分掌握", wrong: "错误"}[item.result] || "已完成";
         group.labels.push({text: `S${item.stage} 复习${result}`, className: item.result === "correct" ? "is-completed" : "is-correction"});
       }
     });
-    $("#calendar-day-title").textContent = `${selectedDate.replaceAll("-", " 年 ").replace(/ 年 (\d{2}) 年 /, " 年 $1 月 ")} 日 · ${filterLabels[activeFilter]}`;
+    $("#calendar-day-title").textContent = `${selectedDate.replaceAll("-", " 年 ").replace(/ 年 (\d{2}) 年 /, " 年 $1 月 ")} 日 · ${selectedBacklog ? "历史逾期" : filterLabels[activeFilter]}`;
+    $("#calendar-selection-status").hidden = !backlog.length;
+    status($("#calendar-selection-status"), `历史逾期 ${backlog.length} 道（包含以前月份）；已选 ${selectedErrorIds.size}/12 道。勾选后打开左侧「错题本」继续生成 PDF。`);
     $("#calendar-day-items").innerHTML = [...groups.values()].map(group => {
       const labels = group.labels.map(label => `<span class="${label.className}">${escapeHtml(label.text)}</span>`).join("");
       const cause = group.item.first_error ? `<p><strong>错误原因：</strong>${escapeHtml(group.item.first_error)}</p>` : "";
       const knowledge = group.knowledge.size ? `<p><strong>知识点：</strong>${[...group.knowledge].map(escapeHtml).join("、")}</p>` : "";
-      return `<article class="calendar-detail-item"><div class="calendar-event-labels">${labels}</div><h4>${escapeHtml(group.item.question_text)}</h4>${cause}${knowledge}</article>`;
-    }).join("");
+      const checkbox = group.backlog ? `<label class="calendar-backlog-select"><input type="checkbox" name="calendar-error" value="${escapeHtml(group.item.error_id)}"${selectedErrorIds.has(group.item.error_id) ? " checked" : ""}><span>加入今日复习</span></label>` : "";
+      return `<article class="calendar-detail-item">${checkbox}<div class="calendar-event-labels">${labels}</div><h4>${escapeHtml(group.item.question_text)}</h4>${cause}${knowledge}</article>`;
+    }).join("") || '<p class="empty">当前没有符合筛选条件的题目。</p>';
     detail.hidden = false;
     renderMath($("#calendar-day-items"));
   }
@@ -1353,13 +1406,19 @@ function bindProgress() {
     const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const byDay = new Map(calendar.days.map(item => [item.date, item]));
-    const today = new Date();
     const cells = Array.from({length: firstWeekday}, () => '<div class="calendar-day is-empty" aria-hidden="true"></div>');
     for (let day = 1; day <= daysInMonth; day += 1) {
       const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       const record = byDay.get(dateKey) || {items: [], stage_counts: {}};
       const items = filteredItems(record);
-      const isToday = today.getFullYear() === year && today.getMonth() === month && today.getDate() === day;
+      const isToday = dateKey === todaySnapshot.date;
+      const classes = `calendar-day${isToday ? " is-today" : ""}${selectedDate === dateKey ? " is-selected" : ""}`;
+      if (isToday) {
+        // This is a live summary, not an extra calendar event: never add it to
+        // calendar.days or the historical/monthly totals.
+        cells.push(`<div class="${classes}"><button type="button" class="calendar-today-open" data-calendar-date="${dateKey}" aria-label="查看今日复习详情"><strong>${day}</strong><span>今天</span></button><div class="calendar-day-metrics"><span class="is-due">今日到期<strong>${todaySnapshot.due_count}</strong></span><button type="button" class="calendar-overdue-link is-overdue" data-calendar-date="${dateKey}" data-calendar-backlog="true" aria-label="查看历史逾期 ${todaySnapshot.overdue_items.length} 道题并选择复习">历史逾期<strong>${todaySnapshot.overdue_items.length}</strong></button><span class="is-completed">今日已完成<strong>${todaySnapshot.completed_count}</strong></span></div></div>`);
+        continue;
+      }
       const metrics = [
         activeFilter === "all" || activeFilter === "new" ? metric("新增", record.new_error_count, "is-new") : "",
         activeFilter === "all" || activeFilter === "due" ? metric("应复习", record.due_review_count, "is-due") : "",
@@ -1368,7 +1427,6 @@ function bindProgress() {
         activeFilter === "all" || activeFilter === "due" ? metric("逾期", record.overdue_review_count, "is-overdue") : "",
       ].join("");
       const stages = activeFilter === "all" || activeFilter === "due" ? Object.entries(record.stage_counts || {}).filter(([, count]) => count).map(([stage, count]) => `<span>S${stage}×${count}</span>`).join("") : "";
-      const classes = `calendar-day${isToday ? " is-today" : ""}${selectedDate === dateKey ? " is-selected" : ""}`;
       const content = `<div class="calendar-day-heading"><strong>${day}</strong>${items.length ? `<span>${items.length} 项</span>` : ""}</div>${metrics ? `<div class="calendar-day-metrics">${metrics}</div>` : ""}${stages ? `<div class="calendar-stages">${stages}</div>` : ""}`;
       cells.push(items.length ? `<button type="button" class="${classes}" data-calendar-date="${dateKey}" aria-label="${year}年${month + 1}月${day}日，${items.length}项${filterLabels[activeFilter]}">${content}</button>` : `<div class="${classes}" aria-label="${year}年${month + 1}月${day}日，无${filterLabels[activeFilter]}">${content}</div>`);
     }
@@ -1383,7 +1441,11 @@ function bindProgress() {
   async function loadProgress() {
     status($("#progress-status"), "正在读取学习记录…");
     try {
-      calendar = await api(`/v1/progress/calendar?month=${monthKey()}`);
+      const [history, errorResult, progress] = await Promise.all([api(`/v1/progress/calendar?month=${monthKey()}`), api("/v1/errors"), api("/v1/progress")]);
+      calendar = history;
+      todaySnapshot = todayReviewSnapshot(errorResult.items, progress);
+      selectionScope = errorResult.selection_scope;
+      selectedErrorIds = new Set(readReviewSelection(selectionScope, new Set(errorResult.items.filter(item => item.status === "open").map(item => item.error_id))) || []);
       renderStats();
       renderCalendar();
       status($("#progress-status"), "数据已更新。");
@@ -1397,6 +1459,7 @@ function bindProgress() {
     const button = event.target.closest("[data-calendar-filter]");
     if (!button) return;
     activeFilter = button.dataset.calendarFilter;
+    selectedBacklog = false;
     $("#calendar-filters").querySelectorAll("button").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
     renderCalendar();
   });
@@ -1404,7 +1467,21 @@ function bindProgress() {
     const button = event.target.closest("[data-calendar-date]");
     if (!button) return;
     selectedDate = button.dataset.calendarDate;
+    selectedBacklog = button.dataset.calendarBacklog === "true";
     renderCalendar();
+    $("#calendar-day-detail").scrollIntoView({block: "nearest"});
+  });
+  $("#calendar-day-items").addEventListener("change", event => {
+    const input = event.target;
+    if (input.name !== "calendar-error" || !todaySnapshot.overdue_items.some(item => item.error_id === input.value)) return;
+    if (input.checked && selectedErrorIds.size >= 12) {
+      input.checked = false;
+      return status($("#calendar-selection-status"), "今日复习一次最多选择 12 道，请先取消其他题目。", true);
+    }
+    if (input.checked) selectedErrorIds.add(input.value);
+    else selectedErrorIds.delete(input.value);
+    const saved = writeReviewSelection(selectionScope, selectedErrorIds);
+    status($("#calendar-selection-status"), saved ? `已选 ${selectedErrorIds.size}/12 道，已同步选题。打开左侧「错题本」继续生成 PDF。` : "当前浏览器无法保存选题，请到错题本页面重新选择。", !saved);
   });
   $("#calendar-day-close").addEventListener("click", () => { selectedDate = ""; renderCalendar(); });
   $("#refresh-progress").addEventListener("click", loadProgress);

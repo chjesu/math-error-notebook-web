@@ -573,7 +573,8 @@ class NotebookAsgiApp:
                 items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
                 reviews = await self._sync(self.notebook.store.list_active_reviews, user_id=user.user_id)
                 review_by_error = {item.error_id: item for item in reviews}
-                await self._json(send, 200, {"items": [self._error_entry(item) | {"review": self._review(review_by_error[item.error_id]) if item.error_id in review_by_error else None} for item in items]})
+                selection_scope = hashlib.sha256(f"review-selection:{user.user_id}".encode("utf-8")).hexdigest()[:24]
+                await self._json(send, 200, {"selection_scope": selection_scope, "items": [self._error_entry(item) | {"review": self._review(review_by_error[item.error_id]) if item.error_id in review_by_error else None} for item in items]})
             elif path == "/v1/learning-usage" and method == "GET":
                 await self._json(send, 200, await self._sync(self.notebook.store.learning_usage, user_id=user.user_id))
             elif path.startswith("/v1/errors/") and path.endswith("/master") and method == "POST":

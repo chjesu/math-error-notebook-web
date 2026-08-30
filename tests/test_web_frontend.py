@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 import unittest
+import shutil
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -8,6 +10,111 @@ WEB = ROOT / "web"
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_calendar_backlog_events_preserve_history_and_limit_selection(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is needed for frontend behavior checks")
+        script = r"""
+const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+const source = fs.readFileSync('web/app.js', 'utf8');
+const nodes = new Map(), storage = new Map();
+function $(id) {
+  if (!nodes.has(id)) nodes.set(id, {textContent:'', innerHTML:'', hidden:true, handlers:{},
+    addEventListener(event, fn) { this.handlers[event] = fn; }, scrollIntoView() {}, querySelectorAll() {return [];} });
+  return nodes.get(id);
+}
+const errors = Array.from({length:13}, (_,i) => ({error_id:String(i),status:'open',question_text:'题目',first_error:'错因',
+  diagnosis:{knowledge_points:['知识点']}, review:{due_at:'2026-07-01T00:00:00Z',status:'pending',stage:2}}));
+const history = {days:[{date:'2026-08-24',items:[{type:'due',error_id:'historic',stage:1}],due_review_count:1}],
+  summary:{due_review_count:1},total_error_count:13};
+const before = JSON.stringify(history);
+const context = {Intl, $, Date:class extends Date {constructor(...args) {super(...(args.length ? args : ['2026-08-30T16:30:00Z']));}},
+  sessionStorage:{getItem:k=>storage.get(k)??null, setItem:(k,v)=>storage.set(k,v)},
+  escapeHtml:s=>String(s??''), renderMath:()=>{}, authError:e=>String(e), status:(node,text,error=false)=>{node.textContent=text;node.error=error;},
+  api:async path=>path==='/v1/errors' ? {items:errors,selection_scope:'a'.repeat(24)} : path==='/v1/progress' ? {today_completed_review_count:0} : history};
+vm.createContext(context);
+vm.runInContext(source.slice(source.indexOf('function chinaDate('), source.indexOf('function bindPractice(')), context);
+const tick = () => new Promise(resolve=>setImmediate(resolve));
+(async()=>{
+  context.bindProgress(); await tick();
+  assert.equal($('#progress-status').textContent,'数据已更新。');
+  const grid = $('#review-calendar').innerHTML;
+  assert.ok(grid.includes('今日到期<strong>0</strong>'));
+  assert.ok(grid.includes('历史逾期<strong>13</strong>'));
+  assert.ok(grid.includes('今日已完成<strong>0</strong>'));
+  assert.ok(grid.includes('data-calendar-date="2026-08-24"'));
+  assert.equal($('#calendar-stat-due').textContent,1);
+  $('#review-calendar').handlers.click({target:{closest:()=>({dataset:{calendarDate:'2026-08-31',calendarBacklog:'true'}})}});
+  assert.equal($('#calendar-day-detail').hidden,false);
+  assert.equal(($('#calendar-day-items').innerHTML.match(/name="calendar-error"/g)||[]).length,13);
+  assert.ok($('#calendar-day-items').innerHTML.includes('原定 2026-07-01'));
+  assert.ok($('#calendar-day-items').innerHTML.includes('错误原因：'));
+  const change = (value,checked) => {const target={name:'calendar-error',value,checked};$('#calendar-day-items').handlers.change({target});return target;};
+  for(let i=0;i<12;i++) change(String(i),true);
+  assert.equal(change('12',true).checked,false);
+  assert.ok($('#calendar-selection-status').textContent.includes('最多选择 12 道'));
+  assert.equal(context.readReviewSelection('a'.repeat(24),new Set(errors.map(x=>x.error_id))).length,12);
+  change('0',false); change('12',true);
+  assert.equal(context.readReviewSelection('a'.repeat(24),new Set(errors.map(x=>x.error_id))).includes('12'),true);
+  await $('#refresh-progress').handlers.click();
+  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,12);
+  assert.equal(JSON.stringify(history),before);
+  context.sessionStorage.setItem=()=>{throw new Error('blocked');}; change('12',false);
+  assert.equal($('#calendar-selection-status').error,true);
+  assert.ok($('#calendar-selection-status').textContent.includes('无法保存选题'));
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+        result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_today_summary_and_selection_are_date_and_account_scoped(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is needed for frontend behavior checks")
+        script = r"""
+const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+const source = fs.readFileSync('web/app.js', 'utf8');
+const helpers = source.slice(source.indexOf('function chinaDate('), source.indexOf('function bindProgress('));
+const data = new Map();
+const context = {Intl, Date, Set, sessionStorage: {getItem: k => data.get(k) ?? null, setItem: (k,v) => data.set(k,v)}};
+vm.createContext(context); vm.runInContext(helpers, context);
+const now = new Date('2026-08-30T16:30:00Z');
+assert.equal(context.chinaDate(now), '2026-08-31');
+function error(id,due,status='open',taskStatus='pending') {
+  return {error_id:id, status, question_text:'题目', first_error:'错因', diagnosis:{knowledge_points:['知识点']}, review:{due_at:due, status:taskStatus,stage:2}};
+}
+const errors = [error('old','2026-07-01T00:00:00Z'), error('yesterday','2026-08-30T15:59:59Z'),
+  error('today','2026-08-30T16:00:00Z'), error('later','2026-08-31T15:59:59Z'),
+  error('future','2026-08-31T16:00:00Z'), error('removed','2026-07-01T00:00:00Z','removed'),
+  error('mastered','2026-07-01T00:00:00Z','mastered'), error('done','2026-07-01T00:00:00Z','open','completed'), error('bad','invalid')];
+const before = JSON.stringify(errors);
+const today = context.todayReviewSnapshot(errors, {today_completed_review_count:3}, now);
+assert.equal(today.date, '2026-08-31'); assert.equal(today.due_count,2); assert.equal(today.completed_count,3);
+assert.equal(JSON.stringify(today.overdue_items.map(x=>x.error_id)), JSON.stringify(['old','yesterday']));
+assert.equal(today.overdue_items[0].original_due_date,'2026-07-01');
+assert.equal(JSON.stringify(errors), before);
+const empty = context.todayReviewSnapshot([],{},now);
+assert.equal(empty.due_count,0); assert.equal(empty.completed_count,0); assert.equal(empty.overdue_items.length,0);
+const ids = new Set(['old','yesterday']);
+assert.equal(context.readReviewSelection('a'.repeat(24),ids,now), null);
+assert.equal(context.writeReviewSelection('a'.repeat(24),new Set(['old','stale']),now),true);
+assert.equal(JSON.stringify(context.readReviewSelection('a'.repeat(24),ids,now)), '["old"]');
+assert.equal(context.readReviewSelection('b'.repeat(24),ids,now),null);
+assert.equal(context.readReviewSelection('a'.repeat(24),ids,new Date('2026-08-31T16:00:00Z')),null);
+context.writeReviewSelection('a'.repeat(24),new Set(),now);
+assert.equal(JSON.stringify(context.readReviewSelection('a'.repeat(24),ids,now)), '[]');
+const many = new Set(Array.from({length:20},(_,i)=>String(i)));
+context.writeReviewSelection('a'.repeat(24),many,now);
+assert.equal(context.readReviewSelection('a'.repeat(24),many,now).length,12);
+context.sessionStorage.setItem = () => {throw new Error('blocked');};
+assert.equal(context.writeReviewSelection('a'.repeat(24),ids,now),false);
+assert.equal(context.writeReviewSelection('',ids,now),false);
+assert.ok(source.includes('data-calendar-backlog="true"'));
+assert.ok(source.includes('saved ?? dueReviews.slice(0, 12)'));
+"""
+        result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_operations_dashboard_is_separate_read_only_and_responsive(self) -> None:
         html = (WEB / "admin.html").read_text(encoding="utf-8")
         script = (WEB / "admin.js").read_text(encoding="utf-8")

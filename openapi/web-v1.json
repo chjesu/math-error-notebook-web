@@ -469,7 +469,7 @@
       "ChatTurn": {"description": "本轮会话答复及可选的新候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChatTurnResponse"}}}},
       "ConversationHistory": {"description": "最近一次错题会话中的用户与助手消息", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConversationHistory"}}}},
       "ErrorEntry": {"description": "正式错题", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEntry"}}}},
-      "ErrorList": {"description": "错题列表", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/ErrorEntry"}}}}}}},
+      "ErrorList": {"description": "错题列表与当前账号的选题草稿隔离标识", "content": {"application/json": {"schema": {"type": "object", "required": ["items", "selection_scope"], "properties": {"selection_scope": {"type": "string", "pattern": "^[0-9a-f]{24}$", "description": "仅用于按账号隔离浏览器选题草稿，不作为身份凭据"}, "items": {"type": "array", "items": {"$ref": "#/components/schemas/ErrorEntry"}}}}}}},
       "RecommendationList": {"description": "已验证推荐及真实缺口", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RecommendationList"}}}},
       "ReviewList": {"description": "每个错题最多一个当前到期阶段", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewList"}}}},
       "ReviewCompleted": {"description": "复习阶段结果", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewCompleted"}}}},

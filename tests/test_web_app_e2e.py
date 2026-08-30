@@ -681,6 +681,18 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual((usage[2]["recommendation"]["target"], usage[2]["recommendation"]["limit"]), (12, 24))
         self.assertEqual(other[2]["grade"]["count"], 0)
 
+    def test_review_selection_scope_is_server_owned_and_stable(self) -> None:
+        cookie = self.login("13900139000")
+        other_cookie = self.login("13900139001")
+        own = self.call("/v1/errors", cookie=cookie)
+        again = self.call("/v1/errors", cookie=cookie)
+        other = self.call("/v1/errors", cookie=other_cookie)
+        self.assertEqual((own[0], again[0], other[0]), (200, 200, 200))
+        self.assertRegex(own[2]["selection_scope"], r"^[0-9a-f]{24}$")
+        self.assertEqual(own[2]["selection_scope"], again[2]["selection_scope"])
+        self.assertNotEqual(own[2]["selection_scope"], other[2]["selection_scope"])
+        self.assertNotIn("user_id", own[2])
+
     @staticmethod
     def multipart(filename: str, content: bytes, purpose: str = "question_image") -> tuple[str, bytes]:
         boundary = "lzlm-test-boundary"
