@@ -1125,9 +1125,27 @@ function bindErrors() {
   let dueReviews = [];
   let progress = {};
   let selectionInitialized = false;
-  let pdfReady = false;
+  let selectionMode = "auto";
+  let fixedPlan = null;
+  let generatingPdf = false;
+  let dashboardPromise = null;
   const selectedErrorIds = new Set();
   let selectionScope = "";
+
+  function reviewMap() {
+    return new Map(errors.filter(item => item.status === "open" && item.review).map(item => [item.error_id, item.review]));
+  }
+
+  function fixedPlanCounts() {
+    const items = fixedPlan?.items || [];
+    return {
+      total: items.length,
+      pending: items.filter(item => item.status === "pending").length,
+      completed: items.filter(item => item.status === "completed").length,
+      correction: items.filter(item => item.status === "needs_correction").length,
+      unavailable: items.filter(item => item.status === "unavailable").length,
+    };
+  }
 
   function stageLabel(item) {
     if (item.status === "mastered") return "已掌握";
@@ -1141,17 +1159,34 @@ function bindErrors() {
 
   function renderPlan() {
     const selected = selectedErrorIds.size;
+    if (selectionMode === "fixed") {
+      const counts = fixedPlanCounts();
+      const unfinished = counts.pending + counts.correction + counts.unavailable;
+      const link = fixedPlan?.download_url ? `<a href="${escapeHtml(fixedPlan.download_url)}" download>下载今日复习推荐题 PDF</a>` : "";
+      $("#selected-error-count").textContent = fixedPlan?.available ? `今日计划固定 ${counts.total} 道` : "今日 PDF 的选题清单不可还原";
+      $("#pdf-step-state").textContent = "今日已生成，计划不再自动换题";
+      $("#correction-step-state").textContent = counts.correction ? `已完成 ${counts.completed} 道，${counts.correction} 道需继续改错` : `已完成 ${counts.completed} 道，待完成 ${counts.pending} 道`;
+      $("#completion-step-state").textContent = counts.unavailable ? `${counts.unavailable} 道历史状态无法核对` : unfinished ? `还有 ${counts.pending} 道待完成` : "今日固定计划已完成";
+      $("#today-plan-state").textContent = fixedPlan?.available ? `固定计划 ${counts.total} 道 · 完成 ${counts.completed} · 待做 ${counts.pending}${counts.correction ? ` · 需改错 ${counts.correction}` : ""}` : "今日已生成 PDF，但旧文件缺少可核对的冻结清单";
+      $("#generate-review-pdf").disabled = true;
+      $("#today-pdf-status").innerHTML = link ? `今日计划已固定：${link}` : "今日计划已固定。";
+      setPlanStep("#plan-step-select", counts.total > 0);
+      setPlanStep("#plan-step-pdf", true);
+      setPlanStep("#plan-step-correct", counts.completed > 0 || counts.correction > 0);
+      setPlanStep("#plan-step-done", unfinished === 0 && counts.total > 0);
+      return;
+    }
     const completedToday = progress.today_completed_review_count || 0;
     const needsCorrection = progress.today_needs_correction_count || 0;
     const due = dueReviews.length;
-    $("#selected-error-count").textContent = selected ? `已选 ${selected} 道` : due ? `有 ${due} 道到期，等待选择` : "今日无到期题";
-    $("#pdf-step-state").textContent = pdfReady ? "今日已生成" : selected ? "可以生成" : "待选择题目";
+    $("#selected-error-count").textContent = selected ? `${selectionMode === "manual" ? "手动" : "自动"}已选 ${selected} 道` : due ? `有 ${due} 道到期，等待选择` : "今日无到期题";
+    $("#pdf-step-state").textContent = selected ? "可以生成" : "待选择题目";
     $("#correction-step-state").textContent = needsCorrection ? `已答 ${completedToday} 道，${needsCorrection} 道需继续改错` : completedToday ? `已核对 ${completedToday} 道，无待改错` : due ? "待完成重做" : "今日无到期题";
     $("#completion-step-state").textContent = due ? `还有 ${due} 道待完成` : "今日任务已完成";
     $("#today-plan-state").textContent = due ? `完成 ${completedToday} 道 · 待复习 ${due} 道` : "今日已完成";
-    $("#generate-review-pdf").disabled = selected === 0;
+    $("#generate-review-pdf").disabled = selected === 0 || generatingPdf;
     setPlanStep("#plan-step-select", selected > 0 || due === 0);
-    setPlanStep("#plan-step-pdf", pdfReady || due === 0);
+    setPlanStep("#plan-step-pdf", due === 0);
     setPlanStep("#plan-step-correct", completedToday > 0 || due === 0);
     setPlanStep("#plan-step-done", due === 0);
   }
@@ -1161,8 +1196,10 @@ function bindErrors() {
       const diagnosis = item.diagnosis || {};
       const points = Array.isArray(diagnosis.knowledge_points) && diagnosis.knowledge_points.length ? diagnosis.knowledge_points.map(point => `<span>${escapeHtml(point)}</span>`).join("") : '<span>知识点待整理</span>';
       const checked = selectedErrorIds.has(item.error_id) ? " checked" : "";
+      const disabled = selectionMode === "fixed" ? " disabled" : "";
       const detailId = `error-detail-${escapeHtml(item.error_id)}`;
-      return `<li class="error-card"><label class="error-select" title="加入今日复习"><input name="today-error" type="checkbox" value="${escapeHtml(item.error_id)}"${checked}><span class="sr-only">选择这道错题</span></label><article><div class="error-card-heading"><span class="badge">${escapeHtml(stageLabel(item))}</span><time datetime="${escapeHtml(item.created_at)}">${escapeHtml(new Date(item.created_at).toLocaleDateString("zh-CN"))}</time></div><h3>${escapeHtml(item.question_text)}</h3><dl><div><dt>错误原因</dt><dd><strong>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</strong>${escapeHtml(diagnosis.cause_evidence || item.first_error || "尚未记录")}</dd></div><div><dt>涉及知识点</dt><dd class="knowledge-tags">${points}</dd></div></dl><button class="text-button error-detail-trigger" type="button" data-error-id="${escapeHtml(item.error_id)}" aria-expanded="false" aria-controls="${detailId}">查看完整解析与操作</button><section id="${detailId}" class="error-detail" data-error-detail="${escapeHtml(item.error_id)}" hidden></section></article></li>`;
+      const title = selectionMode === "fixed" ? "今日 PDF 已生成，计划已固定" : "加入今日复习";
+      return `<li class="error-card"><label class="error-select" title="${title}"><input name="today-error" type="checkbox" value="${escapeHtml(item.error_id)}"${checked}${disabled}><span class="sr-only">选择这道错题</span></label><article><div class="error-card-heading"><span class="badge">${escapeHtml(stageLabel(item))}</span><time datetime="${escapeHtml(item.created_at)}">${escapeHtml(new Date(item.created_at).toLocaleDateString("zh-CN"))}</time></div><h3>${escapeHtml(item.question_text)}</h3><dl><div><dt>错误原因</dt><dd><strong>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</strong>${escapeHtml(diagnosis.cause_evidence || item.first_error || "尚未记录")}</dd></div><div><dt>涉及知识点</dt><dd class="knowledge-tags">${points}</dd></div></dl><button class="text-button error-detail-trigger" type="button" data-error-id="${escapeHtml(item.error_id)}" aria-expanded="false" aria-controls="${detailId}">查看完整解析与操作</button><section id="${detailId}" class="error-detail" data-error-detail="${escapeHtml(item.error_id)}" hidden></section></article></li>`;
     }).join("") : '<li class="empty">还没有错题。</li>';
     renderMath($("#all-errors"));
   }
@@ -1182,39 +1219,47 @@ function bindErrors() {
     trigger.textContent = "收起完整解析与操作";
     trigger.setAttribute("aria-expanded", "true");
   }
-  async function loadDashboard() {
-    try {
-      const [errorResult, reviewResult, progressResult, pdfResult] = await Promise.all([api("/v1/errors"), api("/v1/reviews/today"), api("/v1/progress"), api("/v1/practice-pdfs")]);
-      errors = errorResult.items;
-      selectionScope = errorResult.selection_scope;
-      dueReviews = reviewResult.items;
-      progress = progressResult;
-      const today = new Date().toLocaleDateString("zh-CN", {timeZone: "Asia/Shanghai"});
-      pdfReady = pdfResult.items.some(item => item.generated_at && new Date(item.generated_at).toLocaleDateString("zh-CN", {timeZone: "Asia/Shanghai"}) === today);
-      const available = new Set(errors.map(item => item.error_id));
-      for (const id of [...selectedErrorIds]) if (!available.has(id)) selectedErrorIds.delete(id);
-      if (!selectionInitialized) {
+  function loadDashboard() {
+    if (dashboardPromise) return dashboardPromise;
+    dashboardPromise = (async () => {
+      try {
+        const [errorResult, reviewResult, progressResult, pdfResult] = await Promise.all([api("/v1/errors"), api("/v1/reviews/today"), api("/v1/progress"), api("/v1/practice-pdfs")]);
+        errors = errorResult.items;
+        selectionScope = errorResult.selection_scope;
+        dueReviews = reviewResult.items;
+        progress = progressResult;
+        fixedPlan = pdfResult.today_plan || null;
+        const available = reviewMap();
         const saved = readReviewSelection(selectionScope, available);
-        (saved ?? dueReviews.slice(0, 12).map(item => item.error_id)).forEach(id => selectedErrorIds.add(id));
+        const resolved = resolveReviewSelection({fixedPlan, dueReviews, saved, mode: selectionInitialized ? selectionMode : "auto", currentIds: selectedErrorIds});
+        selectionMode = resolved.mode;
+        selectedErrorIds.clear();
+        resolved.ids.forEach(id => selectedErrorIds.add(id));
         selectionInitialized = true;
+        renderPlan();
+        renderErrors();
+        return true;
+      } catch (error) {
+        status($("#page-status"), authError(error), true);
+        return false;
+      } finally {
+        dashboardPromise = null;
       }
-      renderPlan();
-      renderErrors();
-    } catch (error) {
-      status($("#page-status"), authError(error), true);
-    }
+    })();
+    return dashboardPromise;
   }
   $("#refresh-errors").addEventListener("click", loadDashboard);
   $("#all-errors").addEventListener("change", event => {
     if (event.target.name !== "today-error") return;
+    if (selectionMode === "fixed") return;
     if (event.target.checked && selectedErrorIds.size >= 12) {
       event.target.checked = false;
       return status($("#page-status"), "今日复习一次最多选择 12 道错题。", true);
     }
+    selectionMode = "manual";
     if (event.target.checked) selectedErrorIds.add(event.target.value);
     else selectedErrorIds.delete(event.target.value);
-    if (!writeReviewSelection(selectionScope, selectedErrorIds)) status($("#page-status"), "当前浏览器无法保存选题，离开页面后需重新选择。", true);
-    pdfReady = false;
+    if (!writeReviewSelection(selectionScope, selectedErrorIds, reviewMap())) status($("#page-status"), "当前浏览器无法保存选题，离开页面后需重新选择。", true);
     status($("#today-pdf-status"), "题目选择已变化，请重新生成 PDF。", false);
     renderPlan();
   });
@@ -1259,14 +1304,20 @@ function bindErrors() {
     }
   });
   $("#generate-review-pdf").addEventListener("click", async event => {
-    const ids = [...selectedErrorIds];
-    if (!ids.length) return;
+    if (generatingPdf || !(await loadDashboard()) || fixedPlan) return;
+    let ids = [...selectedErrorIds];
+    if (!ids.length) return status($("#today-pdf-status"), "当前没有可生成的复习题。", true);
+    generatingPdf = true;
     event.currentTarget.disabled = true;
     status($("#today-pdf-status"), "正在匹配已验证推荐题并生成 PDF…");
     try {
       await Promise.all(ids.map(id => api(`/v1/errors/${id}/recommendations?limit=1`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}})));
-      const result = await api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: ids, include_answers: $("#review-pdf-answers").checked}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-      pdfReady = true;
+      const prepared = new Set(ids);
+      if (!(await loadDashboard()) || fixedPlan) return;
+      ids = [...selectedErrorIds];
+      if (!ids.length) return status($("#today-pdf-status"), "复习任务刚刚完成，当前没有可生成的题目。", false);
+      await Promise.all(ids.filter(id => !prepared.has(id)).map(id => api(`/v1/errors/${id}/recommendations?limit=1`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}})));
+      const result = await api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: ids, include_answers: $("#review-pdf-answers").checked, plan_kind: "daily_review"}), headers: {"Idempotency-Key": crypto.randomUUID()}});
       if (result.download_url) {
         const link = document.createElement("a");
         link.href = result.download_url;
@@ -1274,14 +1325,19 @@ function bindErrors() {
         link.setAttribute("download", "");
         $("#today-pdf-status").replaceChildren("已生成：", link);
       } else status($("#today-pdf-status"), "PDF 正在生成，请稍后刷新。");
-      renderPlan();
-      await loadLearningUsage();
+      await Promise.all([loadDashboard(), loadLearningUsage()]);
     } catch (error) {
       status($("#today-pdf-status"), authError(error), true);
     } finally {
-      event.currentTarget.disabled = selectedErrorIds.size === 0;
+      generatingPdf = false;
+      renderPlan();
     }
   });
+  const refreshWhenVisible = () => { if (!document.hidden && !generatingPdf) loadDashboard(); };
+  window.addEventListener("pageshow", refreshWhenVisible);
+  window.addEventListener("focus", refreshWhenVisible);
+  document.addEventListener("visibilitychange", refreshWhenVisible);
+  window.setInterval(refreshWhenVisible, 30000);
   loadDashboard();
 }
 
@@ -1311,17 +1367,29 @@ function readReviewSelection(scope, available, now = new Date()) {
   try {
     const raw = sessionStorage.getItem(reviewSelectionKey(scope, now));
     if (raw === null) return null;
-    const ids = JSON.parse(raw);
-    if (!Array.isArray(ids)) return null;
-    return [...new Set(ids)].filter(id => available.has(id)).slice(0, 12);
+    const value = JSON.parse(raw);
+    const items = Array.isArray(value) ? value.map(error_id => ({error_id, review_id: null})) : value?.mode === "manual" && Array.isArray(value.items) ? value.items : null;
+    if (!items) return null;
+    return [...new Set(items.filter(item => {
+      const review = available.get(item?.error_id);
+      const reviewId = typeof review === "string" ? review : review?.review_id;
+      return typeof item?.error_id === "string" && available.has(item.error_id) && (!item.review_id || reviewId === item.review_id);
+    }).map(item => item.error_id))].slice(0, 12);
   } catch { return null; }
 }
 
-function writeReviewSelection(scope, ids, now = new Date()) {
+function writeReviewSelection(scope, ids, reviews = new Map(), now = new Date()) {
   try {
-    sessionStorage.setItem(reviewSelectionKey(scope, now), JSON.stringify([...ids].slice(0, 12)));
+    const items = [...ids].slice(0, 12).map(error_id => ({error_id, review_id: reviews.get(error_id)?.review_id || null}));
+    sessionStorage.setItem(reviewSelectionKey(scope, now), JSON.stringify({mode: "manual", items}));
     return true;
   } catch { return false; }
+}
+
+function resolveReviewSelection({fixedPlan, dueReviews, saved, mode, currentIds}) {
+  if (fixedPlan) return {mode: "fixed", ids: fixedPlan.available ? [...new Set(fixedPlan.items.map(item => item.error_id))].slice(0, 12) : []};
+  if (mode === "manual" || saved !== null) return {mode: "manual", ids: saved === null ? [...currentIds] : saved};
+  return {mode: "auto", ids: dueReviews.slice(0, 12).map(item => item.error_id)};
 }
 
 function bindProgress() {
@@ -1468,7 +1536,7 @@ function bindProgress() {
       todaySnapshot = todayReviewSnapshot(errorResult.items, progress);
       selectionScope = errorResult.selection_scope;
       currentReviews = new Map(errorResult.items.filter(item => item.status === "open" && ["pending", "ready"].includes(item.review?.status)).map(item => [item.error_id, item.review]));
-      selectedErrorIds = new Set(readReviewSelection(selectionScope, new Set(errorResult.items.filter(item => item.status === "open").map(item => item.error_id))) || []);
+      selectedErrorIds = new Set(readReviewSelection(selectionScope, currentReviews) || []);
       renderStats();
       renderCalendar();
       status($("#progress-status"), "数据已更新。");
@@ -1504,7 +1572,7 @@ function bindProgress() {
     }
     if (input.checked) selectedErrorIds.add(input.value);
     else selectedErrorIds.delete(input.value);
-    const saved = writeReviewSelection(selectionScope, selectedErrorIds);
+    const saved = writeReviewSelection(selectionScope, selectedErrorIds, currentReviews);
     status($("#calendar-selection-status"), saved ? `已选 ${selectedErrorIds.size}/12 道，已同步选题。打开左侧「错题本」继续生成 PDF。` : "当前浏览器无法保存选题，请到错题本页面重新选择。", !saved);
   });
   $("#calendar-day-close").addEventListener("click", () => { selectedDate = ""; renderCalendar(); });
@@ -1547,7 +1615,7 @@ function bindPractice() {
     if (!errorIds.length) return;
     button.disabled = true;
     try {
-      const result = await api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: errorIds, include_answers: $("#include-answers").checked}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+      const result = await api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: errorIds, include_answers: $("#include-answers").checked, plan_kind: "practice"}), headers: {"Idempotency-Key": crypto.randomUUID()}});
       if (result.download_url) {
         const link = document.createElement("a");
         link.href = result.download_url;

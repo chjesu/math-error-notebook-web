@@ -1185,6 +1185,19 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def list_review_completions(self, *, user_id: str, task_ids: list[str]) -> list[dict]:
+        if not task_ids:
+            return []
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            placeholders = ",".join(["%s"] * len(task_ids))
+            cursor.execute(f"SELECT review_task_id,stage,result,completed_at FROM review_attempts WHERE user_id=%s AND review_task_id IN ({placeholders}) ORDER BY completed_at,id", (user_id, *task_ids))
+            return [{"task_id": str(row[0]), "stage": int(row[1]), "result": str(row[2]), "completed_at": row[3].replace(tzinfo=timezone.utc)} for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            connection.close()
+
     def _complete_review_tx(self, cursor, user_id, task_id, result, key, completed_at):
         cursor.execute("SELECT error_id FROM review_attempts WHERE user_id=%s AND idempotency_key=%s", (user_id, key))
         existing = cursor.fetchone()
@@ -1387,7 +1400,7 @@ class MySqlDomainStore:
                 items.append({"kind": "recommendation", "error_id": error_id, "question_id": question.question_id, "stem_text": question.stem_text, "answer_text": question.answer_text, "difficulty": question.difficulty, "source_title": question.source_title, "reason": recommendation.reason})
         return items, gaps
 
-    def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool) -> Job:
+    def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool, plan_kind: str = "daily_review") -> Job:
         key = _required(idempotency_key, "idempotency_key")
         if not error_ids:
             raise ValueError("error_ids is required")
@@ -1400,12 +1413,12 @@ class MySqlDomainStore:
             cursor.execute(f"SELECT COUNT(*) FROM error_notebook_entries WHERE user_id=%s AND id IN ({placeholders}) AND status<>'removed'", (user_id, *error_ids))
             if int((cursor.fetchone() or (0,))[0]) != len(set(error_ids)):
                 raise LookupError("error not found")
-            digest = hashlib.sha256(json.dumps([sorted(set(error_ids)), include_answers], separators=(",", ":")).encode("ascii")).hexdigest()
+            digest = hashlib.sha256(json.dumps([sorted(set(error_ids)), include_answers, plan_kind], separators=(",", ":")).encode("ascii")).hexdigest()
             proposed = uuid.uuid4().hex
             cursor.execute(
                 "INSERT INTO web_jobs (id,user_id,job_type,resource_type,resource_id,idempotency_key,input_sha256,status,checkpoint_json,created_at,updated_at) "
                 "VALUES (%s,%s,'practice_pdf','error',%s,%s,%s,'queued',%s,%s,%s) ON DUPLICATE KEY UPDATE updated_at=updated_at",
-                (proposed, user_id, error_ids[0], key, digest, json.dumps({"error_ids": error_ids, "include_answers": include_answers}), now, now),
+                (proposed, user_id, error_ids[0], key, digest, json.dumps({"error_ids": error_ids, "include_answers": include_answers, "plan_kind": plan_kind}), now, now),
             )
             cursor.execute("SELECT id,resource_id,status,checkpoint_json,last_error_code,input_sha256 FROM web_jobs WHERE user_id=%s AND job_type='practice_pdf' AND idempotency_key=%s", (user_id, key))
             row = cursor.fetchone()
@@ -1420,13 +1433,13 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
-    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool, review_manifest: list[dict] | None = None) -> Job:
-        checkpoint = {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers}
+    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool, review_manifest: list[dict] | None = None, plan_kind: str = "daily_review") -> Job:
+        now = _utcnow()
+        checkpoint = {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers, "plan_kind": plan_kind, "generated_at": now.replace(tzinfo=timezone.utc).isoformat()}
         if review_manifest is not None:
             checkpoint.update(review_manifest=review_manifest, review_job_id=job_id)
         connection = self._connect()
         cursor = connection.cursor()
-        now = _utcnow()
         try:
             connection.begin()
             changed = cursor.execute("UPDATE web_jobs SET status='completed',checkpoint_json=%s,result_json=%s,updated_at=%s WHERE id=%s AND user_id=%s AND job_type='practice_pdf'", (json.dumps(checkpoint), json.dumps(checkpoint), now, job_id, user_id))
@@ -1462,10 +1475,11 @@ class MySqlDomainStore:
                     "task_id": str(job_id),
                     "filename": str(filename),
                     "byte_size": int(byte_size),
-                    "generated_at": updated_at.replace(tzinfo=timezone.utc).isoformat(),
+                    "generated_at": str(checkpoint.get("generated_at") or updated_at.replace(tzinfo=timezone.utc).isoformat()),
                     "question_count": int(checkpoint.get("question_count", 0)),
                     "include_answers": bool(checkpoint.get("include_answers", False)),
                     "source": str(checkpoint.get("source", "generated")),
+                    "plan_kind": str(checkpoint.get("plan_kind", "daily_review")),
                 })
             return items
         finally:

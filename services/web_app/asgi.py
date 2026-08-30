@@ -625,14 +625,16 @@ class NotebookAsgiApp:
                 await self._json(send, 200, await self._sync(self.notebook.store.bank_status))
             elif path == "/v1/practice-pdfs" and method == "GET":
                 items = await self._sync(self.notebook.store.list_practice_pdfs, user_id=user.user_id)
-                await self._json(send, 200, {"items": [item | {"download_url": f"/v1/practice-pdfs/{item['task_id']}/download"} for item in items], "count": len(items)})
+                plan = await self._sync(self.notebook.today_practice_plan, user_id=user.user_id, papers=items)
+                await self._json(send, 200, {"items": [item | {"download_url": f"/v1/practice-pdfs/{item['task_id']}/download"} for item in items], "count": len(items), "today_plan": plan})
             elif path == "/v1/practice-pdfs" and method == "POST":
                 payload = await self._json_body(receive)
                 error_ids = payload.get("error_ids")
                 include_answers = payload.get("include_answers", False)
-                if not isinstance(error_ids, list) or not all(isinstance(item, str) for item in error_ids) or not 1 <= len(error_ids) <= 12 or not isinstance(include_answers, bool):
+                plan_kind = payload.get("plan_kind", "daily_review")
+                if not isinstance(error_ids, list) or not all(isinstance(item, str) for item in error_ids) or not 1 <= len(error_ids) <= 12 or not isinstance(include_answers, bool) or plan_kind not in {"daily_review", "practice"}:
                     raise ValueError("invalid practice request")
-                job = await self._sync(self.notebook.create_practice_pdf, user_id=user.user_id, error_ids=list(dict.fromkeys(error_ids)), idempotency_key=self._key(headers), include_answers=include_answers)
+                job = await self._sync(self.notebook.create_practice_pdf, user_id=user.user_id, error_ids=list(dict.fromkeys(error_ids)), idempotency_key=self._key(headers), include_answers=include_answers, plan_kind=plan_kind)
                 await self._json(send, 201, self._practice_job(job))
             elif path.startswith("/v1/practice-pdfs/") and path.endswith("/download") and method == "GET":
                 job_id = path.split("/")[-2]

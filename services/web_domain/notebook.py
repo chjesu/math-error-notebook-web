@@ -34,7 +34,7 @@ from .learning import (
 )
 from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job, normalize_extraction_items
 from .practice_pdf import build_practice_pdf
-from .practice_review import apply_submission, build_manifest, legacy_manifest, matching_items, review_locator, unresolved_receipt
+from .practice_review import apply_submission, build_manifest, fixed_plan_items, legacy_manifest, matching_items, review_locator, unresolved_receipt
 
 
 @dataclass(frozen=True)
@@ -538,6 +538,12 @@ class InMemoryNotebookStore:
             key=lambda item: (item.due_at, item.error_id),
         )
 
+    def list_review_completions(self, *, user_id: str, task_ids: list[str]) -> list[dict]:
+        return [{"task_id": item["task_id"], "stage": self.review_tasks[item["task_id"]].stage,
+                 "result": item["result"], "completed_at": item["completed_at"]}
+                for (owner, _), item in self.review_attempts.items()
+                if owner == user_id and item["task_id"] in task_ids and item["task_id"] in self.review_tasks]
+
     def complete_review(self, *, user_id: str, task_id: str, result: str, idempotency_key: str, now: datetime | None = None) -> ReviewTask | None:
         key = (user_id, idempotency_key)
         if key in self.review_attempts:
@@ -682,30 +688,30 @@ class InMemoryNotebookStore:
                 items.append({"kind": "recommendation", "error_id": error_id, "question_id": question.question_id, "stem_text": question.stem_text, "answer_text": question.answer_text, "difficulty": question.difficulty, "source_title": question.source_title, "reason": recommendation.reason})
         return items, gaps
 
-    def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool) -> Job:
+    def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool, plan_kind: str = "daily_review") -> Job:
         if not error_ids:
             raise ValueError("error_ids is required")
         for error_id in error_ids:
             if not self.get_error(user_id=user_id, error_id=error_id):
                 raise LookupError("error not found")
         key = (user_id, "practice_pdf", idempotency_key)
-        digest = hashlib.sha256(json.dumps([sorted(set(error_ids)), include_answers], separators=(",", ":")).encode("ascii")).hexdigest()
+        digest = hashlib.sha256(json.dumps([sorted(set(error_ids)), include_answers, plan_kind], separators=(",", ":")).encode("ascii")).hexdigest()
         existing = self._job_keys.get(key)
         if existing:
             if self._practice_inputs[key] != digest:
                 raise RuntimeError("conflict")
             return self.jobs[existing]
-        job = Job(uuid.uuid4().hex, user_id, "practice_pdf", error_ids[0], "queued", {"error_ids": error_ids, "include_answers": include_answers}, None)
+        job = Job(uuid.uuid4().hex, user_id, "practice_pdf", error_ids[0], "queued", {"error_ids": error_ids, "include_answers": include_answers, "plan_kind": plan_kind}, None)
         self.jobs[job.job_id] = job
         self._job_keys[key] = job.job_id
         self._practice_inputs[key] = digest
         return job
 
-    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool, review_manifest: list[dict] | None = None) -> Job:
+    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool, review_manifest: list[dict] | None = None, plan_kind: str = "daily_review") -> Job:
         job = self.get_job(user_id=user_id, job_id=job_id)
         if not job or job.job_type != "practice_pdf":
             raise LookupError("job not found")
-        checkpoint = dict(job.checkpoint or {}) | {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers, "generated_at": _now().isoformat()}
+        checkpoint = dict(job.checkpoint or {}) | {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers, "plan_kind": plan_kind, "generated_at": _now().isoformat()}
         if review_manifest is not None:
             checkpoint.update(review_manifest=review_manifest, review_job_id=job_id)
         completed = Job(job.job_id, user_id, job.job_type, job.resource_id, "completed", checkpoint, None)
@@ -751,6 +757,8 @@ class InMemoryNotebookStore:
                 "generated_at": job.checkpoint.get("generated_at"),
                 "question_count": int(job.checkpoint.get("question_count", 0)),
                 "include_answers": bool(job.checkpoint.get("include_answers", False)),
+                "source": str(job.checkpoint.get("source", "generated")),
+                "plan_kind": str(job.checkpoint.get("plan_kind", "daily_review")),
             })
         return items
 
@@ -946,8 +954,27 @@ class NotebookService:
     def clear_conversation(self, *, user_id: str) -> None:
         self.store.clear_conversation(user_id=user_id)
 
-    def create_practice_pdf(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool = False) -> Job:
-        job = self.store.create_practice_job(user_id=user_id, error_ids=error_ids, idempotency_key=idempotency_key, include_answers=include_answers)
+    def today_practice_plan(self, *, user_id: str, papers: list[dict], now: datetime | None = None) -> dict | None:
+        today = learning_day(now or _now())
+        papers = [paper for paper in papers if paper.get("source", "generated") == "generated" and paper.get("plan_kind", "daily_review") == "daily_review" and paper.get("generated_at")
+                  and learning_day(datetime.fromisoformat(paper["generated_at"])) == today]
+        if not papers:
+            return None
+        paper = max(papers, key=lambda item: (datetime.fromisoformat(item["generated_at"]), item["task_id"]))
+        job = self.store.get_job(user_id=user_id, job_id=paper["task_id"])
+        if not job or job.status != "completed" or job.job_type != "practice_pdf":
+            raise LookupError("practice PDF not found")
+        manifest = (job.checkpoint or {}).get("review_manifest") or []
+        ids = list({row["task_id"] for row in manifest if row.get("task_id")})
+        completions = self.store.list_review_completions(user_id=user_id, task_ids=ids)
+        items = fixed_plan_items(manifest, completions, self.store.list_active_reviews(user_id=user_id))
+        return {"task_id": job.job_id, "available": bool(manifest), "items": items,
+                "download_url": f"/v1/practice-pdfs/{job.job_id}/download"}
+
+    def create_practice_pdf(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool = False, plan_kind: str = "daily_review") -> Job:
+        if plan_kind not in {"daily_review", "practice"}:
+            raise ValueError("invalid plan_kind")
+        job = self.store.create_practice_job(user_id=user_id, error_ids=error_ids, idempotency_key=idempotency_key, include_answers=include_answers, plan_kind=plan_kind)
         if job.status == "completed":
             return job
         items, gaps = self.store.practice_items(user_id=user_id, error_ids=error_ids)
@@ -975,6 +1002,7 @@ class NotebookService:
             recommendation_gap_count=gaps,
             include_answers=include_answers,
             review_manifest=manifest,
+            plan_kind=plan_kind,
         )
 
     def resolve_practice_review(self, *, user_id: str, question_text: str, locator: dict | None = None, review_mode: bool = False) -> dict | None:

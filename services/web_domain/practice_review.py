@@ -48,6 +48,27 @@ def build_manifest(job_id: str, items: list[dict], tasks: list[ReviewTask]) -> l
     return manifest
 
 
+def fixed_plan_items(manifest: list[dict], completions: list[dict], tasks: list[ReviewTask]) -> list[dict]:
+    """Read-only status of the frozen rounds, including completion on another PDF."""
+    by_task = {task.task_id: task for task in tasks}
+    groups = {row["error_id"]: row for row in reversed(manifest)}
+    items = []
+    for error_id, row in reversed(list(groups.items())):
+        due = datetime.fromisoformat(row["due_at"]) if row.get("due_at") else None
+        finished = sorted((entry for entry in completions if due and entry["task_id"] == row.get("task_id")
+                           and entry["stage"] == row["stage"] and entry["completed_at"] >= due), key=lambda entry: entry["completed_at"])
+        current = by_task.get(row.get("task_id"))
+        state, result, completed_at = "unavailable", None, None
+        if finished:
+            result = finished[0]["result"]
+            completed_at = finished[0]["completed_at"].isoformat()
+            state = "completed" if result == "correct" else "needs_correction"
+        elif current and current.error_id == error_id and current.stage == row["stage"] and current.due_at == due:
+            state = "pending"
+        items.append({"error_id": error_id, "stage": row["stage"], "status": state, "result": result, "completed_at": completed_at})
+    return items
+
+
 def legacy_manifest(text: str, job_id: str, errors: list, tasks: list[ReviewTask], recommendations: dict, generated_at: datetime) -> list[dict]:
     """Only parse printed IDs from a verified, owned stored PDF, never model text."""
     text = re.split(r"(?:^|\n)\s*答案\s*(?=\n|$)", text, maxsplit=1)[0]

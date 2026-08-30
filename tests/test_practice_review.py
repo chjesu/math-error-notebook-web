@@ -20,7 +20,7 @@ from pypdf import PdfReader
 from services.web_domain import ErrorEntry, GradeCandidate, InMemoryNotebookStore, NotebookService, Question
 from services.web_domain.learning import Recommendation, ReviewTask
 from services.web_domain.notebook import Attempt
-from services.web_domain.practice_review import legacy_manifest, review_locator
+from services.web_domain.practice_review import fixed_plan_items, legacy_manifest, review_locator
 import test_web_app_e2e as api_tests
 
 
@@ -74,6 +74,30 @@ class PracticeReviewTests(unittest.TestCase):
         self.assertTrue(replay["replayed"])
         self.assertEqual(replay["completed_at"], second["completed_at"])
         self.assertEqual((len(self.store.review_attempts), len(self.store.errors)), (1, 1))
+
+    def test_today_plan_stays_fixed_when_same_task_finishes_from_older_pdf(self):
+        older = self.paper(key="older")
+        today = self.paper(key="today")
+        self.service.create_practice_pdf(user_id=self.owner, error_ids=[self.error.error_id], idempotency_key="extra-practice", plan_kind="practice")
+        papers = self.store.list_practice_pdfs(user_id=self.owner)
+        initial = self.service.today_practice_plan(user_id=self.owner, papers=papers,
+                                                   now=datetime.fromisoformat(today.checkpoint["generated_at"]))
+        self.assertEqual((initial["task_id"], initial["items"][0]["status"]), (today.job_id, "pending"))
+        self.job = older
+        self.submit(0)
+        self.submit(1)
+        updated = self.service.today_practice_plan(user_id=self.owner, papers=self.store.list_practice_pdfs(user_id=self.owner),
+                                                   now=datetime.fromisoformat(today.checkpoint["generated_at"]))
+        self.assertEqual(updated["task_id"], today.job_id)
+        self.assertEqual(updated["items"], [{"error_id": self.error.error_id, "stage": 1, "status": "completed",
+                                             "result": "correct", "completed_at": self.now.isoformat()}])
+        self.assertEqual(self.store.list_due_reviews(user_id=self.owner, now=self.now), [])
+
+    def test_frozen_plan_reports_correction_without_backfilling(self):
+        manifest = [{"error_id": self.error.error_id, "task_id": self.task.task_id, "stage": 1, "due_at": self.task.due_at.isoformat()}]
+        rows = fixed_plan_items(manifest, [{"task_id": self.task.task_id, "stage": 1, "result": "wrong", "completed_at": self.now}], [])
+        self.assertEqual(rows, [{"error_id": self.error.error_id, "stage": 1, "status": "needs_correction",
+                                 "result": "wrong", "completed_at": self.now.isoformat()}])
 
     def test_partial_and_wrong_aggregate_and_never_duplicate(self):
         for verdict, result in [("incorrect", "wrong"), ("partial", "partial")]:

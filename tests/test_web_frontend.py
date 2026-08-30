@@ -70,9 +70,9 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   for(let i=0;i<12;i++) change(String(i),true);
   assert.equal(change('12',true).checked,false);
   assert.ok($('#calendar-selection-status').textContent.includes('最多选择 12 道'));
-  assert.equal(context.readReviewSelection('a'.repeat(24),new Set(errors.map(x=>x.error_id))).length,12);
+  assert.equal(context.readReviewSelection('a'.repeat(24),new Map(errors.map(x=>[x.error_id,x.review.review_id||null]))).length,12);
   change('0',false); change('12',true);
-  assert.equal(context.readReviewSelection('a'.repeat(24),new Set(errors.map(x=>x.error_id))).includes('12'),true);
+  assert.equal(context.readReviewSelection('a'.repeat(24),new Map(errors.map(x=>[x.error_id,x.review.review_id||null]))).includes('12'),true);
   await $('#refresh-progress').handlers.click();
   assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,12);
   assert.equal(JSON.stringify(history),before);
@@ -144,22 +144,32 @@ assert.equal(today.overdue_items[0].original_due_date,'2026-07-01');
 assert.equal(JSON.stringify(errors), before);
 const empty = context.todayReviewSnapshot([],{},now);
 assert.equal(empty.due_count,0); assert.equal(empty.completed_count,0); assert.equal(empty.overdue_items.length,0);
-const ids = new Set(['old','yesterday']);
+const ids = new Map([['old',{review_id:'r-old'}],['yesterday',{review_id:'r-yesterday'}]]);
 assert.equal(context.readReviewSelection('a'.repeat(24),ids,now), null);
-assert.equal(context.writeReviewSelection('a'.repeat(24),new Set(['old','stale']),now),true);
+assert.equal(context.writeReviewSelection('a'.repeat(24),new Set(['old','stale']),ids,now),true);
 assert.equal(JSON.stringify(context.readReviewSelection('a'.repeat(24),ids,now)), '["old"]');
 assert.equal(context.readReviewSelection('b'.repeat(24),ids,now),null);
 assert.equal(context.readReviewSelection('a'.repeat(24),ids,new Date('2026-08-31T16:00:00Z')),null);
-context.writeReviewSelection('a'.repeat(24),new Set(),now);
+context.writeReviewSelection('a'.repeat(24),new Set(),ids,now);
 assert.equal(JSON.stringify(context.readReviewSelection('a'.repeat(24),ids,now)), '[]');
-const many = new Set(Array.from({length:20},(_,i)=>String(i)));
-context.writeReviewSelection('a'.repeat(24),many,now);
+const many = new Map(Array.from({length:20},(_,i)=>[String(i),{review_id:`r-${i}`}]))
+context.writeReviewSelection('a'.repeat(24),new Set(many.keys()),many,now);
 assert.equal(context.readReviewSelection('a'.repeat(24),many,now).length,12);
+data.clear();
+context.writeReviewSelection('a'.repeat(24),new Set(['old']),ids,now);
+assert.equal(context.readReviewSelection('a'.repeat(24),new Map([['old',{review_id:'new-round'}]]),now).length,0);
+const due = Array.from({length:14},(_,i)=>({error_id:`e${i}`}));
+assert.equal(JSON.stringify(context.resolveReviewSelection({fixedPlan:null,dueReviews:due,saved:null,mode:'auto',currentIds:new Set()}).ids),JSON.stringify(due.slice(0,12).map(x=>x.error_id)));
+assert.equal(JSON.stringify(context.resolveReviewSelection({fixedPlan:null,dueReviews:due.slice(2),saved:null,mode:'auto',currentIds:new Set()}).ids),JSON.stringify(due.slice(2,14).map(x=>x.error_id)));
+assert.equal(JSON.stringify(context.resolveReviewSelection({fixedPlan:null,dueReviews:due,saved:['e7'],mode:'manual',currentIds:new Set()}).ids),'["e7"]');
+const fixed = {available:true,items:[{error_id:'e1',status:'completed'},{error_id:'e2',status:'pending'}]};
+assert.equal(JSON.stringify(context.resolveReviewSelection({fixedPlan:fixed,dueReviews:due.slice(5),saved:null,mode:'auto',currentIds:new Set()}).ids),'["e1","e2"]');
 context.sessionStorage.setItem = () => {throw new Error('blocked');};
-assert.equal(context.writeReviewSelection('a'.repeat(24),ids,now),false);
-assert.equal(context.writeReviewSelection('',ids,now),false);
+assert.equal(context.writeReviewSelection('a'.repeat(24),new Set(ids.keys()),ids,now),false);
+assert.equal(context.writeReviewSelection('',new Set(ids.keys()),ids,now),false);
 assert.ok(source.includes('data-calendar-kind="${kind}"'));
-assert.ok(source.includes('saved ?? dueReviews.slice(0, 12)'));
+assert.ok(source.includes('plan_kind: "daily_review"'));
+assert.ok(source.includes('plan_kind: "practice"'));
 """
         result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -234,8 +244,8 @@ assert.ok(source.includes('saved ?? dueReviews.slice(0, 12)'));
         self.assertNotIn("$$('", script)
         self.assertIn("today_needs_correction_count", script)
         self.assertIn('timeZone: "Asia/Shanghai"', script)
-        self.assertIn('pdfResult.items.some', script)
-        self.assertIn('"今日已生成"', script)
+        self.assertIn('fixedPlan = pdfResult.today_plan', script)
+        self.assertIn('"今日已生成，计划不再自动换题"', script)
         self.assertIn('/recommendations?limit=1', script)
 
     def test_product_pages_show_deterministic_daily_learning_usage(self) -> None:
