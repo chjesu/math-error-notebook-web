@@ -10,6 +10,20 @@ WEB = ROOT / "web"
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_calendar_close_is_a_borderless_accessible_icon(self) -> None:
+        html = (WEB / "progress.html").read_text(encoding="utf-8")
+        css = (WEB / "app.css").read_text(encoding="utf-8")
+        button = html.split('<button id="calendar-day-close"', 1)[1].split('</button>', 1)[0]
+        self.assertIn('aria-label="关闭日期详情"', button)
+        self.assertIn('<svg ', button)
+        self.assertIn('aria-hidden="true"', button)
+        self.assertNotIn('class="ghost"', button)
+        rule = css.split('#calendar-day-close {', 1)[1].split('}', 1)[0]
+        for style in ('width: 32px', 'height: 32px', 'border: 0', 'border-radius: 6px', 'background: transparent'):
+            self.assertIn(style, rule)
+        self.assertIn('#calendar-day-close:hover', css)
+        self.assertIn('button:focus-visible', css)
+
     def test_calendar_backlog_events_preserve_history_and_limit_selection(self) -> None:
         node = shutil.which("node")
         if node is None:
@@ -90,6 +104,8 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   clickDay('2026-09-02','due');
   assert.equal(($('#calendar-day-items').innerHTML.match(/name="calendar-error"/g)||[]).length,1);
   assert.ok($('#calendar-history-note').textContent.includes('选题不改变原定复习日期'));
+  $('#calendar-day-close').handlers.click();
+  assert.equal($('#calendar-day-detail').hidden,true);
 })().catch(error=>{console.error(error);process.exitCode=1;});
 """
         result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=15)
