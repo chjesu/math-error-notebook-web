@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from services.web_domain.practice_pdf import _formatted_text, _replace_math_args
+from services.web_domain.practice_pdf import _formatted_text, _replace_math_args, build_practice_pdf
 
 
 class PracticePdfMathTests(unittest.TestCase):
@@ -37,6 +37,23 @@ class PracticePdfMathTests(unittest.TestCase):
     def test_plain_text_is_not_rewritten_as_missing_subscript_glyphs(self) -> None:
         rendered = _formatted_text("学生填写 e_1，但没有使用公式。")
         self.assertIn("e_1", rendered)
+
+    def test_dense_inline_math_can_build_a_pdf(self) -> None:
+        content = build_practice_pdf(
+            [{
+                "kind": "original",
+                "error_id": "error-dense-math",
+                "question_id": None,
+                "stem_text": r"如图，在菱形 $ABCD$ 中，$AB=2$，$\angle BAD=60^\circ$，求 $\overrightarrow{AN}\cdot\overrightarrow{MN}$ 的范围。",
+                "answer_text": None,
+                "difficulty": None,
+                "source_title": "个人错题本",
+                "reason": "错题回顾",
+            }],
+            include_answers=False,
+        )
+
+        self.assertTrue(content.startswith(b"%PDF-"))
 
 
 if __name__ == "__main__":

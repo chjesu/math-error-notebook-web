@@ -177,7 +177,11 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, lo
     styles = getSampleStyleSheet()
     title = ParagraphStyle("TitleCN", parent=styles["Title"], fontName="STSong-Light", fontSize=18, leading=25, textColor=colors.HexColor("#172033"), alignment=TA_CENTER)
     heading = ParagraphStyle("HeadingCN", parent=styles["Heading2"], fontName="STSong-Light", fontSize=13, leading=19, textColor=colors.HexColor("#3157d5"), spaceBefore=8, spaceAfter=7)
-    body = ParagraphStyle("BodyCN", parent=styles["BodyText"], fontName="STSong-Light", fontSize=10.5, leading=18, textColor=colors.HexColor("#172033"), wordWrap="CJK")
+    # ReportLab's CJK line breaker cannot handle inline image fragments.  Math
+    # formulas are rendered as inline images, so dense mixed Chinese/math text
+    # could leave a zero-length fragment and abort the whole PDF.  STSong-Light
+    # still wraps Chinese correctly with the normal line breaker.
+    body = ParagraphStyle("BodyCN", parent=styles["BodyText"], fontName="STSong-Light", fontSize=10.5, leading=18, textColor=colors.HexColor("#172033"))
     meta = ParagraphStyle("MetaCN", parent=body, fontSize=8.5, leading=14, textColor=colors.HexColor("#647087"))
     story: list[Any] = []
     if logo_path and logo_path.is_file():
