@@ -169,7 +169,7 @@ assert.equal(context.writeReviewSelection('a'.repeat(24),new Set(ids.keys()),ids
 assert.equal(context.writeReviewSelection('',new Set(ids.keys()),ids,now),false);
 assert.ok(source.includes('data-calendar-kind="${kind}"'));
 assert.ok(source.includes('plan_kind: "daily_review"'));
-assert.ok(source.includes('plan_kind: "practice"'));
+assert.ok(!source.includes('plan_kind: "practice"'));
 """
         result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -196,7 +196,7 @@ assert.ok(source.includes('plan_kind: "practice"'));
     def test_product_pages_remain_independent_documents(self) -> None:
         pages = {
             "errors.html": ('data-page="errors"', 'id="all-errors"'),
-            "practice.html": ('data-page="practice"', 'id="practice-errors"'),
+            "practice.html": ('data-page="practice"', 'id="practice-pdf-history"'),
             "progress.html": ('data-page="progress"', 'id="review-rule-heading"'),
             "settings.html": ('data-page="settings"', 'id="sensitive-form"'),
         }
@@ -414,6 +414,9 @@ assert.ok(source.includes('plan_kind: "practice"'));
         self.assertIn('item.source === "generated"', script)
         self.assertIn('每日复习练习-${dateParts.year}年', script)
         self.assertIn("已生成的 PDF", html)
+        self.assertNotIn("生成新练习", html)
+        self.assertNotIn('id="practice-errors"', html)
+        self.assertNotIn('id="create-pdf"', html)
         self.assertIn("/chat-turn", script)
         self.assertIn("await commitCurrent()", script)
         self.assertIn('localStorage.getItem("lzlm-device-id")', script)

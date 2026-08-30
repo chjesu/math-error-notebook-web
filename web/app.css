@@ -534,7 +534,6 @@ textarea:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset
 .pdf-history-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pdf-history-item small { color: var(--muted); }
 .pdf-download { flex: 0 0 auto; padding: 7px 14px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink); font-weight: 650; text-decoration: none; }
-.practice-create { display: grid; gap: 12px; margin-top: 8px; padding-top: 20px; border-top: 1px solid var(--line); }
 .progress-stats { margin-top: 22px; }
 .settings-panel { max-width: 680px; }
 .admin-dashboard { display: grid; width: min(100%, 1120px); max-width: 1120px; gap: 18px; }
