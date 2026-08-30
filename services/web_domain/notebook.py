@@ -10,7 +10,7 @@ import hashlib
 import json
 import uuid
 
-from services.web_files import FileIntake
+from services.web_files import FileIntake, LocalFsStorageAdapter, StorageAdapter
 
 from .learning import (
     DAILY_GRADE_LIMIT,
@@ -800,9 +800,10 @@ class NotebookService:
     EXPORT_TTL = timedelta(hours=24)
     EXPORT_MAX_DOWNLOADS = 3
 
-    def __init__(self, store: Any, quarantine_root: Path) -> None:
+    def __init__(self, store: Any, quarantine_root: Path, *, storage: StorageAdapter | None = None) -> None:
         self.store = store
-        self.files = FileIntake(quarantine_root)
+        self.storage = storage if storage is not None else LocalFsStorageAdapter(quarantine_root)
+        self.files = FileIntake(quarantine_root, storage=self.storage)
 
     def upload(self, *, user_id: str, purpose: str, original_name: str, content: bytes, idempotency_key: str | None = None) -> FileRecord:
         candidate = self.files.quarantine(user_id=user_id, original_name=original_name, content=content)
@@ -818,10 +819,11 @@ class NotebookService:
                 idempotency_key=idempotency_key,
             )
         except Exception:
-            candidate.local_path.unlink(missing_ok=True)
+            if candidate.storage_created:
+                self.storage.delete_path(candidate.object_key)
             raise
-        if record.object_key != candidate.object_key:
-            candidate.local_path.unlink(missing_ok=True)
+        if record.object_key != candidate.object_key and candidate.storage_created:
+            self.storage.delete_path(candidate.object_key)
         return record
 
     def clear_conversation(self, *, user_id: str) -> None:
@@ -854,7 +856,7 @@ class NotebookService:
         record = self.store.get_file(user_id=user_id, file_id=str(job.checkpoint["file_id"]))
         if not record or record.purpose != "practice_pdf":
             raise LookupError("practice PDF not found")
-        content = self.files.read(record.object_key)
+        content = self.storage.read_bytes(record.object_key)
         if hashlib.sha256(content).hexdigest() != record.content_sha256:
             raise RuntimeError("file_integrity_failed")
         return f"practice-{job.job_id[:8]}.pdf", content
@@ -866,7 +868,7 @@ class NotebookService:
         record = self.store.get_file(user_id=user_id, file_id=intake.file_id)
         if not record or record.purpose != "question_image" or record.media_type not in {"image/jpeg", "image/png"}:
             raise LookupError("intake source not found")
-        content = self.files.read(record.object_key)
+        content = self.storage.read_bytes(record.object_key)
         if hashlib.sha256(content).hexdigest() != record.content_sha256:
             raise RuntimeError("file_integrity_failed")
         return record.original_name, record.media_type, content
@@ -898,7 +900,7 @@ class NotebookService:
         record = self.store.get_file(user_id=user_id, file_id=str(job.checkpoint["file_id"]))
         if not record or record.purpose != "export":
             raise LookupError("export not found")
-        content = self.files.read(record.object_key)
+        content = self.storage.read_bytes(record.object_key)
         if hashlib.sha256(content).hexdigest() != record.content_sha256:
             raise RuntimeError("file_integrity_failed")
         if not self.store.claim_export_download(user_id=user_id, job_id=job_id, maximum=self.EXPORT_MAX_DOWNLOADS):
@@ -930,10 +932,7 @@ class NotebookService:
     def complete_user_deletion(self, *, user_id: str) -> dict[str, Any]:
         try:
             for object_key in self.store.deletion_file_keys(user_id=user_id):
-                target = (self.files.root / object_key).resolve()
-                if self.files.root not in target.parents:
-                    raise ValueError("unsafe deletion path")
-                target.unlink(missing_ok=True)
+                self.storage.delete_path(object_key)
             return self.store.complete_user_deletion(user_id=user_id)
         except Exception:
             self.store.record_deletion_error(user_id=user_id, code="file_purge_failed")
@@ -942,25 +941,24 @@ class NotebookService:
     def _store_export(self, *, user_id: str, job_id: str, content: bytes) -> FileRecord:
         namespace = hashlib.sha256(user_id.encode("ascii")).hexdigest()[:16]
         object_key = f"quarantine/{namespace}/export-{job_id}.json"
-        target = (self.files.root / object_key).resolve()
-        if self.files.root not in target.parents:
-            raise ValueError("unsafe export path")
-        target.parent.mkdir(parents=True, exist_ok=True)
+        storage_created = self.storage.save_bytes(object_key, content, "application/json")
         try:
-            with target.open("xb") as handle:
-                handle.write(content)
-        except FileExistsError:
-            if target.read_bytes() != content:
-                raise RuntimeError("export object collision")
-        return self.store.create_file(
-            user_id=user_id,
-            purpose="export",
-            original_name=f"export-{job_id[:8]}.json",
-            object_key=object_key,
-            content_sha256=hashlib.sha256(content).hexdigest(),
-            media_type="application/json",
-            byte_size=len(content),
-        )
+            record = self.store.create_file(
+                user_id=user_id,
+                purpose="export",
+                original_name=f"export-{job_id[:8]}.json",
+                object_key=object_key,
+                content_sha256=hashlib.sha256(content).hexdigest(),
+                media_type="application/json",
+                byte_size=len(content),
+            )
+        except Exception:
+            if storage_created:
+                self.storage.delete_path(object_key)
+            raise
+        if record.object_key != object_key and storage_created:
+            self.storage.delete_path(object_key)
+        return record
 
     @staticmethod
     def _export_value(value: Any) -> Any:
