@@ -1418,8 +1418,14 @@ function bindPractice() {
     return api("/v1/practice-pdfs").then(result => {
       $("#practice-pdf-history").innerHTML = result.items.length ? result.items.map(item => {
         const generated = item.generated_at ? new Date(item.generated_at).toLocaleString("zh-CN") : "已生成";
+        const dateParts = item.generated_at ? Object.fromEntries(new Intl.DateTimeFormat("zh-CN", {
+          timeZone: "Asia/Shanghai", year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+        }).formatToParts(new Date(item.generated_at)).map(part => [part.type, part.value])) : {};
+        const displayName = item.source === "generated" && item.generated_at
+          ? `每日复习练习-${dateParts.year}年${dateParts.month}月${dateParts.day}日-${dateParts.hour}时${dateParts.minute}分.pdf`
+          : item.filename;
         const details = item.source === "desktop_skill" ? `${generated} · Skill 历史文件` : `${generated} · ${item.question_count || 0} 道题${item.include_answers ? " · 含答案" : ""}`;
-        return `<article class="pdf-history-item"><div><strong>${escapeHtml(item.filename)}</strong><small>${escapeHtml(details)}</small></div><a class="pdf-download" href="${escapeHtml(item.download_url)}" download>下载</a></article>`;
+        return `<article class="pdf-history-item"><div><strong>${escapeHtml(displayName)}</strong><small>${escapeHtml(details)}</small></div><a class="pdf-download" href="${escapeHtml(item.download_url)}" download>下载</a></article>`;
       }).join("") : '<p class="empty">还没有生成过练习 PDF。</p>';
     }).catch(error => { $("#practice-pdf-history").innerHTML = `<p class="status error">${escapeHtml(authError(error))}</p>`; });
   }

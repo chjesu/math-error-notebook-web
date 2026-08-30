@@ -235,6 +235,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="practice-pdf-history"', html)
         self.assertIn('item.source === "desktop_skill"', script)
         self.assertIn('Skill 历史文件', script)
+        self.assertIn('item.source === "generated"', script)
+        self.assertIn('每日复习练习-${dateParts.year}年', script)
         self.assertIn("已生成的 PDF", html)
         self.assertIn("/chat-turn", script)
         self.assertIn("await commitCurrent()", script)
