@@ -146,6 +146,9 @@ class NotebookAsgiApp:
         if path == "/v1/internal/harness/reference-conflicts/recheck" and method == "POST":
             await self._internal_harness_recheck(scope, receive, send, headers)
             return
+        if path == "/v1/internal/harness/errors/remove" and method == "POST":
+            await self._internal_harness_remove_error(scope, receive, send, headers)
+            return
         static = self.static_files.get(path)
         if method == "GET" and static:
             await self._asset(send, *static)
@@ -1415,6 +1418,54 @@ class NotebookAsgiApp:
         except RuntimeError as exc:
             code = str(exc) if str(exc) in {"input_version_changed", "reference_conflict", "conflict"} else "conflict"
             await self._error(send, 409, code)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    async def _internal_harness_remove_error(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive)
+            if set(payload) != {"session_id", "error_id", "confirmation_text"}:
+                raise ValueError("invalid error removal request")
+            session_id = self._harness_session_id(payload)
+            error_id = payload["error_id"]
+            confirmation_text = payload["confirmation_text"]
+            if (
+                not isinstance(error_id, str)
+                or re.fullmatch(r"[0-9a-f]{32}", error_id) is None
+                or not isinstance(confirmation_text, str)
+            ):
+                raise ValueError("invalid error removal request")
+            compact_confirmation = re.sub(r"\s+", "", confirmation_text).casefold()
+            if "确认移除错题" not in compact_confirmation or error_id.casefold() not in compact_confirmation:
+                raise PermissionError("explicit removal confirmation required")
+            user_id = await self._harness_user_id(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            entry = await self._sync(
+                self.notebook.store.set_error_status,
+                user_id=user_id,
+                error_id=error_id,
+                status="removed",
+            )
+            await self._json(send, 200, {"receipt": {
+                "schema": "math-notebook-removal-receipt/v1",
+                "status": "removed",
+                "error_id": entry.error_id,
+                "message": "该题已从错题本移除，相关待复习任务和未使用推荐题已同步取消。",
+            }})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
 

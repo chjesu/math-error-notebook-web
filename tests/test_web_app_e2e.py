@@ -313,6 +313,28 @@ class NotebookE2ETests(unittest.TestCase):
         denied = self.call(f"/v1/internal/harness/grade-results/{candidate_id}/commit", method="POST", payload={"session_id": "session-other", "input_version": 1}, **internal)
         self.assertEqual((denied[0], denied[2]["error"]["code"]), (404, "not_found"))
 
+        missing_confirmation = self.call(
+            "/v1/internal/harness/errors/remove", method="POST",
+            payload={"session_id": "session-receipt", "error_id": saved[2]["receipt"]["error_id"], "confirmation_text": "请移除这道错题"},
+            **internal,
+        )
+        self.assertEqual((missing_confirmation[0], missing_confirmation[2]["error"]["code"]), (403, "forbidden"))
+        wrong_owner = self.call(
+            "/v1/internal/harness/errors/remove", method="POST",
+            payload={"session_id": "session-other", "error_id": saved[2]["receipt"]["error_id"], "confirmation_text": f"确认移除错题 {saved[2]['receipt']['error_id']}"},
+            **internal,
+        )
+        self.assertEqual((wrong_owner[0], wrong_owner[2]["error"]["code"]), (404, "not_found"))
+        removed = self.call(
+            "/v1/internal/harness/errors/remove", method="POST",
+            payload={"session_id": "session-receipt", "error_id": saved[2]["receipt"]["error_id"], "confirmation_text": f"确认移除错题 {saved[2]['receipt']['error_id']}"},
+            **internal,
+        )
+        self.assertEqual((removed[0], removed[2]["receipt"]["status"]), (200, "removed"))
+        self.assertEqual(removed[2]["receipt"]["schema"], "math-notebook-removal-receipt/v1")
+        self.assertEqual(self.domain_store.errors[saved[2]["receipt"]["error_id"]].status, "removed")
+        self.assertEqual(self.call("/v1/errors", cookie=cookie)[2]["items"], [])
+
     def test_harness_receipt_explicitly_skips_correct_and_unclear_results(self) -> None:
         correct = GradeCandidate("a" * 32, "b" * 32, 1, "correct", None, None, "candidate")
         unclear = GradeCandidate("c" * 32, "d" * 32, 1, "unclear", None, None, "candidate")

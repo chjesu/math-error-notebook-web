@@ -139,6 +139,13 @@ globalThis.fetch = async (url, options) => {{
       candidate_id: 'a'.repeat(32), input_version: 1, status: 'saved', receipt_message: '第二阶段复核一致，已计入错题本'
     }}]}})}};
   }}
+  if (url.endsWith('/v1/internal/harness/errors/remove')) {{
+    if (body.session_id !== 'session-process' || body.error_id !== 'b'.repeat(32)) throw new Error('wrong removal');
+    if (body.confirmation_text !== '确认移除错题 ' + 'b'.repeat(32)) throw new Error('wrong confirmation');
+    return {{ok: true, status: 200, json: async () => ({{receipt: {{
+      schema: 'math-notebook-removal-receipt/v1', status: 'removed', error_id: 'b'.repeat(32), message: '已移除'
+    }}}})}};
+  }}
   if (!url.endsWith('/v1/internal/harness/intakes/process')) throw new Error('wrong endpoint');
   if (body.session_id !== 'session-process' || body.attachment.attachment_id !== 'sha256:' + 'c'.repeat(64)) throw new Error('wrong attachment');
   if (body.items.length !== 1 || body.items[0].item_no !== 1 || 'attachment_index' in body.items[0]) throw new Error('wrong items');
@@ -189,6 +196,17 @@ const adjudicated = await adjudicator.execute({{items: [{{
 if (adjudicated.results[0].status !== 'saved') throw new Error('reference conflict not adjudicated');
 const adjudicatedRendered = adjudicator.output.render({{}}, adjudicated)[0].text;
 if (!adjudicatedRendered.includes('下一步：') || !adjudicatedRendered.includes('打开「错题本」')) throw new Error('adjudication next step missing');
+const remover = registered.find((value) => value.name === 'remove_error_notebook_entry');
+let concluded = false;
+const removed = await remover.execute({{error_id: 'b'.repeat(32)}}, {{
+  agent: {{id: 'session-process', session: {{deriveMessages: () => [
+    {{role: 'assistant', content: [{{type: 'text', text: '请确认'}}]}},
+    {{role: 'user', content: [{{type: 'text', text: '确认移除错题 ' + 'b'.repeat(32)}}]}}
+  ]}}}}, signal: new AbortController().signal, concludeTurn: () => {{ concluded = true; }}
+}});
+if (removed.status !== 'removed' || !concluded) throw new Error('error not removed');
+const removalRendered = remover.output.render({{}}, removed)[0].text;
+if (!removalRendered.includes('已移除') || !removalRendered.includes('b'.repeat(32))) throw new Error('removal receipt not rendered');
 """
         environment = dict(os.environ)
         environment.update({

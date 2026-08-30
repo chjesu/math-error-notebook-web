@@ -87,6 +87,64 @@ function latestUserImages(agent) {
   return [];
 }
 
+function latestUserText(agent) {
+  const messages = agent.session.deriveMessages();
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "user") continue;
+    if (typeof message.content === "string") return message.content;
+    return Array.isArray(message.content)
+      ? message.content.filter((block) => block.type === "text" && typeof block.text === "string").map((block) => block.text).join("\n")
+      : "";
+  }
+  return "";
+}
+
+function removeErrorTool() {
+  const origin = process.env.LZLM_PRODUCT_ORIGIN;
+  const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
+  if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
+  return {
+    name: "remove_error_notebook_entry",
+    description: "Remove one existing error-notebook entry without asking the student to upload its image again. First identify the exact error_id from an authoritative receipt in this conversation. If the latest user message does not contain both the exact error_id and the words 确认移除错题, ask once for: 确认移除错题 <error_id>. Call this tool exactly once only after that explicit confirmation.",
+    parameters: {
+      type: "object", additionalProperties: false, required: ["error_id"],
+      properties: {error_id: {type: "string", pattern: "^[0-9a-f]{32}$", description: "Authoritative error id previously returned by the product."}}
+    },
+    output: {
+      schema: {
+        type: "object", additionalProperties: false, required: ["schema", "status", "error_id", "message"],
+        properties: {
+          schema: {type: "string", const: "math-notebook-removal-receipt/v1"},
+          status: {type: "string", const: "removed"},
+          error_id: {type: "string"},
+          message: {type: "string"}
+        }
+      },
+      render: (_args, value) => [{type: "text", text: `${value.message}\n错题编号：${value.error_id}`}]
+    },
+    async execute(args, exec) {
+      if (!exec.agent) throw new Error("Notebook removal requires an owning Harness session");
+      const confirmationText = latestUserText(exec.agent);
+      const compact = confirmationText.replace(/\s+/g, "").toLowerCase();
+      if (!compact.includes("确认移除错题") || !compact.includes(args.error_id.toLowerCase())) {
+        throw new Error(`请让学生回复“确认移除错题 ${args.error_id}”后再执行。`);
+      }
+      const response = await fetch(`${origin}/v1/internal/harness/errors/remove`, {
+        method: "POST",
+        headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
+        body: JSON.stringify({session_id: exec.agent.id, error_id: args.error_id, confirmation_text: confirmationText}),
+        signal: exec.signal
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.receipt) throw new Error(`Notebook removal failed (${response.status})`);
+      exec.concludeTurn();
+      return payload.receipt;
+    },
+    presentCall: () => ({card: "generic", title: "移除错题", kind: "other", rawInput: null})
+  };
+}
+
 function processResultText(value) {
   const lines = [];
   for (const item of value.results) {
@@ -357,5 +415,6 @@ export async function apply(ctx) {
   ctx.tools.register(processAttachmentsTool(ctx));
   ctx.tools.register(recheckReferenceConflictTool());
   ctx.tools.register(adjudicateReferenceConflictsTool());
+  ctx.tools.register(removeErrorTool());
   ctx.tools.register(receiptTool());
 }

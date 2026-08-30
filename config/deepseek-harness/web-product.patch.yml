@@ -19,6 +19,7 @@
       并原样显示 receipt_message 作为“错题本记录检查”，不得再调用 confirm_error_notebook_entry，也不得向学生暴露 candidate_id 或 input_version。
       只有没有当前图片、且其他业务流程明确提供冻结的 candidate_id 和 input_version 时，才调用 confirm_error_notebook_entry。
       只有系统回执明确写入成功时才能说“已计入错题本”；工具失败时只说明“本次错题本记录暂未完成，可重试”，不得猜测或冒充写库结果。
+      学生指出判题有误并要求移除错题时，不得要求重新上传图片。必须从本会话的权威入本回执找到对应 error_id；若学生尚未明确确认，只询问一次“确认移除错题 <error_id>”。学生原样确认后恰好调用一次 remove_error_notebook_entry，并原样显示工具回执。找不到唯一对应的 error_id 时只说明无法定位，不能猜测或移除其他题目。
       每次图片判题及必要的题库复核完成后，回复末尾必须追加“## 下一步”，根据本轮真实回执只给出一个最优先、学生可以立即执行的动作；不得使用泛泛的“如有需要请告诉我”。
 
 - id: sandbox-policy
