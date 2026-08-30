@@ -27,6 +27,7 @@ from .learning import (
     rank_questions,
     reference_conflict_resolved,
     reference_validation_from_evidence,
+    review_requires_original,
 )
 
 
@@ -1281,15 +1282,32 @@ class MySqlDomainStore:
         items: list[dict[str, Any]] = []
         seen_questions: set[str] = set()
         gaps = 0
+        placeholders = ",".join(["%s"] * len(error_ids))
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                f"SELECT e.id,COALESCE((SELECT t.stage FROM review_tasks t WHERE t.user_id=e.user_id AND t.error_id=e.id AND t.status IN ('pending','ready') ORDER BY t.due_at LIMIT 1),IF(e.status='mastered',6,1)),"
+                f"(SELECT a.result FROM review_attempts a WHERE a.user_id=e.user_id AND a.error_id=e.id ORDER BY a.completed_at DESC,a.id DESC LIMIT 1) "
+                f"FROM error_notebook_entries e WHERE e.user_id=%s AND e.id IN ({placeholders})",
+                (user_id, *error_ids),
+            )
+            review_context = {str(row[0]): (int(row[1]), str(row[2]) if row[2] else None) for row in cursor.fetchall()}
+        finally:
+            cursor.close()
+            connection.close()
         for error_id in error_ids:
             error = self.get_error(user_id=user_id, error_id=error_id)
             if not error:
                 raise LookupError("error not found")
-            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "错题回顾"})
+            stage, latest_result = review_context.get(error_id, (1, None))
+            requires_original = review_requires_original(stage, latest_result)
+            reason = "订正回退" if latest_result in {"partial", "wrong"} else f"第 {stage} 阶段"
+            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": reason, "review_stage": stage, "requires_original": requires_original})
             recommendations = self.list_recommendations(user_id=user_id, error_id=error_id)
             if not recommendations:
                 gaps += 1
-            for recommendation in recommendations[:2]:
+            for recommendation in recommendations[:1]:
                 question = recommendation.question
                 if question.question_id in seen_questions:
                     continue

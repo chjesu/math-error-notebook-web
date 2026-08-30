@@ -27,6 +27,7 @@ from .learning import (
     rank_questions,
     reference_conflict_resolved,
     reference_validation_from_evidence,
+    review_requires_original,
 )
 from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job, normalize_extraction_items
 from .practice_pdf import build_practice_pdf
@@ -617,15 +618,25 @@ class InMemoryNotebookStore:
         items: list[dict[str, Any]] = []
         gaps = 0
         seen_questions: set[str] = set()
+        active_reviews = {item.error_id: item for item in self.list_active_reviews(user_id=user_id)}
         for error_id in error_ids:
             error = self.get_error(user_id=user_id, error_id=error_id)
             if not error:
                 raise LookupError("error not found")
-            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "错题回顾"})
+            attempts = []
+            for (owner, _), attempt in self.review_attempts.items():
+                task = self.review_tasks.get(str(attempt.get("task_id")))
+                if owner == user_id and task and task.error_id == error_id:
+                    attempts.append(attempt)
+            latest_result = max(attempts, key=lambda value: value["completed_at"])["result"] if attempts else None
+            stage = active_reviews[error_id].stage if error_id in active_reviews else (6 if error.status == "mastered" else 1)
+            requires_original = review_requires_original(stage, latest_result)
+            reason = "订正回退" if latest_result in {"partial", "wrong"} else f"第 {stage} 阶段"
+            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": reason, "review_stage": stage, "requires_original": requires_original})
             recommendations = self.list_recommendations(user_id=user_id, error_id=error_id)
             if not recommendations:
                 gaps += 1
-            for recommendation in recommendations[:2]:
+            for recommendation in recommendations[:1]:
                 question = recommendation.question
                 if question.question_id in seen_questions:
                     continue
@@ -875,6 +886,14 @@ class NotebookService:
         if job.status == "completed":
             return job
         items, gaps = self.store.practice_items(user_id=user_id, error_ids=error_ids)
+        recommendations_by_error = {error_id: 0 for error_id in error_ids}
+        for item in items:
+            if item["kind"] == "recommendation":
+                recommendations_by_error[str(item["error_id"])] += 1
+        task_count = sum(item["kind"] == "recommendation" for item in items) + sum(
+            bool(item.get("requires_original")) or recommendations_by_error[str(item["error_id"])] == 0
+            for item in items if item["kind"] == "original"
+        )
         content = build_practice_pdf(
             items,
             include_answers=include_answers,
@@ -885,7 +904,7 @@ class NotebookService:
             user_id=user_id,
             job_id=job.job_id,
             file_id=record.file_id,
-            question_count=len(items),
+            question_count=task_count,
             recommendation_gap_count=gaps,
             include_answers=include_answers,
         )

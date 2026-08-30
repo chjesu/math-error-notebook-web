@@ -65,6 +65,11 @@ DAILY_RECOMMENDATION_TARGET = 12
 DAILY_RECOMMENDATION_LIMIT = 24
 
 
+def review_requires_original(stage: int, latest_result: str | None) -> bool:
+    """Redo the source problem early in the cycle or after a failed review."""
+    return stage <= 2 or latest_result in {"partial", "wrong"}
+
+
 def learning_day(now: datetime | None = None) -> str:
     """Return the account quota date in the product's fixed China timezone."""
     return (now or datetime.now(timezone.utc)).astimezone(_CHINA_TIMEZONE).date().isoformat()

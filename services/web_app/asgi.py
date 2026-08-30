@@ -582,7 +582,11 @@ class NotebookAsgiApp:
                 error_id = path.split("/")[-2]
                 if method == "POST":
                     self._key(headers)
-                    recommendations, gap = await self._sync(self.notebook.store.assign_recommendations, user_id=user.user_id, error_id=error_id)
+                    query = self._query(scope, allowed={"limit"})
+                    limit = int(query.get("limit", "2"))
+                    if limit not in {1, 2}:
+                        raise ValueError("invalid recommendation limit")
+                    recommendations, gap = await self._sync(self.notebook.store.assign_recommendations, user_id=user.user_id, error_id=error_id, limit=limit)
                 else:
                     recommendations = await self._sync(self.notebook.store.list_recommendations, user_id=user.user_id, error_id=error_id)
                     gap = len(recommendations) < 2

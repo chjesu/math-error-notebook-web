@@ -38,6 +38,16 @@ class PracticePdfMathTests(unittest.TestCase):
         rendered = _formatted_text("学生填写 e_1，但没有使用公式。")
         self.assertIn("e_1", rendered)
 
+    def test_common_unbraced_math_and_markdown_image_paths_are_normalized(self) -> None:
+        rendered = _formatted_text(r"向量 \vec a，系数为 \frac56，角为 $\omega=60^\circ$。![原题图](data/private/image.png)")
+
+        self.assertNotIn("\\vec", rendered)
+        self.assertNotIn("\\frac", rendered)
+        self.assertNotIn("\\omega", rendered)
+        self.assertNotIn("data/private", rendered)
+        self.assertIn("【原题图】", rendered)
+        self.assertEqual(_replace_math_args(r"\vec a=\frac56,\sqrt3,\omega=60^\circ"), "a⃗=5⁄6,√3,ω=60°")
+
     def test_dense_inline_math_can_build_a_pdf(self) -> None:
         content = build_practice_pdf(
             [{
@@ -52,6 +62,18 @@ class PracticePdfMathTests(unittest.TestCase):
             }],
             include_answers=False,
         )
+
+        self.assertTrue(content.startswith(b"%PDF-"))
+
+    def test_stage_reference_and_redo_layouts_both_build(self) -> None:
+        items = [
+            {"kind": "original", "error_id": "redo", "question_id": None, "stem_text": "原题甲", "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "第 2 阶段", "review_stage": 2, "requires_original": True},
+            {"kind": "recommendation", "error_id": "redo", "question_id": "q1", "stem_text": "推荐题甲", "answer_text": "答案甲", "difficulty": 2, "source_title": "授权题库", "reason": "同类变式"},
+            {"kind": "original", "error_id": "reference", "question_id": None, "stem_text": "原题乙", "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "第 4 阶段", "review_stage": 4, "requires_original": False},
+            {"kind": "recommendation", "error_id": "reference", "question_id": "q2", "stem_text": "推荐题乙", "answer_text": "答案乙", "difficulty": 3, "source_title": "授权题库", "reason": "迁移训练"},
+        ]
+
+        content = build_practice_pdf(items, include_answers=False)
 
         self.assertTrue(content.startswith(b"%PDF-"))
 

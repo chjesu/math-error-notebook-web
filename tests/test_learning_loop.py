@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from services.web_domain import ErrorEntry, InMemoryNotebookStore, NotebookService, Question, VerifiedQuestionReference, cross_validate_reference
-from services.web_domain.learning import learning_day, next_review, rank_questions
+from services.web_domain.learning import learning_day, next_review, rank_questions, review_requires_original
 from services.web_domain.notebook import Attempt
 
 
@@ -122,6 +122,24 @@ class LearningLoopTests(unittest.TestCase):
                 service.create_practice_pdf(user_id=self.user_id, error_ids=[self.error_id], idempotency_key="practice-0001", include_answers=True)
             with self.assertRaises(LookupError):
                 service.download_practice_pdf(user_id="b" * 32, job_id=job.job_id)
+
+    def test_pdf_uses_one_recommendation_and_stage_based_original_redo(self) -> None:
+        first = Question("1" * 32, "解方程 x+2=5", "x=3", 10, 2.0, "授权题库")
+        second = Question("2" * 32, "解方程 x+3=7", "x=4", 10, 2.0, "授权题库")
+        self.store.add_question(first)
+        self.store.add_question(second)
+        self.store.assign_recommendations(user_id=self.user_id, error_id=self.error_id, limit=2)
+        task = next(iter(self.store.review_tasks.values()))
+        self.store.review_tasks[task.task_id] = type(task)(task.task_id, task.user_id, task.error_id, 3, task.due_at, task.status)
+
+        items, gaps = self.store.practice_items(user_id=self.user_id, error_ids=[self.error_id])
+
+        self.assertEqual((len(items), gaps), (2, 0))
+        self.assertEqual(sum(item["kind"] == "recommendation" for item in items), 1)
+        original = items[0]
+        self.assertEqual((original["review_stage"], original["requires_original"]), (3, False))
+        self.assertTrue(review_requires_original(3, "wrong"))
+        self.assertFalse(review_requires_original(3, "correct"))
 
     def test_review_schedule_boundaries(self) -> None:
         now = datetime(2026, 8, 23, tzinfo=timezone.utc)

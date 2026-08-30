@@ -80,6 +80,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('timeZone: "Asia/Shanghai"', script)
         self.assertIn('pdfResult.items.some', script)
         self.assertIn('"今日已生成"', script)
+        self.assertIn('/recommendations?limit=1', script)
 
     def test_product_pages_show_deterministic_daily_learning_usage(self) -> None:
         script = (WEB / "app.js").read_text(encoding="utf-8")

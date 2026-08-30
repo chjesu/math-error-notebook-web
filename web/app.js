@@ -1260,7 +1260,7 @@ function bindErrors() {
     event.currentTarget.disabled = true;
     status($("#today-pdf-status"), "正在匹配已验证推荐题并生成 PDF…");
     try {
-      await Promise.all(ids.map(id => api(`/v1/errors/${id}/recommendations`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}})));
+      await Promise.all(ids.map(id => api(`/v1/errors/${id}/recommendations?limit=1`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}})));
       const result = await api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: ids, include_answers: $("#review-pdf-answers").checked}), headers: {"Idempotency-Key": crypto.randomUUID()}});
       pdfReady = true;
       if (result.download_url) {
