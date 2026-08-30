@@ -38,6 +38,7 @@
 | [18-MODEL-PROVIDER-MIGRATION.md](./18-MODEL-PROVIDER-MIGRATION.md) | 阿里云环境的模型供应商替换、应用自有 Harness、评测与灰度方案 | v0.1 | 已记录，待评测和实施批准 |
 | [22-ALIYUN-DEPLOYMENT-RUNBOOK.md](./22-ALIYUN-DEPLOYMENT-RUNBOOK.md) | 阿里云资源采购、生产化门禁、部署、灰度、回滚与恢复手册 | v0.1 | 可执行准备基线；当前版本仍禁止直接公网部署 |
 | [23-SERVICE-MANAGEMENT-SCRIPTS.md](./23-SERVICE-MANAGEMENT-SCRIPTS.md) | 跨平台服务启停与运维脚本手册 (Windows 10/11 与 Linux/Unix) | v0.4.0 | 已落地可执行 |
+| [24-PRODUCT-ARCHITECTURE-REFACTORING-AND-PLAN.md](./24-PRODUCT-ARCHITECTURE-REFACTORING-AND-PLAN.md) | 产品架构重构方案与分期开发计划 (v0.5.0 演进与 WBS) | v0.5.0 | 规划已确认，待执行 |
 | [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前完整本地候选机器可校验 API 契约 | v0.4.0 | 36 paths；生产部署前仍需契约复核 |
 
 ## 活跃需求

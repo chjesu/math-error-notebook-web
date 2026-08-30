@@ -85,3 +85,4 @@ powershell -ExecutionPolicy Bypass -File scripts\bootstrap_local.ps1
 - [可配置 Harness 运行时](docs/20-CONFIGURABLE-HARNESS-RUNTIME.md)
 - [阿里云部署与上线手册](docs/22-ALIYUN-DEPLOYMENT-RUNBOOK.md)
 - [跨平台服务启停与运维脚本手册](docs/23-SERVICE-MANAGEMENT-SCRIPTS.md)
+- [产品架构重构方案与分期开发计划](docs/24-PRODUCT-ARCHITECTURE-REFACTORING-AND-PLAN.md)
