@@ -1077,8 +1077,12 @@ class NotebookAsgiApp:
                             evidence={"source": "deepseek_harness_tool", "attachment_id": attachment_id},
                             replace_existing=True,
                         )
-                    else:
+                    elif len(existing) != len(requested):
                         raise RuntimeError("conflict")
+                    # A completed attachment is already frozen product evidence. Model
+                    # retries can phrase the same question or answer differently; keep
+                    # the frozen text and replay the grading/receipt path instead of
+                    # turning that harmless wording drift into an HTTP 409.
 
             reserved_intakes = [intake.intake_id for intake in intakes]
             await self._sync(self.notebook.store.reserve_grade_batch, user_id=user_id, intake_ids=reserved_intakes)

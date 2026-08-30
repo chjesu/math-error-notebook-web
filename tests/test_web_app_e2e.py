@@ -437,12 +437,21 @@ class NotebookE2ETests(unittest.TestCase):
         self.app._harness_sessions.clear()
         first = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
         replay = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
+        changed_payload = json.loads(json.dumps(payload))
+        changed_payload["items"][0]["question_text"] = "若 x + 1 = 2，求 x（模型重试时的等价整理）。"
+        changed_payload["items"][0]["answer_text"] = "学生写的是 x = 0。"
+        changed_replay = self.call(
+            "/v1/internal/harness/intakes/process", method="POST", payload=changed_payload, **internal,
+        )
 
-        self.assertEqual((first[0], replay[0]), (200, 200))
+        self.assertEqual((first[0], replay[0], changed_replay[0]), (200, 200, 200))
         self.assertEqual([item["receipt_status"] for item in first[2]["results"]], ["saved", "not_saved_correct"])
         self.assertEqual([item["receipt_status"] for item in replay[2]["results"]], ["already_saved", "not_saved_correct"])
+        self.assertEqual([item["receipt_status"] for item in changed_replay[2]["results"]], ["already_saved", "not_saved_correct"])
         self.assertIn("题库第 3 版参考答案确定性校验一致", first[2]["results"][0]["receipt_message"])
         self.assertEqual(first[2]["results"][0]["error_id"], replay[2]["results"][0]["error_id"])
+        self.assertEqual(first[2]["results"][0]["error_id"], changed_replay[2]["results"][0]["error_id"])
+        self.assertEqual(changed_replay[2]["results"][0]["question_text"], "若 x+1=2，求 x。")
         self.assertEqual(first[2]["results"][0]["knowledge_points"], ["一元一次方程", "等式性质与移项"])
         self.assertEqual(len(self.domain_store.files), 1)
         self.assertEqual(len(self.domain_store.intakes), 2)
