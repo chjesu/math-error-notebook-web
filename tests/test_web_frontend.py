@@ -332,7 +332,7 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertIn('item.title === productWorkspaceTitle', plugin)
         self.assertIn('ctx.workspaces.connectWorkspace(workspace.workspaceId)', plugin)
         self.assertIn('ctx.sessions.open(sessionId)', plugin)
-        for plugin_id in ("ui-settings-models", "ui-model-selection", "ui-settings-plugin-inventory", "ui-settings-plugins"):
+        for plugin_id in ("permission", "command-feedback", "ui-settings-models", "ui-model-selection", "ui-settings-plugin-inventory", "ui-settings-plugins"):
             self.assertRegex(patch, rf"- id: {plugin_id}\s+disabled: true")
         self.assertRegex(patch, r"- id: attachment-local\s+config:\s+maxImagesPerMessage: 1")
         self.assertRegex(runtime_config, r"- id: attachment-local\s+name: '@deepseek-ai/dsh-attachment-local'\s+config:\s+dshHome: .*\s+maxImagesPerMessage: 1")

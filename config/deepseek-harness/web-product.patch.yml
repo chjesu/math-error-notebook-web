@@ -37,11 +37,7 @@
     policy: never
 
 - id: permission
-  config:
-    presets:
-      read-only:
-        sandbox: read-only
-        approval: never
+  disabled: true
 
 - id: agent-presets
   config:
@@ -73,6 +69,8 @@
 - id: goal-round-driver
   disabled: true
 - id: command-goal
+  disabled: true
+- id: command-feedback
   disabled: true
 - id: plan-mode
   disabled: true
