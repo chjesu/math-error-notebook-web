@@ -18,7 +18,7 @@ _MATH_COMMANDS = (
     "ne", "neq", "perp", "parallel", "in", "notin", "triangle", "ell",
     "rightarrow", "leftarrow", "Rightarrow", "Leftarrow", "Leftrightarrow",
     "mathbb", "mathrm", "operatorname", "text", "boxed", "langle", "rangle",
-    "left", "right", "middle", "alpha", "beta", "gamma", "theta", "omega",
+    "left", "right", "middle", "alpha", "beta", "gamma", "theta", "omega", "phi", "varphi",
     "sin", "cos", "tan", "circ",
 )
 _MATH_COMMAND_RE = re.compile(r"\\(?:" + "|".join(_MATH_COMMANDS) + r")(?![A-Za-z])")
@@ -112,30 +112,43 @@ def _math_spans(value: str) -> list[tuple[int, int, str]]:
     return sorted(spans)
 
 
+def _normalize_math_text(value: str) -> str:
+    value = value.replace(r"\dfrac", r"\frac").replace(r"\tfrac", r"\frac")
+    value = value.replace("⟨", r"\langle ").replace("⟩", r"\rangle ")
+    value = re.sub(r"\\operatorname\{vec\}\s*\(([^()]*)\)", lambda match: rf"\vec{{{match.group(1)}}}", value)
+    value = re.sub(
+        r"\\frac\s*(\\[A-Za-z]+|[A-Za-z0-9])\s*(\\[A-Za-z]+|[A-Za-z0-9])",
+        lambda match: rf"\frac{{{match.group(1)}}}{{{match.group(2)}}}",
+        value,
+    )
+    return re.sub(
+        r"(?<![A-Za-z0-9}])(\\[A-Za-z]+|[A-Za-z0-9])\s*/\s*(\\[A-Za-z]+|[A-Za-z0-9]+)(?![A-Za-z0-9{])",
+        lambda match: rf"\frac{{{match.group(1)}}}{{{match.group(2)}}}",
+        value,
+    )
+
+
 def _render_math_image(math_text: str, font_size: float) -> tuple[Path, float, float] | None:
     if _HAS_CJK.search(math_text):
         return None
     try:
-        from PIL import Image, ImageDraw, ImageFont
-        font_path = next((item for item in (
-            Path(r"C:\Windows\Fonts\DejaVuSans.ttf"),
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuMathTeXGyre.ttf"),
-        ) if item.is_file()), None)
-        if font_path is None:
-            return None
-        px_size = max(18, round(font_size * 3.0))
-        key = hashlib.sha256(f"v4|{math_text}|{font_size:.2f}".encode("utf-8")).hexdigest()[:20]
+        from matplotlib.font_manager import FontProperties
+        from matplotlib.mathtext import math_to_image
+        from PIL import Image
+
+        normalized = _normalize_math_text(math_text)
+        key = hashlib.sha256(f"v5|{normalized}|{font_size:.2f}".encode("utf-8")).hexdigest()[:20]
         output = _MATH_CACHE_DIR / f"math-{key}.png"
         if not output.is_file():
             _MATH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            font = ImageFont.truetype(str(font_path), px_size)
-            probe = Image.new("RGBA", (8, 8), (255, 255, 255, 0))
-            bounds = ImageDraw.Draw(probe).textbbox((0, 0), _replace_math_args(math_text), font=font)
-            width, height = max(8, bounds[2] - bounds[0] + 10), max(8, bounds[3] - bounds[1] + 8)
-            image = Image.new("RGBA", (width, height), (255, 255, 255, 0))
-            ImageDraw.Draw(image).text((5 - bounds[0], 3 - bounds[1]), _replace_math_args(math_text), font=font, fill="#172033")
-            image.save(output, format="PNG", optimize=True)
+            math_to_image(
+                f"${normalized}$",
+                str(output),
+                prop=FontProperties(size=font_size),
+                dpi=216,
+                format="png",
+                color="#172033",
+            )
         with Image.open(output) as image:
             width, height = image.size
         scale = 72.0 / 216.0

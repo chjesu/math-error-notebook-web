@@ -6,7 +6,7 @@ import unittest
 
 from PIL import Image
 
-from services.web_domain.practice_pdf import _formatted_text, _replace_math_args, build_practice_pdf
+from services.web_domain.practice_pdf import _formatted_text, _normalize_math_text, _replace_math_args, _render_math_image, build_practice_pdf
 
 
 class PracticePdfMathTests(unittest.TestCase):
@@ -37,6 +37,18 @@ class PracticePdfMathTests(unittest.TestCase):
         rendered = _formatted_text(r"且 \operatorname{vec}(e_1),\operatorname{vec}(e_2)=0")
         self.assertIn("<img", rendered)
         self.assertNotIn(r"\operatorname", rendered)
+
+    def test_standard_vector_fraction_and_radical_layout_is_rendered(self) -> None:
+        normalized = _normalize_math_text(
+            r"\overrightarrow{AM}=\frac56\overrightarrow{AB}+\frac12\overrightarrow{AD},\quad |\varphi|<\pi/2,\quad \sqrt{3}"
+        )
+
+        self.assertIn(r"\frac{5}{6}", normalized)
+        self.assertIn(r"\frac{1}{2}", normalized)
+        self.assertIn(r"\frac{\pi}{2}", normalized)
+        rendered = _render_math_image(normalized, 11)
+        self.assertIsNotNone(rendered)
+        self.assertGreater(rendered[2], 11)
 
     def test_plain_text_is_not_rewritten_as_missing_subscript_glyphs(self) -> None:
         rendered = _formatted_text("学生填写 e_1，但没有使用公式。")
