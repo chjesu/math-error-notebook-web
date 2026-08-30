@@ -111,6 +111,9 @@ def _render_math_image(math_text: str, font_size: float) -> tuple[Path, float, f
         font_path = next((item for item in (
             Path(r"C:\Windows\Fonts\DejaVuMathTeXGyre.ttf"),
             Path(r"C:\Windows\Fonts\DejaVuSans.ttf"),
+            Path(r"C:\Windows\Fonts\DejaVuSansMono.ttf"),
+            Path(r"C:\Windows\Fonts\seguisym.ttf"),
+            Path(r"C:\Windows\Fonts\arial.ttf"),
             Path("/usr/share/fonts/truetype/dejavu/DejaVuMathTeXGyre.ttf"),
             Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
         ) if item.is_file()), None)
