@@ -3,7 +3,7 @@ const roleLabels = {operations: "运营", reviewer: "内容审核", security: "�
 const statusLabels = {
   failed_retryable: "可重试失败", failed_final: "最终失败", waiting_confirmation: "等待确认",
   candidate: "候选", verified: "已验证", rejected: "已拒绝", retired: "已停用",
-  needs_review: "待复核", unreviewed: "未复核", pending: "处理中", completed: "已完成",
+  needs_review: "待复核", unreviewed: "待复核", pending: "处理中", completed: "已完成",
   active: "正常", restricted: "受限", pending_delete: "待注销", deleted: "已注销"
 };
 
@@ -61,7 +61,7 @@ function renderDashboard(result) {
     $("#admin-usage").innerHTML = usage.users?.length ? usage.users.map(item => `<tr><td data-label="用户">${escapeHtml(item.user_ref)}</td><td data-label="会话">${number(item.session_count)}</td><td data-label="非缓存输入">${number(item.uncached_input_tokens)}</td><td data-label="输出">${number(item.output_tokens)}</td><td data-label="缓存读取">${number(item.cache_read_tokens)}</td><td data-label="缓存写入">${number(item.cache_write_tokens)}</td><td data-label="合计">${number(item.total_tokens)}</td><td data-label="更新时间">${escapeHtml(time(item.updated_at))}</td></tr>`).join("") : emptyRow(8, "尚未收到 Harness Token 计量");
   }
   if (allowed.has("tasks")) $("#admin-tasks").innerHTML = sections.tasks?.length ? sections.tasks.map(item => `<tr><td data-label="任务">${escapeHtml(compactId(item.task_id))}</td><td data-label="用户">${escapeHtml(item.user_ref)}</td><td data-label="类型">${escapeHtml(item.type)}</td><td data-label="状态"><span class="state-pill">${escapeHtml(label(item.status))}</span></td><td data-label="错误分类">${escapeHtml(item.error_code || "—")}</td><td data-label="更新时间">${escapeHtml(time(item.updated_at))}</td></tr>`).join("") : emptyRow(6);
-  if (allowed.has("content")) $("#admin-content").innerHTML = sections.content?.length ? sections.content.map(item => `<tr><td data-label="题目">${escapeHtml(compactId(item.question_id))}</td><td data-label="状态"><span class="state-pill">${escapeHtml(label(item.status))}</span></td><td data-label="验证">${escapeHtml(label(item.verification))}</td><td data-label="版本">v${item.version}</td><td data-label="授权">${escapeHtml(item.license)}</td><td data-label="更新时间">${escapeHtml(time(item.updated_at))}</td></tr>`).join("") : emptyRow(6);
+  if (allowed.has("content")) $("#admin-content").innerHTML = sections.content?.length ? sections.content.map(item => `<tr><td data-label="题目">${escapeHtml(compactId(item.question_id))}</td><td data-label="状态"><span class="state-pill">${escapeHtml(label(item.status))}</span></td><td data-label="题库内容">${escapeHtml(label(item.verification))}</td><td data-label="版本">v${item.version}</td><td data-label="授权">${escapeHtml(item.license)}</td><td data-label="更新时间">${escapeHtml(time(item.updated_at))}</td></tr>`).join("") : emptyRow(6);
   if (allowed.has("risk")) {
     const risk = sections.risk || {};
     $("#risk-metrics").innerHTML = [["验证码申请", risk.sms_requested_today || 0], ["发送成功", risk.sms_sent_today || 0], ["发送失败", risk.sms_failed_today || 0], ["触发限流", risk.rate_limited_today || 0]].map(([name, value]) => `<article><strong>${number(value)}</strong><span>${name}</span></article>`).join("");

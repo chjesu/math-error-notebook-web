@@ -21,6 +21,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(".admin-metrics", style)
         self.assertIn(".admin-table-wrap", style)
         self.assertIn('data-label="状态"', script)
+        self.assertIn('data-label="题库内容"', script)
+        self.assertIn('unreviewed: "待复核"', script)
         self.assertIn("/v1/harness/sessions/usage", (ROOT / "extensions" / "dsh-math-notebook-ui" / "lib" / "client.js").read_text(encoding="utf-8"))
         self.assertIn('data-label="Token"', script)
         self.assertIn("content: attr(data-label)", style)
