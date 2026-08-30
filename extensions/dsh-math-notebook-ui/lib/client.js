@@ -169,6 +169,31 @@ window.__ModuleLoader__.load({
       }, "math-notebook: student surface");
     }
 
+    function customizeStudentCopy(ctx) {
+      ctx.effect(() => {
+        const rewrite = () => {
+          document.querySelectorAll("span").forEach((element) => {
+            if (element.textContent === "探索未至之境") {
+              element.textContent = "今天要整理哪道错题?";
+            }
+          });
+          document.querySelectorAll('textarea[placeholder="描述你想要构建的内容"]').forEach((element) => {
+            element.placeholder = "学习不是熊瞎子掰棒子";
+          });
+        };
+        const observer = new MutationObserver(rewrite);
+        observer.observe(document.body, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+          attributes: true,
+          attributeFilter: ["placeholder"],
+        });
+        rewrite();
+        return () => observer.disconnect();
+      }, "math-notebook: student copy");
+    }
+
     function restrictStudentSettings(ctx) {
       ctx.effect(() => {
         const filter = () => {
@@ -445,6 +470,7 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       pluginContext = ctx;
       installStudentSurface(ctx);
+      customizeStudentCopy(ctx);
       restrictStudentSettings(ctx);
       openProductWorkspace(ctx);
       bindProductSession(ctx);
