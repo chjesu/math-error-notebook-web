@@ -18,6 +18,7 @@ from services.web_files import (
 )
 
 from .learning import (
+    CAUSE_LABELS,
     DAILY_GRADE_LIMIT,
     DAILY_RECOMMENDATION_LIMIT,
     Question,
@@ -26,7 +27,9 @@ from .learning import (
     VerifiedQuestionReference,
     build_review_calendar,
     cross_validate_reference,
+    diagnosis_from_evidence,
     learning_day,
+    learning_profile_from_evidence,
     learning_usage_payload,
     next_review,
     question_match_score,
@@ -44,7 +47,7 @@ from .mysql_store import (
     normalize_extraction_items,
 )
 from .intake_batch import BatchClaim, InMemoryIntakeBatchRepository
-from .practice_pdf import build_practice_pdf
+from .practice_pdf import build_practice_pdf, practice_mode
 
 
 @dataclass(frozen=True)
@@ -689,9 +692,19 @@ class InMemoryNotebookStore:
             question
             for question_id, question in self.questions.items()
             if self.question_rules.get(question_id) in {("verified", "open", True), ("verified", "user_authorized", True)}
+            and question_id != error.question_id
             and not any(attempt.user_id == user_id and getattr(attempt, "question_id", None) == question_id for attempt in self.attempts.values())
         ]
-        ranked = rank_questions(error.question_text, eligible, limit)
+        diagnosis = diagnosis_from_evidence(error.evidence)
+        cause_code = diagnosis.get("cause_code")
+        original = self.questions.get(error.question_id) if error.question_id else None
+        ranked = rank_questions(
+            error.question_text,
+            eligible,
+            limit,
+            cause_code=cause_code if isinstance(cause_code, str) else None,
+            base_difficulty=original.difficulty if original else None,
+        )
         day = learning_day()
         current = self.learning_usage(user_id=user_id)["recommendation"]["count"]
         new_ranked = [
@@ -701,10 +714,14 @@ class InMemoryNotebookStore:
         if new_ranked and current >= DAILY_RECOMMENDATION_LIMIT:
             items = self.list_recommendations(user_id=user_id, error_id=error_id)
             return items[:limit], True
-        for question, reason in new_ranked[: max(0, DAILY_RECOMMENDATION_LIMIT - current)]:
+        next_rank = max(
+            (item.rank for item in self.recommendations.values() if item.user_id == user_id and item.error_id == error_id),
+            default=0,
+        ) + 1
+        for rank, (question, reason) in enumerate(new_ranked[: max(0, DAILY_RECOMMENDATION_LIMIT - current)], next_rank):
             existing = next((item for item in self.recommendations.values() if item.user_id == user_id and item.error_id == error_id and item.question.question_id == question.question_id), None)
             if not existing:
-                existing = Recommendation(uuid.uuid4().hex, user_id, error_id, question, reason, "assigned")
+                existing = Recommendation(uuid.uuid4().hex, user_id, error_id, question, reason, "assigned", rank)
                 self.recommendations[existing.recommendation_id] = existing
                 resource = hashlib.sha256(f"{error_id}:{question.question_id}".encode("ascii")).hexdigest()
                 self.learning_usage_events[(user_id, day, "recommendation", resource)] = {"kind": "recommendation", "status": "counted", "created_at": _now()}
@@ -716,7 +733,7 @@ class InMemoryNotebookStore:
             raise LookupError("error not found")
         return sorted(
             (item for item in self.recommendations.values() if item.user_id == user_id and item.error_id == error_id and item.status in {"assigned", "completed"} and self.question_rules.get(item.question.question_id) in {("verified", "open", True), ("verified", "user_authorized", True)}),
-            key=lambda item: item.recommendation_id,
+            key=lambda item: (item.rank, item.recommendation_id),
         )
 
     def list_due_reviews(self, *, user_id: str, now: datetime | None = None) -> list[ReviewTask]:
@@ -774,6 +791,10 @@ class InMemoryNotebookStore:
         correct = sum(item["result"] == "correct" for item in reviews)
         return {"error_count": len(errors), "mastered_count": sum(item.status == "mastered" for item in errors), "due_review_count": len(due), "recommendation_gap_count": gaps, "completed_review_count": len(reviews), "correct_review_count": correct, "partial_review_count": sum(item["result"] == "partial" for item in reviews), "wrong_review_count": sum(item["result"] == "wrong" for item in reviews), "review_accuracy_percent": round(correct * 100 / len(reviews)) if reviews else 0, "review_stage_counts": stage_counts, "today_completed_review_count": len(today_reviews), "today_needs_correction_count": sum(item["result"] in {"partial", "wrong"} for item in today_reviews), "sample_sufficient": len(errors) >= 3}
 
+    def learning_profile(self, *, user_id: str) -> dict[str, object]:
+        errors = [item for item in self.errors.values() if item.user_id == user_id and item.status != "removed"]
+        return learning_profile_from_evidence([item.evidence for item in errors])
+
     def review_calendar(self, *, user_id: str, month: str, now: datetime | None = None) -> dict[str, object]:
         errors = [item for item in self.errors.values() if item.user_id == user_id and item.status != "removed"]
 
@@ -830,7 +851,7 @@ class InMemoryNotebookStore:
         if status == "removed":
             for recommendation_id, item in list(self.recommendations.items()):
                 if item.user_id == user_id and item.error_id == error_id and item.status in {"candidate", "assigned"}:
-                    self.recommendations[recommendation_id] = Recommendation(item.recommendation_id, user_id, error_id, item.question, item.reason, "withdrawn")
+                    self.recommendations[recommendation_id] = Recommendation(item.recommendation_id, user_id, error_id, item.question, item.reason, "withdrawn", item.rank)
         return updated
 
     def pending_job_count(self, *, user_id: str) -> int:
@@ -844,7 +865,26 @@ class InMemoryNotebookStore:
             error = self.get_error(user_id=user_id, error_id=error_id)
             if not error:
                 raise LookupError("error not found")
-            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "错题回顾"})
+            diagnosis = diagnosis_from_evidence(error.evidence)
+            original = self.questions.get(error.question_id) if error.question_id else None
+            cause_code = diagnosis.get("cause_code")
+            items.append({
+                "kind": "original",
+                "error_id": error_id,
+                "question_id": error.question_id,
+                "stem_text": error.question_text,
+                "answer_text": error.answer_text,
+                "first_error": error.first_error,
+                "cause_label": CAUSE_LABELS.get(cause_code, "待整理") if isinstance(cause_code, str) else "待整理",
+                "cause_evidence": diagnosis.get("cause_evidence"),
+                "knowledge_points": diagnosis.get("knowledge_points") if isinstance(diagnosis.get("knowledge_points"), list) else [],
+                "correct_solution": diagnosis.get("correct_solution"),
+                "final_answer": diagnosis.get("final_answer"),
+                "prevention_cue": diagnosis.get("prevention_cue"),
+                "difficulty": original.difficulty if original else None,
+                "source_title": "个人错题本",
+                "reason": "错题回顾",
+            })
             recommendations = self.list_recommendations(user_id=user_id, error_id=error_id)
             if not recommendations:
                 gaps += 1
@@ -856,30 +896,32 @@ class InMemoryNotebookStore:
                 items.append({"kind": "recommendation", "error_id": error_id, "question_id": question.question_id, "stem_text": question.stem_text, "answer_text": question.answer_text, "difficulty": question.difficulty, "source_title": question.source_title, "reason": recommendation.reason})
         return items, gaps
 
-    def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool) -> Job:
+    def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, mode: str) -> Job:
         if not error_ids:
             raise ValueError("error_ids is required")
         for error_id in error_ids:
             if not self.get_error(user_id=user_id, error_id=error_id):
                 raise LookupError("error not found")
         key = (user_id, "practice_pdf", idempotency_key)
-        digest = hashlib.sha256(json.dumps([sorted(set(error_ids)), include_answers], separators=(",", ":")).encode("ascii")).hexdigest()
+        resolved_mode = practice_mode(mode, None)
+        digest = hashlib.sha256(json.dumps([sorted(set(error_ids)), resolved_mode], separators=(",", ":")).encode("ascii")).hexdigest()
         existing = self._job_keys.get(key)
         if existing:
             if self._practice_inputs[key] != digest:
                 raise RuntimeError("conflict")
             return self.jobs[existing]
-        job = Job(uuid.uuid4().hex, user_id, "practice_pdf", error_ids[0], "queued", {"error_ids": error_ids, "include_answers": include_answers}, None)
+        job = Job(uuid.uuid4().hex, user_id, "practice_pdf", error_ids[0], "queued", {"error_ids": error_ids, "mode": resolved_mode, "include_answers": resolved_mode == "review"}, None)
         self.jobs[job.job_id] = job
         self._job_keys[key] = job.job_id
         self._practice_inputs[key] = digest
         return job
 
-    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool) -> Job:
+    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, mode: str) -> Job:
         job = self.get_job(user_id=user_id, job_id=job_id)
         if not job or job.job_type != "practice_pdf":
             raise LookupError("job not found")
-        completed = Job(job.job_id, user_id, job.job_type, job.resource_id, "completed", {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers}, None)
+        resolved_mode = practice_mode(mode, None)
+        completed = Job(job.job_id, user_id, job.job_type, job.resource_id, "completed", {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "mode": resolved_mode, "include_answers": resolved_mode == "review"}, None)
         self.jobs[job_id] = completed
         return completed
 
@@ -891,13 +933,18 @@ class InMemoryNotebookStore:
             record = self.files.get(str(job.checkpoint.get("file_id", "")))
             if not record or record.user_id != user_id or record.purpose != "practice_pdf" or record.status != "ready":
                 continue
+            mode = job.checkpoint.get("mode")
+            if mode not in {"review", "self_test"}:
+                mode = "review" if bool(job.checkpoint.get("include_answers", False)) else "self_test"
             items.append({
                 "task_id": job.job_id,
                 "filename": record.original_name,
                 "byte_size": record.byte_size,
                 "generated_at": None,
                 "question_count": int(job.checkpoint.get("question_count", 0)),
-                "include_answers": bool(job.checkpoint.get("include_answers", False)),
+                "include_answers": mode == "review",
+                "mode": mode,
+                "source": "generated",
             })
         return items
 
@@ -963,7 +1010,7 @@ class InMemoryNotebookStore:
                 self.review_tasks[task_id] = ReviewTask(item.task_id, item.user_id, item.error_id, item.stage, item.due_at, "cancelled")
         for recommendation_id, item in list(self.recommendations.items()):
             if item.user_id == user_id and item.status in {"candidate", "assigned", "completed"}:
-                self.recommendations[recommendation_id] = Recommendation(item.recommendation_id, item.user_id, item.error_id, item.question, item.reason, "withdrawn")
+                self.recommendations[recommendation_id] = Recommendation(item.recommendation_id, item.user_id, item.error_id, item.question, item.reason, "withdrawn", item.rank)
         for error_id, item in list(self.errors.items()):
             if item.user_id == user_id and item.status != "removed":
                 self.errors[error_id] = ErrorEntry(item.error_id, item.user_id, item.attempt_id, item.question_text, item.answer_text, item.first_error, "removed", item.created_at, item.evidence, item.question_id)
@@ -1043,8 +1090,13 @@ class InMemoryNotebookStore:
         value = self.errors.get(error_id)
         return value if value and value.user_id == user_id else None
 
-    def list_errors(self, *, user_id: str) -> list[ErrorEntry]:
-        return sorted((item for item in self.errors.values() if item.user_id == user_id and item.status != "removed"), key=lambda item: item.created_at, reverse=True)
+    def list_errors(self, *, user_id: str, cause_code: str | None = None) -> list[ErrorEntry]:
+        if cause_code is not None and cause_code not in CAUSE_LABELS:
+            raise ValueError("invalid cause code")
+        items = (item for item in self.errors.values() if item.user_id == user_id and item.status != "removed")
+        if cause_code is not None:
+            items = (item for item in items if diagnosis_from_evidence(item.evidence).get("cause_code") == cause_code)
+        return sorted(items, key=lambda item: item.created_at, reverse=True)
 
     def _intake(self, user_id: str, intake_id: str) -> IntakeItem:
         value = self.intakes.get(intake_id)
@@ -1102,24 +1154,34 @@ class NotebookService:
     def clear_conversation(self, *, user_id: str) -> None:
         self.store.clear_conversation(user_id=user_id)
 
-    def create_practice_pdf(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool = False) -> Job:
-        job = self.store.create_practice_job(user_id=user_id, error_ids=error_ids, idempotency_key=idempotency_key, include_answers=include_answers)
+    def create_practice_pdf(
+        self,
+        *,
+        user_id: str,
+        error_ids: list[str],
+        idempotency_key: str,
+        mode: str | None = None,
+        include_answers: bool | None = None,
+    ) -> Job:
+        resolved_mode = practice_mode(mode, include_answers)
+        job = self.store.create_practice_job(user_id=user_id, error_ids=error_ids, idempotency_key=idempotency_key, mode=resolved_mode)
         if job.status == "completed":
             return job
         items, gaps = self.store.practice_items(user_id=user_id, error_ids=error_ids)
         content = build_practice_pdf(
             items,
-            include_answers=include_answers,
+            mode=resolved_mode,
             logo_path=Path(__file__).resolve().parents[2] / "assets" / "branding" / "logo-symbol-color-128-v1.png",
         )
-        record = self.upload(user_id=user_id, purpose="practice_pdf", original_name=f"practice-{job.job_id[:8]}.pdf", content=content)
+        name = "review" if resolved_mode == "review" else "self-test"
+        record = self.upload(user_id=user_id, purpose="practice_pdf", original_name=f"{name}-{job.job_id[:8]}.pdf", content=content)
         return self.store.complete_practice_job(
             user_id=user_id,
             job_id=job.job_id,
             file_id=record.file_id,
             question_count=len(items),
             recommendation_gap_count=gaps,
-            include_answers=include_answers,
+            mode=resolved_mode,
         )
 
     def download_practice_pdf(self, *, user_id: str, job_id: str) -> tuple[str, bytes]:
@@ -1127,7 +1189,7 @@ class NotebookService:
         content = self.storage.read_bytes(record.object_key)
         if hashlib.sha256(content).hexdigest() != record.content_sha256:
             raise RuntimeError("file_integrity_failed")
-        return f"practice-{job.job_id[:8]}.pdf", content
+        return self._practice_pdf_name(job), content
 
     def presign_practice_pdf_download(
         self,
@@ -1137,7 +1199,7 @@ class NotebookService:
         expires_in: int = 300,
     ) -> tuple[str, PresignedStorageRequest] | None:
         job, record = self._practice_pdf_file(user_id=user_id, job_id=job_id)
-        filename = f"practice-{job.job_id[:8]}.pdf"
+        filename = self._practice_pdf_name(job)
         request = self.storage.presign_download(
             record.object_key,
             expires_in=expires_in,
@@ -1157,6 +1219,15 @@ class NotebookService:
         if not record or record.purpose != "practice_pdf":
             raise LookupError("practice PDF not found")
         return job, record
+
+    @staticmethod
+    def _practice_pdf_name(job: Job) -> str:
+        checkpoint = job.checkpoint or {}
+        mode = checkpoint.get("mode")
+        if mode not in {"review", "self_test"}:
+            mode = "review" if bool(checkpoint.get("include_answers", False)) else "self_test"
+        prefix = "review" if mode == "review" else "self-test"
+        return f"{prefix}-{job.job_id[:8]}.pdf"
 
     def read_intake_source(self, *, user_id: str, intake_id: str) -> tuple[str, str, bytes]:
         intake = self.store.get_intake(user_id=user_id, intake_id=intake_id)

@@ -79,6 +79,23 @@ class WebOpenApiContractTests(unittest.TestCase):
         schema = self.document["components"]["schemas"]["ReviewCalendar"]
         self.assertEqual(set(schema["required"]), {"month", "total_error_count", "summary", "days"})
 
+    def test_learning_profile_error_filter_and_practice_modes_are_documented(self) -> None:
+        error_filter = self.operation("/v1/errors", "get")["parameters"][0]
+        self.assertEqual(error_filter["name"], "cause_code")
+        self.assertIn("algebra_transform", error_filter["schema"]["enum"])
+        self.assertEqual(self.operation("/v1/progress/profile", "get")["responses"]["200"]["$ref"], "#/components/responses/LearningProfile")
+        profile = self.document["components"]["schemas"]["LearningProfile"]
+        self.assertEqual(set(profile["required"]), {"total_error_count", "diagnosed_error_count", "sample_sufficient", "cause_distribution", "knowledge_radar"})
+        request = self.document["components"]["schemas"]["PracticePdfRequest"]
+        practice = request["properties"]
+        self.assertEqual(practice["mode"]["enum"], ["review", "self_test"])
+        self.assertNotIn("default", practice["mode"])
+        self.assertTrue(practice["include_answers"]["deprecated"])
+        self.assertEqual(len(request["allOf"]), 2)
+        history_item = self.document["components"]["schemas"]["PracticePdfItem"]
+        self.assertIn("source", history_item["required"])
+        self.assertEqual(history_item["properties"]["source"]["enum"], ["generated", "desktop_skill"])
+
     def test_daily_learning_usage_documents_targets_and_hard_limits(self) -> None:
         operation = self.operation("/v1/learning-usage", "get")
         self.assertEqual(operation["responses"]["200"]["$ref"], "#/components/responses/LearningUsage")

@@ -33,6 +33,8 @@ from services.web_domain import (
     reference_adjudication_from_evidence,
     reference_conflict_resolved,
 )
+from services.web_domain.learning import CAUSE_LABELS
+from services.web_domain.practice_pdf import practice_mode
 from .codex_model import ModelUnavailableError
 from .gateway import LoopbackHarnessGateway
 from .intake_pipeline import NotebookIntakeBatchProcessor
@@ -625,7 +627,11 @@ class NotebookAsgiApp:
                     raise LookupError
                 await self._json(send, 200, self._candidate(candidate))
             elif path == "/v1/errors" and method == "GET":
-                items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
+                query = self._query(scope, allowed={"cause_code"})
+                cause_code = query.get("cause_code") or None
+                if cause_code is not None and cause_code not in CAUSE_LABELS:
+                    raise ValueError("invalid cause code")
+                items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id, cause_code=cause_code)
                 reviews = await self._sync(self.notebook.store.list_active_reviews, user_id=user.user_id)
                 review_by_error = {item.error_id: item for item in reviews}
                 await self._json(send, 200, {"items": [self._error_entry(item) | {"review": self._review(review_by_error[item.error_id]) if item.error_id in review_by_error else None} for item in items]})
@@ -668,6 +674,9 @@ class NotebookAsgiApp:
                 month = self._query(scope, allowed={"month"}).get("month", "")
                 calendar = await self._sync(self.notebook.store.review_calendar, user_id=user.user_id, month=month)
                 await self._json(send, 200, calendar)
+            elif path == "/v1/progress/profile" and method == "GET":
+                profile = await self._sync(self.notebook.store.learning_profile, user_id=user.user_id)
+                await self._json(send, 200, profile)
             elif path == "/v1/progress" and method == "GET":
                 progress = await self._sync(self.notebook.store.progress, user_id=user.user_id)
                 await self._json(send, 200, progress)
@@ -679,10 +688,16 @@ class NotebookAsgiApp:
             elif path == "/v1/practice-pdfs" and method == "POST":
                 payload = await self._json_body(receive)
                 error_ids = payload.get("error_ids")
-                include_answers = payload.get("include_answers", False)
-                if not isinstance(error_ids, list) or not all(isinstance(item, str) for item in error_ids) or not 1 <= len(error_ids) <= 12 or not isinstance(include_answers, bool):
+                mode = payload.get("mode")
+                include_answers = payload.get("include_answers")
+                if set(payload) - {"error_ids", "mode", "include_answers"}:
                     raise ValueError("invalid practice request")
-                job = await self._sync(self.notebook.create_practice_pdf, user_id=user.user_id, error_ids=list(dict.fromkeys(error_ids)), idempotency_key=self._key(headers), include_answers=include_answers)
+                if not isinstance(error_ids, list) or not all(isinstance(item, str) for item in error_ids) or not 1 <= len(error_ids) <= 12:
+                    raise ValueError("invalid practice request")
+                if mode is not None and not isinstance(mode, str):
+                    raise ValueError("invalid practice request")
+                resolved_mode = practice_mode(mode, include_answers)
+                job = await self._sync(self.notebook.create_practice_pdf, user_id=user.user_id, error_ids=list(dict.fromkeys(error_ids)), idempotency_key=self._key(headers), mode=resolved_mode)
                 await self._json(send, 201, self._practice_job(job))
             elif path.startswith("/v1/practice-pdfs/") and path.endswith("/download") and method == "GET":
                 job_id = path.split("/")[-2]
@@ -2021,6 +2036,11 @@ class NotebookAsgiApp:
 
     def _practice_job(self, value: Job) -> dict[str, Any]:
         payload = self._job(value)
+        checkpoint = value.checkpoint or {}
+        mode = checkpoint.get("mode")
+        if mode not in {"review", "self_test"}:
+            mode = "review" if bool(checkpoint.get("include_answers", False)) else "self_test"
+        payload["mode"] = mode
         if value.status == "completed":
             payload["download_url"] = f"/v1/practice-pdfs/{value.job_id}/download"
         return payload

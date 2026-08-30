@@ -44,6 +44,7 @@ class Recommendation:
     question: Question
     reason: str
     status: str
+    rank: int = 1
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,20 @@ DAILY_GRADE_TARGET = 12
 DAILY_GRADE_LIMIT = 20
 DAILY_RECOMMENDATION_TARGET = 12
 DAILY_RECOMMENDATION_LIMIT = 24
+CAUSE_LABELS = {
+    "knowledge_gap": "知识点未掌握",
+    "concept_confusion": "概念理解不准确",
+    "formula_condition": "公式或定理使用条件遗漏",
+    "method_choice": "解题思路选择错误",
+    "reasoning_gap": "推理或步骤跳跃",
+    "algebra_transform": "代数变形错误",
+    "calculation": "计算失误",
+    "misreading": "审题错误",
+    "incomplete_cases": "分类讨论不完整",
+    "expression": "表达不规范",
+    "careless": "粗心失误",
+    "unclear": "原因待确认",
+}
 
 
 def learning_day(now: datetime | None = None) -> str:
@@ -223,16 +238,127 @@ def math_tokens(text: str) -> set[str]:
     return latin | han
 
 
-def rank_questions(error_text: str, questions: list[Question], limit: int) -> list[tuple[Question, str]]:
+def diagnosis_from_evidence(evidence: str | None) -> dict[str, object]:
+    if not evidence:
+        return {}
+    try:
+        value = json.loads(evidence)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(value, dict) or value.get("schema") != "math-error-diagnosis/v1":
+        return {}
+    cause_code = value.get("cause_code")
+    cause_evidence = value.get("cause_evidence")
+    knowledge_points = value.get("knowledge_points")
+    correct_solution = value.get("correct_solution")
+    final_answer = value.get("final_answer")
+    prevention_cue = value.get("prevention_cue")
+    if (
+        cause_code not in CAUSE_LABELS
+        or not isinstance(cause_evidence, str) or not cause_evidence.strip() or len(cause_evidence.strip()) > 12000
+        or not isinstance(knowledge_points, list) or not 1 <= len(knowledge_points) <= 8
+        or any(not isinstance(item, str) or not item.strip() or len(item.strip()) > 200 for item in knowledge_points)
+        or not isinstance(correct_solution, str) or not correct_solution.strip() or len(correct_solution.strip()) > 12000
+        or not isinstance(final_answer, str) or not final_answer.strip() or len(final_answer.strip()) > 12000
+        or prevention_cue is not None and (not isinstance(prevention_cue, str) or len(prevention_cue.strip()) > 12000)
+    ):
+        return {}
+    normalized = dict(value)
+    normalized.update({
+        "cause_code": cause_code,
+        "cause_evidence": cause_evidence.strip(),
+        "knowledge_points": [item.strip() for item in knowledge_points],
+        "correct_solution": correct_solution.strip(),
+        "final_answer": final_answer.strip(),
+        "prevention_cue": prevention_cue.strip() if isinstance(prevention_cue, str) else None,
+    })
+    return normalized
+
+
+def learning_profile_payload(
+    total_error_count: int,
+    cause_counts: dict[str, int],
+    knowledge_counts: dict[str, int],
+) -> dict[str, object]:
+    clean_causes = {
+        code: max(0, int(count))
+        for code, count in cause_counts.items()
+        if code in CAUSE_LABELS and int(count) > 0
+    }
+    diagnosed = sum(clean_causes.values())
+    causes = [
+        {
+            "cause_code": code,
+            "label": CAUSE_LABELS[code],
+            "count": count,
+            "percent": round(count * 100 / diagnosed) if diagnosed else 0,
+        }
+        for code, count in sorted(clean_causes.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    clean_knowledge = sorted(
+        ((point.strip(), max(0, int(count))) for point, count in knowledge_counts.items() if point.strip() and int(count) > 0),
+        key=lambda item: (-item[1], item[0]),
+    )[:6]
+    maximum = clean_knowledge[0][1] if clean_knowledge else 0
+    radar = [
+        {"knowledge_point": point, "count": count, "score": round(count * 100 / maximum) if maximum else 0}
+        for point, count in clean_knowledge
+    ]
+    return {
+        "total_error_count": max(0, int(total_error_count)),
+        "diagnosed_error_count": diagnosed,
+        "sample_sufficient": diagnosed >= 3,
+        "cause_distribution": causes,
+        "knowledge_radar": radar,
+    }
+
+
+def learning_profile_from_evidence(evidence_items: list[str | None]) -> dict[str, object]:
+    cause_counts: dict[str, int] = {}
+    knowledge_counts: dict[str, int] = {}
+    for evidence in evidence_items:
+        diagnosis = diagnosis_from_evidence(evidence)
+        cause_code = diagnosis.get("cause_code")
+        if isinstance(cause_code, str) and cause_code in CAUSE_LABELS:
+            cause_counts[cause_code] = cause_counts.get(cause_code, 0) + 1
+        points = diagnosis.get("knowledge_points")
+        if isinstance(points, list):
+            for point in {item.strip() for item in points if isinstance(item, str) and item.strip()}:
+                knowledge_counts[point] = knowledge_counts.get(point, 0) + 1
+    return learning_profile_payload(len(evidence_items), cause_counts, knowledge_counts)
+
+
+def rank_questions(
+    error_text: str,
+    questions: list[Question],
+    limit: int,
+    *,
+    cause_code: str | None = None,
+    base_difficulty: float | None = None,
+) -> list[tuple[Question, str]]:
     anchors = math_tokens(error_text)
-    ranked: list[tuple[int, str, Question, str]] = []
+    ranked: list[tuple[int, int, float, str, Question, str]] = []
     for question in questions:
         shared = sorted(anchors & math_tokens(question.stem_text))
         if not shared:
             continue
-        reason = "题干共同要素：" + "、".join(shared[:3])
-        ranked.append((-len(shared), question.question_id, question, reason))
-    return [(question, reason) for _, _, question, reason in sorted(ranked)[: max(1, min(limit, 3))]]
+        progression_bucket, distance = 1, 0.0
+        progression = ""
+        if base_difficulty is not None and question.difficulty is not None:
+            delta = question.difficulty - base_difficulty
+            if delta > 0:
+                progression_bucket, distance = 0, delta
+                progression = f"；难度 {base_difficulty:g}→{question.difficulty:g}，递进训练"
+            elif delta == 0:
+                progression_bucket = 1
+                progression = f"；难度 {base_difficulty:g}，同级巩固"
+            else:
+                progression_bucket, distance = 2, abs(delta)
+                progression = f"；难度 {base_difficulty:g}→{question.difficulty:g}，基础巩固"
+        focus = f"针对{CAUSE_LABELS[cause_code]}：" if cause_code in CAUSE_LABELS else ""
+        reason = focus + "题干共同要素：" + "、".join(shared[:3]) + progression
+        ranked.append((-len(shared), progression_bucket, distance, question.question_id, question, reason))
+    return [(question, reason) for _, _, _, _, question, reason in sorted(ranked)[: max(1, min(limit, 3))]]
 
 
 def next_review(stage: int, result: str, completed_at: datetime) -> tuple[int, datetime] | None:

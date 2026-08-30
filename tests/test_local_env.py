@@ -328,6 +328,7 @@ class LocalEnvironmentTests(unittest.TestCase):
                 "0010_codex_harness.sql",
                 "0011_daily_learning_usage.sql",
                 "0012_async_intake_batches.sql",
+                "0013_learning_profile_views.sql",
             ],
         )
         self.assertTrue(all(path.is_file() for path in local_env.MIGRATIONS))

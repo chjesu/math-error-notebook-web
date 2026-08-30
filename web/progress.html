@@ -4,6 +4,14 @@
   <aside class="sidebar" aria-label="主导航"><a class="brand" href="/" aria-label="返回工作台"><img src="/assets/branding/logo-symbol-color-64-v1.png" alt=""><span>李兆霖数学错题本</span></a><nav><a href="/errors"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#errors"></use></svg><span>错题本</span></a><a href="/practice"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#practice"></use></svg><span>练习 PDF</span></a><a class="active" aria-current="page" href="/progress"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#progress"></use></svg><span>学习进度</span></a><a href="/settings"><svg class="nav-icon" aria-hidden="true"><use href="/web/nav-icons.svg#settings"></use></svg><span>设置</span></a></nav></aside>
   <main id="main" tabindex="-1"><header class="page-header"><div><p class="eyebrow">复习方法与统计</p><h1>学习进度</h1><p class="page-intro">了解复习节奏，查看每道错题所处的记忆阶段。</p></div><button id="refresh-progress" class="ghost" type="button">刷新数据</button></header>
     <div class="page-panel progress-dashboard">
+      <section class="panel learning-profile-panel" aria-labelledby="learning-profile-heading">
+        <div class="panel-title"><div><p class="section-kicker">从已入本错题中归纳</p><h2 id="learning-profile-heading">错因与知识点雷达</h2></div><span id="profile-sample-state" class="badge">正在加载</span></div>
+        <p id="profile-note" class="profile-note">画像只反映当前错题样本的相对分布，不代表考试成绩。</p>
+        <div class="learning-profile-grid">
+          <section aria-labelledby="cause-distribution-heading"><h3 id="cause-distribution-heading">主要错因</h3><ol id="cause-distribution" class="profile-ranking"><li class="empty">正在加载…</li></ol></section>
+          <section aria-labelledby="knowledge-radar-heading"><h3 id="knowledge-radar-heading">知识点雷达</h3><div id="knowledge-radar" role="group" aria-labelledby="knowledge-radar-heading"><ol id="knowledge-ranking" class="profile-ranking"><li class="empty">正在加载…</li></ol></div></section>
+        </div>
+      </section>
       <div class="dashboard-overview">
         <section class="panel review-rule-panel" aria-labelledby="review-rule-heading">
           <div class="panel-title"><div><p class="section-kicker">为什么这样复习</p><h2 id="review-rule-heading">六阶段复习规则</h2></div><span class="badge">答对才前进</span></div>

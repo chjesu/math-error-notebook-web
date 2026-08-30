@@ -365,6 +365,12 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .plan-steps li.is-done > span { background: #18794e; color: #fff; }
 .plan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .plan-actions .check { margin: 0; color: var(--muted); font-size: 13px; }
+.mode-choice { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.mode-choice legend { padding: 0 5px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.mode-choice label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; }
+.mode-choice input { width: 17px; height: 17px; margin: 0; accent-color: var(--brand); }
+.cause-filter { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin: 14px 0 4px; color: var(--muted); font-size: 13px; font-weight: 650; }
+.cause-filter select { min-width: 210px; padding: 8px 34px 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); color: var(--ink); font: inherit; }
 .error-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .error-card-heading time { color: var(--muted); font-size: 12px; }
 .selection-hint { color: var(--muted); font-size: 12px; }
@@ -526,6 +532,16 @@ textarea:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset
 .pdf-history-item small { color: var(--muted); }
 .pdf-download { flex: 0 0 auto; padding: 7px 14px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink); font-weight: 650; text-decoration: none; }
 .practice-create { display: grid; gap: 12px; margin-top: 8px; padding-top: 20px; border-top: 1px solid var(--line); }
+.learning-profile-panel { margin-bottom: 18px; }
+.profile-note { margin: 8px 0 18px; color: var(--muted); font-size: 13px; }
+.learning-profile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+.learning-profile-grid h3 { margin: 0 0 10px; font-size: 14px; }
+.profile-ranking { display: grid; gap: 10px; padding: 0; margin: 0; list-style: none; }
+.profile-ranking li { display: grid; gap: 5px; }
+.profile-ranking li > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.profile-ranking strong { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.profile-bar { display: block; height: 7px; overflow: hidden; border-radius: 999px; background: var(--brand-soft); }
+.profile-bar i { display: block; width: var(--score, 0%); height: 100%; border-radius: inherit; background: var(--brand); }
 .progress-stats { margin-top: 22px; }
 .settings-panel { max-width: 680px; }
 .settings-session { padding-bottom: 20px; border-bottom: 1px solid var(--line); }
@@ -583,4 +599,7 @@ textarea:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset
   .plan-steps { grid-template-columns: 1fr; }
   .calendar-stats { grid-template-columns: repeat(2, 1fr); }
   .error-card dl > div { grid-template-columns: 1fr; gap: 3px; }
+  .learning-profile-grid { grid-template-columns: 1fr; }
+  .cause-filter { align-items: stretch; flex-direction: column; }
+  .cause-filter select { width: 100%; min-width: 0; }
 }

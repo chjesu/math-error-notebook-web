@@ -49,6 +49,8 @@ class FrontendContractTests(unittest.TestCase):
             self.assertNotIn(text, html)
         for marker in ("generate-review-pdf", "selected-error-count"):
             self.assertIn(f'id="{marker}"', html)
+        self.assertIn('id="error-cause-filter"', html)
+        self.assertIn('name="review-pdf-mode"', html)
         self.assertNotIn('id="today-review-items"', html)
         self.assertNotIn("renderDueReviews", script)
         for contract in ('api("/v1/errors")', 'api("/v1/reviews/today")', 'api("/v1/progress")', 'api("/v1/practice-pdfs"'):
@@ -61,6 +63,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('timeZone: "Asia/Shanghai"', script)
         self.assertIn('pdfResult.items.some', script)
         self.assertIn('"今日已生成"', script)
+        self.assertIn("cause_code", script)
+        self.assertIn("selectedPracticeMode", script)
 
     def test_product_pages_show_deterministic_daily_learning_usage(self) -> None:
         script = (WEB / "app.js").read_text(encoding="utf-8")
@@ -79,12 +83,23 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("各复习阶段", html)
         for marker in ("review-calendar", "calendar-month", "calendar-prev", "calendar-next", "calendar-summary", "calendar-stats", "calendar-filters", "calendar-day-detail", "calendar-day-items", "refresh-progress"):
             self.assertIn(f'id="{marker}"', html)
+        for marker in ("knowledge-radar", "knowledge-ranking"):
+            self.assertIn(f'id="{marker}"', html)
         self.assertNotIn('id="stage-count-1"', html)
         self.assertIn('function bindProgress()', script)
         self.assertIn('api(`/v1/progress/calendar?month=${monthKey()}`)', script)
         self.assertIn('data-calendar-filter', html)
         self.assertIn('data-calendar-date', script)
         self.assertIn('knowledge_points', script)
+        self.assertIn('api("/v1/progress/profile")', script)
+
+    def test_practice_page_selects_explicit_review_or_self_test_mode(self) -> None:
+        html = (WEB / "practice.html").read_text(encoding="utf-8")
+        script = (WEB / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="practice-mode-review"', html)
+        self.assertIn('id="practice-mode-self-test"', html)
+        self.assertIn('name="practice-mode"', html)
+        self.assertIn("selectedPracticeMode", script)
 
     def test_workbench_is_the_official_deepseek_harness_surface(self) -> None:
         html = (WEB / "index.html").read_text(encoding="utf-8")

@@ -65,6 +65,91 @@ class LearningLoopTests(unittest.TestCase):
         self.store.question_rules[good.question_id] = ("retired", "open", True)
         self.assertEqual(self.store.list_recommendations(user_id=self.user_id, error_id=self.error_id), [])
 
+    def test_error_filter_and_learning_profile_use_standardized_diagnosis(self) -> None:
+        error = self.store.errors[self.error_id]
+        self.store.errors[self.error_id] = ErrorEntry(
+            error.error_id,
+            error.user_id,
+            error.attempt_id,
+            error.question_text,
+            error.answer_text,
+            error.first_error,
+            error.status,
+            error.created_at,
+            json.dumps({
+                "schema": "math-error-diagnosis/v1",
+                "cause_code": "algebra_transform",
+                "cause_evidence": "移项时没有改变符号",
+                "knowledge_points": ["一元一次方程", "等式性质与移项", "一元一次方程"],
+                "correct_solution": "x=2-1=1",
+                "final_answer": "x=1",
+            }, ensure_ascii=False),
+        )
+        invalid_id = "f" * 32
+        self.store.errors[invalid_id] = ErrorEntry(
+            invalid_id,
+            self.user_id,
+            "b" * 32,
+            "无效旧数据",
+            "",
+            "",
+            "open",
+            error.created_at,
+            json.dumps({"schema": "other/v1", "cause_code": "algebra_transform", "knowledge_points": ["伪标签"]}),
+        )
+
+        self.assertEqual(
+            [item.error_id for item in self.store.list_errors(user_id=self.user_id, cause_code="algebra_transform")],
+            [self.error_id],
+        )
+        self.assertEqual(self.store.list_errors(user_id=self.user_id, cause_code="calculation"), [])
+        profile = self.store.learning_profile(user_id=self.user_id)
+        self.assertEqual(profile["diagnosed_error_count"], 1)
+        self.assertEqual(profile["cause_distribution"][0], {
+            "cause_code": "algebra_transform",
+            "label": "代数变形错误",
+            "count": 1,
+            "percent": 100,
+        })
+        self.assertEqual([item["knowledge_point"] for item in profile["knowledge_radar"]], ["一元一次方程", "等式性质与移项"])
+        with self.assertRaisesRegex(ValueError, "invalid cause code"):
+            self.store.list_errors(user_id=self.user_id, cause_code="not-a-cause")
+
+    def test_recommendations_prefer_nearest_upward_difficulty_for_same_context(self) -> None:
+        error = self.store.errors[self.error_id]
+        base = Question("0" * 32, "解方程 x+1=2", "x=1", 10, 2.0, "原题库")
+        self.store.add_question(base)
+        self.store.errors[self.error_id] = ErrorEntry(
+            error.error_id,
+            error.user_id,
+            error.attempt_id,
+            error.question_text,
+            error.answer_text,
+            error.first_error,
+            error.status,
+            error.created_at,
+            json.dumps({
+                "schema": "math-error-diagnosis/v1",
+                "cause_code": "algebra_transform",
+                "cause_evidence": "移项时没有改变符号",
+                "knowledge_points": ["一元一次方程"],
+                "correct_solution": "x=2-1=1",
+                "final_answer": "x=1",
+            }, ensure_ascii=False),
+            base.question_id,
+        )
+        lower = Question("1" * 32, "解方程 x+3=4", "x=1", 10, 1.0, "授权题库")
+        higher = Question("2" * 32, "解方程 x+3=5", "x=2", 10, 3.0, "授权题库")
+        much_higher = Question("3" * 32, "解方程 x+4=7", "x=3", 10, 5.0, "授权题库")
+        for question in (lower, higher, much_higher):
+            self.store.add_question(question)
+
+        items, _ = self.store.assign_recommendations(user_id=self.user_id, error_id=self.error_id, limit=3)
+
+        self.assertEqual([item.question.question_id for item in items], [higher.question_id, much_higher.question_id, lower.question_id])
+        self.assertIn("针对代数变形错误", items[0].reason)
+        self.assertIn("难度 2→3", items[0].reason)
+
     def test_daily_grade_quota_counts_unique_successes_and_keeps_a_started_batch(self) -> None:
         now = datetime(2026, 8, 29, 4, tzinfo=timezone.utc)
         first = [f"{index:032x}" for index in range(19)]
@@ -152,8 +237,9 @@ class LearningLoopTests(unittest.TestCase):
             self.assertTrue(filename.endswith(".pdf"))
             self.assertTrue(content.startswith(b"%PDF-"))
             self.assertFalse(job.checkpoint["include_answers"])
+            self.assertEqual(job.checkpoint["mode"], "self_test")
             with self.assertRaisesRegex(RuntimeError, "conflict"):
-                service.create_practice_pdf(user_id=self.user_id, error_ids=[self.error_id], idempotency_key="practice-0001", include_answers=True)
+                service.create_practice_pdf(user_id=self.user_id, error_ids=[self.error_id], idempotency_key="practice-0001", mode="review")
             with self.assertRaises(LookupError):
                 service.download_practice_pdf(user_id="b" * 32, job_id=job.job_id)
 

@@ -12,6 +12,7 @@ from typing import Any, Protocol
 import uuid
 
 from .learning import (
+    CAUSE_LABELS,
     DAILY_GRADE_LIMIT,
     DAILY_RECOMMENDATION_LIMIT,
     Question,
@@ -21,7 +22,9 @@ from .learning import (
     build_review_calendar,
     calendar_month_range,
     cross_validate_reference,
+    diagnosis_from_evidence,
     learning_day,
+    learning_profile_payload,
     learning_usage_payload,
     next_review,
     question_anchor,
@@ -32,6 +35,7 @@ from .learning import (
 )
 from .mysql_intake_batch import MySqlIntakeBatchRepository
 from .intake_batch import BatchClaim
+from .practice_pdf import practice_mode
 
 
 class Cursor(Protocol):
@@ -1163,11 +1167,22 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
-    def list_errors(self, *, user_id: str) -> list[ErrorEntry]:
+    def list_errors(self, *, user_id: str, cause_code: str | None = None) -> list[ErrorEntry]:
+        if cause_code is not None and cause_code not in CAUSE_LABELS:
+            raise ValueError("invalid cause code")
         connection = self._connect()
         cursor = connection.cursor()
         try:
-            cursor.execute("SELECT e.id,e.attempt_id,e.question_text,e.answer_text,e.first_error,e.status,e.created_at,c.evidence_text,e.question_id FROM error_notebook_entries e JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id WHERE e.user_id=%s AND e.status<>'removed' ORDER BY e.created_at DESC", (user_id,))
+            if cause_code is None:
+                cursor.execute("SELECT e.id,e.attempt_id,e.question_text,e.answer_text,e.first_error,e.status,e.created_at,c.evidence_text,e.question_id FROM error_notebook_entries e JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id WHERE e.user_id=%s AND e.status<>'removed' ORDER BY e.created_at DESC", (user_id,))
+            else:
+                cursor.execute(
+                    "SELECT e.id,e.attempt_id,e.question_text,e.answer_text,e.first_error,e.status,e.created_at,c.evidence_text,e.question_id "
+                    "FROM error_notebook_entries e JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id "
+                    "JOIN v_error_learning_facts f ON f.error_id=e.id AND f.user_id=e.user_id AND f.cause_code=%s "
+                    "WHERE e.user_id=%s AND e.status<>'removed' ORDER BY e.created_at DESC",
+                    (cause_code, user_id),
+                )
             return [ErrorEntry(str(row[0]), user_id, str(row[1]), str(row[2]), str(row[3]), row[4], str(row[5]), row[6].replace(tzinfo=timezone.utc), row[7], str(row[8]) if row[8] else None) for row in cursor.fetchall()]
         finally:
             cursor.close()
@@ -1232,21 +1247,35 @@ class MySqlDomainStore:
         connection = self._connect()
         cursor = connection.cursor()
         try:
+            base_difficulty = None
+            if error.question_id:
+                cursor.execute("SELECT difficulty FROM questions WHERE id=%s", (error.question_id,))
+                base_row = cursor.fetchone()
+                base_difficulty = float(base_row[0]) if base_row and base_row[0] is not None else None
             cursor.execute(
                 "SELECT q.id,v.stem_text,v.answer_text,q.grade,q.difficulty,s.title "
                 "FROM questions q JOIN question_sources s ON s.id=q.source_id "
                 "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
                 "WHERE q.status='verified' AND s.license_status IN ('open','user_authorized') "
                 "AND EXISTS (SELECT 1 FROM question_verifications x WHERE x.question_version_id=v.id AND x.verdict='verified') "
+                "AND q.id<>COALESCE(%s,'') "
                 "AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.user_id=%s AND a.question_id=q.id) "
                 "AND NOT EXISTS (SELECT 1 FROM recommendations r WHERE r.user_id=%s AND r.error_id=%s AND r.question_id=q.id) LIMIT 200",
-                (user_id, user_id, error_id),
+                (error.question_id, user_id, user_id, error_id),
             )
             candidates = [Question(str(row[0]), str(row[1]), row[2], int(row[3]) if row[3] is not None else None, float(row[4]) if row[4] is not None else None, str(row[5])) for row in cursor.fetchall()]
         finally:
             cursor.close()
             connection.close()
-        ranked = rank_questions(error.question_text, candidates, limit)
+        diagnosis = diagnosis_from_evidence(error.evidence)
+        cause_code = diagnosis.get("cause_code")
+        ranked = rank_questions(
+            error.question_text,
+            candidates,
+            limit,
+            cause_code=cause_code if isinstance(cause_code, str) else None,
+            base_difficulty=base_difficulty,
+        )
         if ranked:
             now = _utcnow()
             day = learning_day()
@@ -1263,13 +1292,15 @@ class MySqlDomainStore:
                     connection.commit()
                     items = self.list_recommendations(user_id=user_id, error_id=error_id)
                     return items[:limit], True
-                for question, reason in ranked[: DAILY_RECOMMENDATION_LIMIT - used]:
+                cursor.execute("SELECT COALESCE(MAX(recommendation_rank),0) FROM recommendations WHERE user_id=%s AND error_id=%s", (user_id, error_id))
+                next_rank = int((cursor.fetchone() or (0,))[0]) + 1
+                for rank, (question, reason) in enumerate(ranked[: DAILY_RECOMMENDATION_LIMIT - used], next_rank):
                     recommendation_id = uuid.uuid4().hex
                     resource_id = hashlib.sha256(f"{error_id}:{question.question_id}".encode("ascii")).hexdigest()
                     cursor.execute(
-                        "INSERT INTO recommendations (id,user_id,error_id,question_id,reason,status,created_at) "
-                        "VALUES (%s,%s,%s,%s,%s,'assigned',%s)",
-                        (recommendation_id, user_id, error_id, question.question_id, reason, now),
+                        "INSERT INTO recommendations (id,user_id,error_id,question_id,reason,status,recommendation_rank,created_at) "
+                        "VALUES (%s,%s,%s,%s,%s,'assigned',%s,%s)",
+                        (recommendation_id, user_id, error_id, question.question_id, reason, rank, now),
                     )
                     cursor.execute(
                         "INSERT INTO daily_learning_usage (user_id,usage_date,kind,resource_id,status,created_at,updated_at) VALUES (%s,%s,'recommendation',%s,'counted',%s,%s)",
@@ -1292,17 +1323,17 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             cursor.execute(
-                "SELECT r.id,r.reason,r.status,q.id,v.stem_text,v.answer_text,q.grade,q.difficulty,s.title "
+                "SELECT r.id,r.reason,r.status,q.id,v.stem_text,v.answer_text,q.grade,q.difficulty,s.title,r.recommendation_rank "
                 "FROM recommendations r JOIN questions q ON q.id=r.question_id "
                 "JOIN question_sources s ON s.id=q.source_id "
                 "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
                 "WHERE r.user_id=%s AND r.error_id=%s AND r.status IN ('assigned','completed') "
                 "AND q.status='verified' AND s.license_status IN ('open','user_authorized') "
                 "AND EXISTS (SELECT 1 FROM question_verifications x WHERE x.question_version_id=v.id AND x.verdict='verified') "
-                "ORDER BY r.created_at,r.id",
+                "ORDER BY r.recommendation_rank,r.created_at,r.id",
                 (user_id, error_id),
             )
-            return [Recommendation(str(row[0]), user_id, error_id, Question(str(row[3]), str(row[4]), row[5], int(row[6]) if row[6] is not None else None, float(row[7]) if row[7] is not None else None, str(row[8])), str(row[1]), str(row[2])) for row in cursor.fetchall()]
+            return [Recommendation(str(row[0]), user_id, error_id, Question(str(row[3]), str(row[4]), row[5], int(row[6]) if row[6] is not None else None, float(row[7]) if row[7] is not None else None, str(row[8])), str(row[1]), str(row[2]), int(row[9])) for row in cursor.fetchall()]
         finally:
             cursor.close()
             connection.close()
@@ -1410,6 +1441,25 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def learning_profile(self, *, user_id: str) -> dict[str, object]:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT COUNT(*) FROM error_notebook_entries WHERE user_id=%s AND status<>'removed'", (user_id,))
+            total = int((cursor.fetchone() or (0,))[0])
+            cursor.execute("SELECT cause_code,COUNT(*) FROM v_error_learning_facts WHERE user_id=%s GROUP BY cause_code", (user_id,))
+            causes = {str(code): int(count) for code, count in cursor.fetchall()}
+            cursor.execute(
+                "SELECT knowledge_point,COUNT(DISTINCT error_id) AS error_count FROM v_error_knowledge_facts "
+                "WHERE user_id=%s GROUP BY knowledge_point ORDER BY error_count DESC,knowledge_point LIMIT 6",
+                (user_id,),
+            )
+            knowledge = {str(point): int(count) for point, count in cursor.fetchall()}
+            return learning_profile_payload(total, causes, knowledge)
+        finally:
+            cursor.close()
+            connection.close()
+
     def review_calendar(self, *, user_id: str, month: str, now: datetime | None = None) -> dict[str, object]:
         start, end = calendar_month_range(month)
         start_db, end_db = start.replace(tzinfo=None), end.replace(tzinfo=None)
@@ -1484,7 +1534,25 @@ class MySqlDomainStore:
             error = self.get_error(user_id=user_id, error_id=error_id)
             if not error:
                 raise LookupError("error not found")
-            items.append({"kind": "original", "error_id": error_id, "question_id": None, "stem_text": error.question_text, "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "错题回顾"})
+            diagnosis = diagnosis_from_evidence(error.evidence)
+            cause_code = diagnosis.get("cause_code")
+            items.append({
+                "kind": "original",
+                "error_id": error_id,
+                "question_id": error.question_id,
+                "stem_text": error.question_text,
+                "answer_text": error.answer_text,
+                "first_error": error.first_error,
+                "cause_label": CAUSE_LABELS.get(cause_code, "待整理") if isinstance(cause_code, str) else "待整理",
+                "cause_evidence": diagnosis.get("cause_evidence"),
+                "knowledge_points": diagnosis.get("knowledge_points") if isinstance(diagnosis.get("knowledge_points"), list) else [],
+                "correct_solution": diagnosis.get("correct_solution"),
+                "final_answer": diagnosis.get("final_answer"),
+                "prevention_cue": diagnosis.get("prevention_cue"),
+                "difficulty": None,
+                "source_title": "个人错题本",
+                "reason": "错题回顾",
+            })
             recommendations = self.list_recommendations(user_id=user_id, error_id=error_id)
             if not recommendations:
                 gaps += 1
@@ -1496,29 +1564,31 @@ class MySqlDomainStore:
                 items.append({"kind": "recommendation", "error_id": error_id, "question_id": question.question_id, "stem_text": question.stem_text, "answer_text": question.answer_text, "difficulty": question.difficulty, "source_title": question.source_title, "reason": recommendation.reason})
         return items, gaps
 
-    def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool) -> Job:
+    def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, mode: str) -> Job:
         key = _required(idempotency_key, "idempotency_key")
         if not error_ids:
             raise ValueError("error_ids is required")
         connection = self._connect()
         cursor = connection.cursor()
         now = _utcnow()
+        resolved_mode = practice_mode(mode, None)
         try:
             connection.begin()
             placeholders = ",".join(["%s"] * len(error_ids))
             cursor.execute(f"SELECT COUNT(*) FROM error_notebook_entries WHERE user_id=%s AND id IN ({placeholders}) AND status<>'removed'", (user_id, *error_ids))
             if int((cursor.fetchone() or (0,))[0]) != len(set(error_ids)):
                 raise LookupError("error not found")
-            digest = hashlib.sha256(json.dumps([sorted(set(error_ids)), include_answers], separators=(",", ":")).encode("ascii")).hexdigest()
+            digest = hashlib.sha256(json.dumps([sorted(set(error_ids)), resolved_mode], separators=(",", ":")).encode("ascii")).hexdigest()
+            legacy_digest = hashlib.sha256(json.dumps([sorted(set(error_ids)), resolved_mode == "review"], separators=(",", ":")).encode("ascii")).hexdigest()
             proposed = uuid.uuid4().hex
             cursor.execute(
                 "INSERT INTO web_jobs (id,user_id,job_type,resource_type,resource_id,idempotency_key,input_sha256,status,checkpoint_json,created_at,updated_at) "
                 "VALUES (%s,%s,'practice_pdf','error',%s,%s,%s,'queued',%s,%s,%s) ON DUPLICATE KEY UPDATE updated_at=updated_at",
-                (proposed, user_id, error_ids[0], key, digest, json.dumps({"error_ids": error_ids, "include_answers": include_answers}), now, now),
+                (proposed, user_id, error_ids[0], key, digest, json.dumps({"error_ids": error_ids, "mode": resolved_mode, "include_answers": resolved_mode == "review"}), now, now),
             )
             cursor.execute("SELECT id,resource_id,status,checkpoint_json,last_error_code,input_sha256 FROM web_jobs WHERE user_id=%s AND job_type='practice_pdf' AND idempotency_key=%s", (user_id, key))
             row = cursor.fetchone()
-            if str(row[5]) != digest:
+            if str(row[5]) not in {digest, legacy_digest}:
                 raise RuntimeError("conflict")
             connection.commit()
             return Job(str(row[0]), user_id, "practice_pdf", str(row[1]), str(row[2]), self._json(row[3]), row[4])
@@ -1529,8 +1599,9 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
-    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool) -> Job:
-        checkpoint = {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers}
+    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, mode: str) -> Job:
+        resolved_mode = practice_mode(mode, None)
+        checkpoint = {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "mode": resolved_mode, "include_answers": resolved_mode == "review"}
         connection = self._connect()
         cursor = connection.cursor()
         now = _utcnow()
@@ -1565,14 +1636,21 @@ class MySqlDomainStore:
             for job_id, checkpoint_json, updated_at, original_name, byte_size in cursor.fetchall():
                 checkpoint = self._json(checkpoint_json) or {}
                 filename = checkpoint.get("filename") if isinstance(checkpoint.get("filename"), str) else original_name
+                mode = checkpoint.get("mode")
+                if mode not in {"review", "self_test"}:
+                    mode = "review" if bool(checkpoint.get("include_answers", False)) else "self_test"
+                source = checkpoint.get("source")
+                if source not in {"generated", "desktop_skill"}:
+                    source = "generated"
                 items.append({
                     "task_id": str(job_id),
                     "filename": str(filename),
                     "byte_size": int(byte_size),
                     "generated_at": updated_at.replace(tzinfo=timezone.utc).isoformat(),
                     "question_count": int(checkpoint.get("question_count", 0)),
-                    "include_answers": bool(checkpoint.get("include_answers", False)),
-                    "source": str(checkpoint.get("source", "generated")),
+                    "include_answers": mode == "review",
+                    "mode": mode,
+                    "source": source,
                 })
             return items
         finally:

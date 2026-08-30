@@ -62,6 +62,20 @@ class DomainContractTests(unittest.TestCase):
         self.assertIn("create table if not exists review_attempts", learning_sql)
         self.assertIn("unique key uq_review_attempts_request (user_id, idempotency_key)", learning_sql)
 
+    def test_learning_profile_views_are_read_only_facts_not_authorization(self) -> None:
+        sql = (Path(__file__).resolve().parents[1] / "services" / "web_domain" / "migrations" / "0013_learning_profile_views.sql").read_text(encoding="utf-8").lower()
+        self.assertIn("sql security invoker view v_error_learning_facts", sql)
+        self.assertIn("sql security invoker view v_error_knowledge_facts", sql)
+        self.assertIn("json_table", sql)
+        self.assertIn("information_schema.columns", sql)
+        self.assertIn("prepare phase5_rank_statement", sql)
+        self.assertIn("math-error-diagnosis/v1", sql)
+        self.assertIn("from v_error_learning_facts facts", sql)
+        rollback = (Path(__file__).resolve().parents[1] / "services" / "web_domain" / "migrations" / "0013_learning_profile_views.rollback.sql").read_text(encoding="utf-8").lower()
+        self.assertIn("drop view if exists v_error_knowledge_facts", rollback)
+        self.assertIn("information_schema.columns", rollback)
+        self.assertIn("prepare phase5_rank_statement", rollback)
+
     def test_personal_reads_match_id_and_server_user(self) -> None:
         connection = FakeConnection()
         store = MySqlDomainStore(lambda: connection)
@@ -112,11 +126,26 @@ class DomainContractTests(unittest.TestCase):
         self.assertIn("WHERE j.user_id=%s", query)
         self.assertEqual(args, ("a" * 32,))
 
+    def test_error_cause_filter_is_parameterized_and_user_scoped(self) -> None:
+        connection = FakeConnection([[]])
+        items = MySqlDomainStore(lambda: connection).list_errors(user_id="a" * 32, cause_code="algebra_transform")
+        query, args = connection.cursor_instance.executed[-1]
+        self.assertEqual(items, [])
+        self.assertIn("v_error_learning_facts", query)
+        self.assertIn("e.user_id=%s", query)
+        self.assertEqual(args, ("algebra_transform", "a" * 32))
+
     def test_practice_pdf_history_uses_imported_filename(self) -> None:
         checkpoint = '{"file_id":"file","filename":"历史练习.pdf","question_count":0,"source":"desktop_skill"}'
         connection = FakeConnection([[("j" * 32, checkpoint, datetime(2026, 8, 29), "stored.pdf", 12)]])
         item = MySqlDomainStore(lambda: connection).list_practice_pdfs(user_id="a" * 32)[0]
         self.assertEqual((item["filename"], item["source"]), ("历史练习.pdf", "desktop_skill"))
+
+    def test_practice_pdf_history_normalizes_unknown_source(self) -> None:
+        checkpoint = '{"file_id":"file","filename":"历史练习.pdf","question_count":0,"source":"unknown"}'
+        connection = FakeConnection([[("j" * 32, checkpoint, datetime(2026, 8, 29), "stored.pdf", 12)]])
+        item = MySqlDomainStore(lambda: connection).list_practice_pdfs(user_id="a" * 32)[0]
+        self.assertEqual(item["source"], "generated")
 
     def test_mysql_commit_rejects_correct_candidate(self) -> None:
         row = ("a" * 32, 1, "correct", None, "pending", "题目", "答案", None)

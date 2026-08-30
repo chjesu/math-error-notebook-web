@@ -26,6 +26,19 @@ _SUPERSCRIPTS = str.maketrans("0123456789+-=()n", "⁰¹²³⁴⁵⁶⁷⁸⁹�
 _SUBSCRIPTS = str.maketrans("0123456789+-=()aeoxn", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₒₓₙ")
 
 
+def practice_mode(mode: str | None, include_answers: bool | None) -> str:
+    if mode is not None and mode not in {"review", "self_test"}:
+        raise ValueError("invalid practice mode")
+    if include_answers is not None and not isinstance(include_answers, bool):
+        raise ValueError("invalid include_answers")
+    legacy_mode = None
+    if include_answers is not None:
+        legacy_mode = "review" if include_answers else "self_test"
+    if mode is not None and legacy_mode is not None and mode != legacy_mode:
+        raise ValueError("conflicting practice mode")
+    return mode or legacy_mode or "self_test"
+
+
 def _replace_math_args(value: str) -> str:
     """Convert common LaTeX commands to readable Unicode math text."""
     replacements = {
@@ -162,9 +175,17 @@ def _formatted_text(value: Any, font_size: float = 10.5) -> str:
     return "".join(pieces)
 
 
-def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, logo_path: Path | None = None) -> bytes:
+def build_practice_pdf(
+    items: list[dict[str, Any]],
+    *,
+    mode: str | None = None,
+    include_answers: bool | None = None,
+    logo_path: Path | None = None,
+) -> bytes:
     if not items:
         raise ValueError("practice items are required")
+    resolved_mode = practice_mode(mode, include_answers)
+    is_review = resolved_mode == "review"
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER
     from reportlab.lib.pagesizes import A4
@@ -172,7 +193,7 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, lo
     from reportlab.lib.units import mm
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-    from reportlab.platypus import Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
     buffer = BytesIO()
@@ -182,37 +203,68 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, lo
     heading = ParagraphStyle("HeadingCN", parent=styles["Heading2"], fontName="STSong-Light", fontSize=13, leading=19, textColor=colors.HexColor("#3157d5"), spaceBefore=8, spaceAfter=7)
     body = ParagraphStyle("BodyCN", parent=styles["BodyText"], fontName="STSong-Light", fontSize=10.5, leading=18, textColor=colors.HexColor("#172033"), wordWrap="CJK")
     meta = ParagraphStyle("MetaCN", parent=body, fontSize=8.5, leading=14, textColor=colors.HexColor("#647087"))
+
+    def answer_box() -> Table:
+        box = Table([[Paragraph("作答区<br/><br/><br/><br/>", meta)]], colWidths=[174 * mm], rowHeights=[32 * mm])
+        box.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#b7c0ce")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fafbfc")),
+        ]))
+        return box
+
     story: list[Any] = []
     if logo_path and logo_path.is_file():
         logo = Image(str(logo_path), width=13 * mm, height=13 * mm)
-        header = Table([[logo, Paragraph("李兆霖数学错题本<br/><font size='8'>今日复习练习</font>", body)]], colWidths=[17 * mm, 80 * mm])
+        subtitle = "复习卷（含解析）" if is_review else "巩固自测卷"
+        header = Table([[logo, Paragraph(f"李兆霖数学错题本<br/><font size='8'>{subtitle}</font>", body)]], colWidths=[17 * mm, 80 * mm])
         header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
         story.extend([header, Spacer(1, 5 * mm)])
-    story.extend([Paragraph("错题复习练习", title), Spacer(1, 5 * mm)])
+    document_title = "复习卷（含解析）" if is_review else "巩固自测卷"
+    story.extend([Paragraph(document_title, title), Spacer(1, 5 * mm)])
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in items:
         groups[str(item["error_id"])].append(item)
     for group_no, (error_id, group) in enumerate(groups.items(), 1):
         original = next(item for item in group if item["kind"] == "original")
-        story.append(KeepTogether([
-            Paragraph(f"{group_no}. 错题编号 {escape(error_id[:8])}", heading),
-            Paragraph("错题回顾", meta),
+        story.extend([
+            Paragraph(f"{group_no}. 原错题", heading),
             Paragraph(_text(original["stem_text"]), body),
-            Spacer(1, 5 * mm),
-        ]))
+        ])
+        if is_review:
+            knowledge = "、".join(str(item) for item in original.get("knowledge_points", []) if str(item).strip()) or "待整理"
+            story.extend([
+                Spacer(1, 2 * mm),
+                Paragraph(
+                    "<b>错因：</b>" + escape(str(original.get("cause_label") or "待整理"))
+                    + "<br/><b>判断依据：</b>" + escape(str(original.get("cause_evidence") or original.get("first_error") or "待整理"))
+                    + "<br/><b>知识点：</b>" + escape(knowledge),
+                    meta,
+                ),
+                Paragraph("<b>学生作答：</b>" + _text(original.get("answer_text") or "未填写"), body),
+                Paragraph("<b>正确过程：</b>" + _text(original.get("correct_solution") or "待整理"), body),
+                Paragraph("<b>最终答案：</b>" + _text(original.get("final_answer") or "待整理"), body),
+                Paragraph("<b>防错提示：</b>" + _text(original.get("prevention_cue") or "待整理"), meta),
+                Spacer(1, 5 * mm),
+            ])
+        else:
+            story.extend([Spacer(1, 3 * mm), answer_box(), Spacer(1, 5 * mm)])
         recommendations = [item for item in group if item["kind"] == "recommendation"]
         if not recommendations:
-            story.append(Paragraph("暂无符合验证与授权要求的推荐题，本次只重做原题。", meta))
+            if is_review:
+                story.append(Paragraph("暂无符合验证与授权要求的推荐题，本次只重做原题。", meta))
         for index, item in enumerate(recommendations, 1):
             difficulty = "未标注" if item.get("difficulty") is None else str(item["difficulty"])
-            story.append(KeepTogether([
-                Paragraph(f"同类型推荐题 {index}", heading),
-                Paragraph(f"题库编号：{escape(str(item['question_id']))}　难度：{escape(difficulty)}<br/>推荐原因：{escape(str(item['reason']))}<br/>来源：{escape(str(item['source_title']))}", meta),
-                Paragraph(_text(item["stem_text"]), body),
-                Spacer(1, 5 * mm),
-            ]))
-    if include_answers:
-        story.extend([PageBreak(), Paragraph("答案", title), Spacer(1, 5 * mm)])
+            story.extend([Paragraph(f"同类型推荐题 {index}", heading)])
+            if is_review:
+                story.append(Paragraph(f"题库编号：{escape(str(item['question_id']))}　难度：{escape(difficulty)}<br/>推荐原因：{escape(str(item['reason']))}<br/>来源：{escape(str(item['source_title']))}", meta))
+            story.append(Paragraph(_text(item["stem_text"]), body))
+            if is_review:
+                story.append(Spacer(1, 5 * mm))
+            else:
+                story.extend([Spacer(1, 3 * mm), answer_box(), Spacer(1, 5 * mm)])
+    if is_review:
+        story.extend([PageBreak(), Paragraph("参考答案", title), Spacer(1, 5 * mm)])
         answer_no = 0
         for item in items:
             if item["kind"] != "recommendation":

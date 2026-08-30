@@ -152,9 +152,13 @@ function renderMath(target) {
 const causeLabels = {
   knowledge_gap: "知识点未掌握", concept_confusion: "概念理解不准确", formula_condition: "公式或定理使用条件遗漏",
   method_choice: "解题思路选择错误", reasoning_gap: "推理或步骤跳跃", algebra_transform: "代数变形错误",
-  calculation: "计算错误", misreading: "审题错误", incomplete_cases: "漏解或分类不完整",
-  expression: "表达或书写不规范", careless: "有直接证据的粗心错误", unclear: "信息不足"
+  calculation: "计算失误", misreading: "审题错误", incomplete_cases: "分类讨论不完整",
+  expression: "表达不规范", careless: "粗心失误", unclear: "原因待确认"
 };
+
+function selectedPracticeMode(name) {
+  return document.querySelector(`input[name="${name}"]:checked`)?.value || "self_test";
+}
 
 async function requireSession() {
   try {
@@ -1183,7 +1187,9 @@ function bindErrors() {
   }
   async function loadDashboard() {
     try {
-      const [errorResult, reviewResult, progressResult, pdfResult] = await Promise.all([api("/v1/errors"), api("/v1/reviews/today"), api("/v1/progress"), api("/v1/practice-pdfs")]);
+      const causeCode = $("#error-cause-filter").value;
+      const errorPath = causeCode ? `/v1/errors?cause_code=${encodeURIComponent(causeCode)}` : "/v1/errors";
+      const [errorResult, reviewResult, progressResult, pdfResult] = await Promise.all([api(errorPath), api("/v1/reviews/today"), api("/v1/progress"), api("/v1/practice-pdfs")]);
       errors = errorResult.items;
       dueReviews = reviewResult.items;
       progress = progressResult;
@@ -1202,6 +1208,10 @@ function bindErrors() {
     }
   }
   $("#refresh-errors").addEventListener("click", loadDashboard);
+  $("#error-cause-filter").addEventListener("change", () => {
+    selectionInitialized = true;
+    loadDashboard();
+  });
   $("#all-errors").addEventListener("change", event => {
     if (event.target.name !== "today-error") return;
     if (event.target.checked && selectedErrorIds.size >= 12) {
@@ -1261,7 +1271,7 @@ function bindErrors() {
     status($("#today-pdf-status"), "正在匹配已验证推荐题并生成 PDF…");
     try {
       await Promise.all(ids.map(id => api(`/v1/errors/${id}/recommendations`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}})));
-      const result = await api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: ids, include_answers: $("#review-pdf-answers").checked}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+      const result = await api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: ids, mode: selectedPracticeMode("review-pdf-mode")}), headers: {"Idempotency-Key": crypto.randomUUID()}});
       pdfReady = true;
       if (result.download_url) {
         const link = document.createElement("a");
@@ -1288,6 +1298,20 @@ function bindProgress() {
   let activeFilter = "all";
   let selectedDate = "";
   const filterLabels = {all: "全部活动", new: "新增错题", due: "待复习", completed: "已完成", correction: "需改错"};
+
+  function profileItem(label, count, score) {
+    const safeScore = Math.max(0, Math.min(100, Number(score) || 0));
+    return `<li><div><span>${escapeHtml(label)}</span><strong>${Number(count) || 0} 道</strong></div><span class="profile-bar" aria-hidden="true"><i style="--score:${safeScore}%"></i></span></li>`;
+  }
+
+  function renderLearningProfile(profile) {
+    const causes = Array.isArray(profile.cause_distribution) ? profile.cause_distribution : [];
+    const knowledge = Array.isArray(profile.knowledge_radar) ? profile.knowledge_radar : [];
+    $("#cause-distribution").innerHTML = causes.length ? causes.map(item => profileItem(item.label, item.count, item.percent)).join("") : '<li class="empty">还没有可归纳的标准错因。</li>';
+    $("#knowledge-ranking").innerHTML = knowledge.length ? knowledge.map(item => profileItem(item.knowledge_point, item.count, item.score)).join("") : '<li class="empty">还没有可归纳的知识点。</li>';
+    $("#profile-sample-state").textContent = profile.sample_sufficient ? `已分析 ${profile.diagnosed_error_count} 道` : `样本 ${profile.diagnosed_error_count || 0} 道`;
+    $("#profile-note").textContent = profile.sample_sufficient ? "条形长度表示当前错题样本内的相对集中程度，不代表考试成绩。" : "至少积累 3 道带完整诊断的错题后，分布会更有参考价值。";
+  }
 
   function monthKey() {
     return `${monthCursor.getFullYear()}-${String(monthCursor.getMonth() + 1).padStart(2, "0")}`;
@@ -1383,7 +1407,12 @@ function bindProgress() {
   async function loadProgress() {
     status($("#progress-status"), "正在读取学习记录…");
     try {
-      calendar = await api(`/v1/progress/calendar?month=${monthKey()}`);
+      const [calendarResult, profile] = await Promise.all([
+        api(`/v1/progress/calendar?month=${monthKey()}`),
+        api("/v1/progress/profile"),
+      ]);
+      calendar = calendarResult;
+      renderLearningProfile(profile);
       renderStats();
       renderCalendar();
       status($("#progress-status"), "数据已更新。");
@@ -1418,7 +1447,8 @@ function bindPractice() {
     return api("/v1/practice-pdfs").then(result => {
       $("#practice-pdf-history").innerHTML = result.items.length ? result.items.map(item => {
         const generated = item.generated_at ? new Date(item.generated_at).toLocaleString("zh-CN") : "已生成";
-        const details = item.source === "desktop_skill" ? `${generated} · Skill 历史文件` : `${generated} · ${item.question_count || 0} 道题${item.include_answers ? " · 含答案" : ""}`;
+        const modeLabel = item.mode === "review" ? "复习卷（含解析）" : "自测卷（留白）";
+        const details = item.source === "desktop_skill" ? `${generated} · Skill 历史文件` : `${generated} · ${item.question_count || 0} 道题 · ${modeLabel}`;
         return `<article class="pdf-history-item"><div><strong>${escapeHtml(item.filename)}</strong><small>${escapeHtml(details)}</small></div><a class="pdf-download" href="${escapeHtml(item.download_url)}" download>下载</a></article>`;
       }).join("") : '<p class="empty">还没有生成过练习 PDF。</p>';
     }).catch(error => { $("#practice-pdf-history").innerHTML = `<p class="status error">${escapeHtml(authError(error))}</p>`; });
@@ -1440,7 +1470,7 @@ function bindPractice() {
     if (!errorIds.length) return;
     button.disabled = true;
     try {
-      const result = await api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: errorIds, include_answers: $("#include-answers").checked}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+      const result = await api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: errorIds, mode: selectedPracticeMode("practice-mode")}), headers: {"Idempotency-Key": crypto.randomUUID()}});
       if (result.download_url) {
         const link = document.createElement("a");
         link.href = result.download_url;

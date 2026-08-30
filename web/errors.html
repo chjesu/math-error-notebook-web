@@ -12,12 +12,13 @@
           <li id="plan-step-correct"><span>3</span><div><strong>完成重做与改错</strong><small id="correction-step-state">待开始</small></div></li>
           <li id="plan-step-done"><span>4</span><div><strong>今日复习完成</strong><small id="completion-step-state">尚未完成</small></div></li>
         </ol>
-        <div class="plan-actions"><button id="generate-review-pdf" type="button" disabled>生成今日复习推荐题 PDF</button><label class="check"><input id="review-pdf-answers" type="checkbox"> 在 PDF 末尾附推荐题答案</label></div>
+        <div class="plan-actions"><button id="generate-review-pdf" type="button" disabled>生成今日复习推荐题 PDF</button><fieldset class="mode-choice"><legend>生成模式</legend><label><input name="review-pdf-mode" type="radio" value="review" checked> 复习卷（含解析）</label><label><input name="review-pdf-mode" type="radio" value="self_test"> 自测卷（留白）</label></fieldset></div>
         <p id="today-pdf-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
       <section class="panel all-errors-panel" aria-labelledby="all-errors-heading">
         <div class="panel-title"><div><p class="section-kicker">题目档案</p><h2 id="all-errors-heading">全部错题</h2></div><span class="selection-hint">勾选后加入今日计划，最多 12 道</span></div>
+        <label class="cause-filter" for="error-cause-filter"><span>按错因筛选</span><select id="error-cause-filter"><option value="">全部错因</option><option value="knowledge_gap">知识点未掌握</option><option value="concept_confusion">概念理解不准确</option><option value="formula_condition">公式或定理使用条件遗漏</option><option value="method_choice">解题思路选择错误</option><option value="reasoning_gap">推理或步骤跳跃</option><option value="algebra_transform">代数变形错误</option><option value="calculation">计算失误</option><option value="misreading">审题错误</option><option value="incomplete_cases">分类讨论不完整</option><option value="expression">表达不规范</option><option value="careless">粗心失误</option><option value="unclear">原因待确认</option></select></label>
         <ul id="all-errors" class="error-list"><li class="empty">正在加载…</li></ul>
       </section>
       <p id="page-status" class="status" role="status" aria-live="polite"></p>
