@@ -31,6 +31,7 @@ from services.web_domain import (
     reference_conflict_resolved,
 )
 from .codex_model import ModelUnavailableError
+from services.web_domain.practice_review import review_locator
 
 
 Receive = Callable[[], Awaitable[dict[str, Any]]]
@@ -988,8 +989,10 @@ class NotebookAsgiApp:
         completed_intakes: set[str] = set()
         try:
             payload = await self._json_body(receive, max_bytes=self.max_upload_bytes * 2)
-            if set(payload) != {"session_id", "attachment", "items"}:
+            if not {"session_id", "attachment", "items"} <= set(payload) or set(payload) - {"session_id", "attachment", "items", "review_mode"}:
                 raise ValueError("invalid Harness processing request")
+            if not isinstance(payload.get("review_mode", False), bool):
+                raise ValueError("invalid review mode")
             session_id = self._harness_session_id(payload)
             user_id = await self._harness_user_id(session_id)
             if user_id is None:
@@ -1021,7 +1024,7 @@ class NotebookAsgiApp:
             for index, item in enumerate(raw_items, 1):
                 if (
                     not isinstance(item, dict)
-                    or set(item) != required
+                    or not required <= set(item) or set(item) - required - {"review"}
                     or item.get("item_no") != index
                     or isinstance(item.get("item_no"), bool)
                 ):
@@ -1030,6 +1033,7 @@ class NotebookAsgiApp:
                 if any(not isinstance(item.get(key), str) for key in string_fields):
                     raise ValueError("invalid Harness result items")
                 confidence = item.get("confidence")
+                review_locator(item.get("review"))
                 if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
                     raise ValueError("invalid Harness confidence")
 
@@ -1103,6 +1107,16 @@ class NotebookAsgiApp:
                     evidence_key="cause_evidence",
                     cross_validation=validation,
                 )
+                context = await self._sync(self.notebook.store.practice_review_context, user_id=user_id, attempt_id=attempt_id)
+                if not context or context.get("status") == "unmatched":
+                    context = await self._sync(
+                        self.notebook.resolve_practice_review, user_id=user_id, question_text=intake.question_text,
+                        locator=item.get("review"), review_mode=bool(context) or payload.get("review_mode", False),
+                    )
+                if context:
+                    diagnosis = self._diagnosis(evidence)
+                    diagnosis["practice_review"] = context
+                    evidence = json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":"))
                 candidate = await self._sync(
                     self.notebook.store.record_grade_candidate,
                     user_id=user_id,
@@ -1117,7 +1131,7 @@ class NotebookAsgiApp:
                     self.notebook.store.finish_grade_usage,
                     user_id=user_id,
                     intake_id=intake.intake_id,
-                    counted=candidate.verdict != "unclear",
+                    counted=candidate.verdict != "unclear" and not (context and context.get("required") is False),
                 )
                 completed_intakes.add(intake.intake_id)
                 if isinstance(validation, dict) and validation.get("status") == "consistent":
@@ -1157,6 +1171,14 @@ class NotebookAsgiApp:
                         "reference_solution": reference.solution_text or "",
                     }
                 results.append(result_item)
+            # Multiple required questions can share one photo. Earlier items
+            # must reflect a group completed by a later item in this same call.
+            for result_item in results:
+                if result_item["receipt_status"] != "review_waiting":
+                    continue
+                candidate = await self._sync(self.notebook.store.get_grade_candidate, user_id=user_id, candidate_id=result_item["candidate_id"])
+                receipt = await self._commit_candidate_receipt(user_id, candidate)
+                result_item.update(receipt_status=receipt["status"], receipt_message=receipt["message"], error_id=str(receipt.get("error_id") or ""))
             usage = await self._sync(self.notebook.store.learning_usage, user_id=user_id)
             await self._json(send, 200, {"results": results, "usage": usage})
         except LookupError:
@@ -1190,7 +1212,7 @@ class NotebookAsgiApp:
             if re.fullmatch(r"[0-9a-f]{32}", candidate_id) is None:
                 raise ValueError("invalid candidate id")
             payload = await self._json_body(receive)
-            if set(payload) != {"session_id", "input_version"}:
+            if not {"session_id", "input_version"} <= set(payload) or set(payload) - {"session_id", "input_version", "review"}:
                 raise ValueError("invalid receipt request")
             session_id = self._harness_session_id(payload)
             user_id = await self._harness_user_id(session_id)
@@ -1205,6 +1227,18 @@ class NotebookAsgiApp:
                 raise LookupError("grade candidate not found")
             if candidate.input_version != int(payload["input_version"]):
                 raise RuntimeError("input_version_changed")
+            if payload.get("review"):
+                locator = review_locator(payload["review"])
+                diagnosis = self._diagnosis(candidate.evidence)
+                context = diagnosis.get("practice_review") or {}
+                if context.get("status") != "unmatched":
+                    raise ValueError("only unmatched review results may be linked")
+                attempt = await self._sync(self.notebook.store.get_attempt, user_id=user_id, attempt_id=candidate.attempt_id)
+                diagnosis["practice_review"] = await self._sync(self.notebook.resolve_practice_review, user_id=user_id,
+                    question_text=attempt.question_text, locator=locator, review_mode=True)
+                candidate = await self._sync(self.notebook.store.record_grade_candidate, user_id=user_id,
+                    attempt_id=candidate.attempt_id, input_version=candidate.input_version, verdict=candidate.verdict,
+                    first_error=candidate.first_error, evidence=json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":")))
             receipt = await self._commit_candidate_receipt(user_id, candidate)
             await self._json(send, 200, {"receipt": receipt})
         except LookupError:
@@ -1496,6 +1530,17 @@ class NotebookAsgiApp:
 
     async def _commit_candidate_receipt(self, user_id: str, candidate: GradeCandidate) -> dict[str, Any]:
         receipt = self._grade_receipt(candidate)
+        if self._diagnosis(candidate.evidence).get("practice_review"):
+            if receipt["reference_status"] == "conflict":
+                receipt["message"] = "复习判题与题库参考答案正在等待语义复核，尚未推进复习阶段，未重复入本。"
+                return receipt
+            try:
+                return receipt | await self._sync(self.notebook.commit_practice_review, user_id=user_id, candidate=candidate)
+            except Exception:
+                # The frozen grade already exists. Report a retryable receipt,
+                # never claim success or ask the student to upload it again.
+                return receipt | {"status": "review_retryable", "review_status": "retryable",
+                    "message": "复习判题结果已保留，但复习记录暂未写入。可直接在会话重试确认，无需重新上传图片。"}
         if candidate.verdict not in {"partial", "incorrect"} or receipt["status"] != "pending":
             return receipt
         entry = await self._sync(

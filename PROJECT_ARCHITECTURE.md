@@ -144,4 +144,10 @@ flowchart LR
 
 ## 本地模拟边界
 
+### PDF 拍照复习闭环
+
+练习 PDF 在 `web_jobs.checkpoint_json.review_manifest` 冻结每道题的原错题、复习任务、阶段、到期时间及必做属性。Harness 图片判题仍复用 intake / attempt / grade candidate 与题库交叉验证；服务器识别到复习归属后不调用新错题入本，而在锁定 PDF 任务及复习任务的同一事务内累计逐题提交并复用 `complete_review` 的阶段转换。全部必做题已提交且无未决题库冲突时才完成一次复习，以实际提交时间安排下一次；幂等回执防止重传和任务 ID 复用导致重复推进。
+
+旧 PDF 通过已拥有文件的哈希、印刷题号与当前阶段进行确定性关联，归属不明/旧任务已变更时只保存判题，不猜测推进。会话可补充定位信息后确认已冻结结果，无需重传图片。实现及本地回滚测试见 `docs/pdf-review-workflow.md`，不新增认证入口或独立复习状态机。
+
 本地模拟复用同一注册状态机、MySQL 适配器、迁移和 ASGI 边界，仅替换短信与 CAPTCHA 外部适配器。localhost 启动器会在验证码申请成功的响应中附加本地测试码，页面明确标记并自动填入；生产装配不会返回该字段。使用 `python -X utf8 -B scripts/local_env.py serve --enable-harness-model --enable-harness-ui` 时，启用固定版 DeepSeek Harness 数学运行时及其原生 Web 界面；不带模型参数时既有产品模型接口稳定返回 `model_unavailable`。官方 Web Host 使用隔离的 `data/runtime/deepseek-harness-web-home`，固定绑定 `127.0.0.1:3080`，由本地启动器随主服务启停；8000 端口的登录外壳不把未登录用户带入工作台。该双端口方案只用于本地测试，不能作为生产反向代理或认证边界。同步 MySQL、文件、PDF 和模型调用通过标准库线程执行，避免阻塞 ASGI 事件循环；上传仍使用有大小上限的本地缓冲，生产必须改为流式 OSS。MySQL 固定绑定 `127.0.0.1:3307`；模拟服务固定绑定 localhost，不能作为生产启动入口。

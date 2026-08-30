@@ -1,0 +1,292 @@
+from __future__ import annotations
+
+import asyncio
+from copy import deepcopy
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+import base64
+import hashlib
+from io import BytesIO
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+import uuid
+
+from PIL import Image
+from pypdf import PdfReader
+
+from services.web_domain import ErrorEntry, GradeCandidate, InMemoryNotebookStore, NotebookService, Question
+from services.web_domain.learning import Recommendation, ReviewTask
+from services.web_domain.notebook import Attempt
+from services.web_domain.practice_review import legacy_manifest, review_locator
+import test_web_app_e2e as api_tests
+
+
+class PracticeReviewTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = InMemoryNotebookStore()
+        self.service = NotebookService(self.store, Path(self.temp.name))
+        self.owner = "a" * 32
+        self.now = datetime(2026, 8, 31, 6, tzinfo=timezone.utc)
+        self.error = ErrorEntry("e" * 32, self.owner, "a1", "已知一次方程 x+5=10，求未知数 x 的值。", "x=1", "移项错误", "open", self.now - timedelta(days=3))
+        self.store.errors[self.error.error_id] = self.error
+        self.task = ReviewTask("t" * 32, self.owner, self.error.error_id, 1, self.now - timedelta(days=2), "ready")
+        self.store.review_tasks[self.task.task_id] = self.task
+        self.store._review_keys[(self.owner, self.error.error_id, 1)] = self.task.task_id
+        self.question = Question("b" * 32, "已知一元二次方程 y 的平方等于九，求 y 的全部实数解。", "y=3或-3", 10, 2, "测试题库")
+        self.store.add_question(self.question)
+        self.store.recommendations["r1"] = Recommendation("r1", self.owner, self.error.error_id, self.question, "同知识点", "assigned")
+
+    def paper(self, *, key="paper", legacy=False):
+        job = self.service.create_practice_pdf(user_id=self.owner, error_ids=[self.error.error_id], idempotency_key=key)
+        if legacy:
+            checkpoint = dict(job.checkpoint)
+            checkpoint.pop("review_manifest")
+            checkpoint.pop("review_job_id")
+            self.store.jobs[job.job_id] = replace(job, checkpoint=checkpoint)
+            job = self.store.jobs[job.job_id]
+        return job
+
+    def candidate(self, item, *, verdict="correct", job=None, context=None):
+        job = job or self.job
+        if context is None:
+            context = self.service.resolve_practice_review(user_id=self.owner, question_text=item["stem_text"], locator={"code": item["code"]})
+        self.assertIsNotNone(context)
+        return GradeCandidate(uuid.uuid4().hex, "attempt", 1, verdict, None, json.dumps({"schema": "math-error-diagnosis/v1", "practice_review": context, "knowledge_points": ["方程"], "cause_evidence": "测试错因"}), "candidate")
+
+    def submit(self, index, verdict="correct", *, now=None):
+        return self.service.commit_practice_review(user_id=self.owner, candidate=self.candidate(self.job.checkpoint["review_manifest"][index], verdict=verdict), now=now or self.now)
+
+    def test_cross_day_split_completion_and_replay(self):
+        self.job = self.paper()
+        first = self.submit(0)
+        self.assertEqual((first["status"], first["completed_question_count"], len(self.store.review_attempts)), ("review_waiting", 1, 0))
+        second = self.submit(1)
+        self.assertEqual(second["status"], "review_completed")
+        self.assertEqual(second["completed_at"], self.now.isoformat())
+        self.assertEqual(datetime.fromisoformat(second["next_due_at"]), self.now + timedelta(days=1))
+        self.assertEqual(second["next_stage"], 2)
+        replay = self.submit(0, now=self.now + timedelta(days=2))
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["completed_at"], second["completed_at"])
+        self.assertEqual((len(self.store.review_attempts), len(self.store.errors)), (1, 1))
+
+    def test_partial_and_wrong_aggregate_and_never_duplicate(self):
+        for verdict, result in [("incorrect", "wrong"), ("partial", "partial")]:
+            with self.subTest(verdict=verdict):
+                self.setUp()
+                self.job = self.paper()
+                self.submit(0, verdict)
+                receipt = self.submit(1)
+                self.assertEqual((receipt["status"], receipt["review_result"], receipt["next_stage"]), ("review_needs_correction", result, 1))
+                self.assertEqual(len(self.store.errors), 1)
+
+    def test_reference_only_and_final_stage_mastery(self):
+        self.store.review_tasks[self.task.task_id] = replace(self.task, stage=6)
+        self.job = self.paper()
+        self.assertFalse(self.job.checkpoint["review_manifest"][0]["required"])
+        self.assertEqual(self.submit(0)["status"], "review_reference_only")
+        result = self.submit(1)
+        self.assertEqual((result["status"], result["next_stage"]), ("review_completed", None))
+        self.assertEqual(self.store.errors[self.error.error_id].status, "mastered")
+
+    def test_no_recommendations_falls_back_to_required_original(self):
+        self.store.recommendations.clear()
+        self.store.review_tasks[self.task.task_id] = replace(self.task, stage=3)
+        self.job = self.paper()
+        self.assertTrue(self.job.checkpoint["review_manifest"][0]["required"])
+        self.assertEqual(self.submit(0)["status"], "review_completed")
+
+    def test_recycled_task_due_time_and_removed_error_are_protected(self):
+        self.job = self.paper()
+        self.store.review_tasks[self.task.task_id] = replace(self.task, due_at=self.task.due_at + timedelta(days=1))
+        self.assertEqual(self.submit(0)["status"], "review_stale")
+        self.store.review_tasks[self.task.task_id] = self.task
+        self.store.set_error_status(user_id=self.owner, error_id=self.error.error_id, status="removed")
+        self.assertEqual(self.submit(0)["status"], "review_stale")
+        self.assertFalse(self.store.review_attempts)
+
+    def test_early_or_unclear_never_advances(self):
+        self.store.review_tasks[self.task.task_id] = replace(self.task, due_at=self.now + timedelta(days=1))
+        self.job = self.paper()
+        self.assertEqual(self.submit(0, "unclear")["status"], "needs_review")
+        self.assertFalse(self.store.jobs[self.job.job_id].checkpoint.get("review_submissions"))
+        self.submit(0)
+        self.assertEqual(self.submit(1)["status"], "review_waiting")
+        self.assertFalse(self.store.review_attempts)
+        self.assertEqual(self.submit(1, now=self.now + timedelta(days=1))["status"], "review_completed")
+
+    def test_cross_account_and_wrong_code_dont_match(self):
+        self.job = self.paper()
+        item = self.job.checkpoint["review_manifest"][0]
+        result = self.service.resolve_practice_review(user_id="other", question_text=item["stem_text"], locator={"code": item["code"]})
+        self.assertEqual(result["status"], "unmatched")
+        candidate = self.candidate(item)
+        result = self.service.commit_practice_review(user_id="other", candidate=candidate)
+        self.assertEqual(result["status"], "review_unmatched")
+        result = self.service.resolve_practice_review(user_id=self.owner, question_text=self.question.stem_text, locator={"code": item["code"]})
+        self.assertEqual(result["status"], "unmatched")
+
+    def test_transaction_failure_rolls_back_completion_and_submissions(self):
+        self.job = self.paper()
+        self.submit(0)
+        old = deepcopy(self.store.jobs[self.job.job_id].checkpoint)
+        real = self.store.complete_review
+        def fail(**kwargs):
+            real(**kwargs)
+            raise RuntimeError("simulated storage failure")
+        with patch.object(self.store, "complete_review", side_effect=fail):
+            with self.assertRaises(RuntimeError):
+                self.submit(1)
+        self.assertEqual(self.store.jobs[self.job.job_id].checkpoint, old)
+        self.assertFalse(self.store.review_attempts)
+        self.assertEqual(self.store.review_tasks[self.task.task_id], self.task)
+        self.assertEqual(self.submit(1)["status"], "review_completed")
+
+    def test_old_pdf_is_read_and_matched_without_changing_generation_date(self):
+        self.job = self.paper(legacy=True)
+        created = self.job.checkpoint["generated_at"]
+        context = self.service.resolve_practice_review(user_id=self.owner, question_text=self.error.question_text,
+            locator={"pdf_id": self.job.job_id, "error_id": self.error.error_id[:8], "stage": 1, "kind": "original"})
+        self.assertEqual(context["status"], "matched")
+        self.assertEqual(self.store.jobs[self.job.job_id].checkpoint["generated_at"], created)
+        self.assertEqual(len(self.store.jobs[self.job.job_id].checkpoint["review_manifest"]), 2)
+
+    def test_legacy_paper_cannot_attach_to_recycled_stage_or_deleted_history(self):
+        self.job = self.paper(legacy=True)
+        generated = datetime.fromisoformat(self.job.checkpoint["generated_at"])
+        self.store.review_tasks[self.task.task_id] = replace(self.task, due_at=generated + timedelta(days=1))
+        context = self.service.resolve_practice_review(user_id=self.owner, question_text=self.error.question_text, review_mode=True)
+        self.assertEqual(context["status"], "unmatched")
+        del self.store.jobs[self.job.job_id]
+        self.assertEqual(self.service.resolve_practice_review(user_id=self.owner, question_text=self.error.question_text, review_mode=True)["status"], "unmatched")
+
+    def test_pdf_code_is_printed_and_legacy_skill_identifiers_map(self):
+        self.job = self.paper()
+        _, content = self.service.download_practice_pdf(user_id=self.owner, job_id=self.job.job_id)
+        text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(content)).pages)
+        for item in self.job.checkpoint["review_manifest"]:
+            self.assertIn(item["code"], text)
+        source = "ERR-20260829-abcdef12"
+        migrated = hashlib.sha256(f"desktop-error:error:{self.owner}:{source}".encode()).hexdigest()[:32]
+        error = replace(self.error, error_id=migrated)
+        task = replace(self.task, error_id=migrated)
+        result = legacy_manifest(f"错题编号 {source}（第 1 阶段 · 需重做）", self.job.job_id, [error], [task], {}, self.now)
+        self.assertEqual(result[0]["error_id"], migrated)
+
+    def test_locators_are_bounded_and_normal_questions_stay_new(self):
+        for locator in [{"user_id": "other"}, {"stage": True}, {"stage": 7}, {"code": "x" * 181}]:
+            with self.assertRaises(ValueError):
+                review_locator(locator)
+        self.assertIsNone(self.service.resolve_practice_review(user_id=self.owner, question_text=self.error.question_text))
+
+    def test_diagram_paths_do_not_prevent_match_or_bank_cross_check(self):
+        decorated = replace(self.question, stem_text=self.question.stem_text + " ![原题图](bank-assets/" + "1" * 64 + ".png)")
+        self.store.add_question(decorated)
+        self.store.recommendations["r1"] = replace(self.store.recommendations["r1"], question=decorated)
+        self.job = self.paper()
+        context = self.service.resolve_practice_review(user_id=self.owner, question_text=self.question.stem_text,
+            locator={"code": self.job.checkpoint["review_manifest"][1]["code"]})
+        self.assertEqual(context["status"], "matched")
+        self.assertIsNotNone(self.store.find_verified_question(question_text=self.question.stem_text))
+
+    def test_old_answer_appendix_is_not_counted_as_more_required_questions(self):
+        text = f"错题编号 {self.error.error_id[:8]}（第 1 阶段 · 需重做）\n题库编号 {self.question.question_id}\n答案\n题库编号 {self.question.question_id}\n"
+        items = legacy_manifest(text, "f" * 32, [self.error], [self.task], {self.error.error_id: list(self.store.recommendations.values())}, self.now)
+        self.assertEqual(len(items), 2)
+
+
+class PracticeReviewApiTests(unittest.TestCase):
+    def setUp(self):
+        self.client = api_tests.NotebookE2ETests()
+        self.client.setUp()
+        self.addCleanup(self.client.tearDown)
+        self.fixture = PracticeReviewTests()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.client.app.notebook = self.fixture.service
+        self.fixture.store.bind_model_session(user_id=self.fixture.owner, session_id="review-test")
+        self.job = self.fixture.paper()
+
+    def process(self, index=0, *, code=True, conflict=False, color="white"):
+        item = self.job.checkpoint["review_manifest"][index]
+        buffer = BytesIO()
+        Image.new("RGB", (12, 12), color).save(buffer, format="PNG")
+        content = buffer.getvalue()
+        row = {"item_no": 1, "question_text": item["stem_text"], "answer_text": "x=5", "verdict": "incorrect" if conflict else "correct",
+            "first_error": "计算错误" if conflict else "", "cause_code": "calculation" if conflict else "", "cause_evidence": "计算时漏掉一步" if conflict else "",
+            "knowledge_points": ["方程"], "correct_solution": "移项并求解得到正确答案", "final_answer": "y=100" if conflict else "y=3或-3", "prevention_cue": "检查计算", "confidence": 0.98,
+            "review": {"code": item["code"] if code else "invalid-code"}}
+        payload = {"session_id": "review-test", "review_mode": True, "attachment": {"attachment_id": "sha256:" + hashlib.sha256(content).hexdigest(), "name": "review.png", "media_type": "image/png", "data": base64.b64encode(content).decode()}, "items": [row]}
+        self.last_payload = payload
+        result = self.call("/v1/internal/harness/intakes/process", payload)
+        self.assertEqual(result[0], 200, result)
+        return result[2]["results"][0]
+
+    def call(self, path, payload):
+        return self.client.call(path, method="POST", payload=payload, origin=None,
+            client=("127.0.0.1", 10001), extra_headers={"authorization": "Bearer test-internal-token"})
+
+    def test_internal_process_waits_then_advances_without_new_errors(self):
+        self.assertEqual(self.process()["receipt_status"], "review_waiting")
+        result = self.process(1, color="blue")
+        self.assertEqual(result["receipt_status"], "review_completed")
+        self.assertEqual(len(self.fixture.store.errors), 1)
+        self.assertEqual(len(self.fixture.store.review_attempts), 1)
+        candidate = self.fixture.store.get_grade_candidate(user_id=self.fixture.owner, candidate_id=result["candidate_id"])
+        self.assertIn("方程", json.loads(candidate.evidence)["knowledge_points"])
+
+    def test_one_photo_with_all_required_items_returns_current_group_receipts(self):
+        with patch.object(self.client, "call", return_value=(200, {}, {"results": [{}]})):
+            self.process()
+        payload = self.last_payload
+        row = dict(payload["items"][0])
+        item = self.job.checkpoint["review_manifest"][1]
+        row.update(item_no=2, question_text=item["stem_text"], review={"code": item["code"]})
+        payload["items"].append(row)
+        response = self.call("/v1/internal/harness/intakes/process", payload)
+        self.assertEqual(response[0], 200, response)
+        self.assertEqual([item["receipt_status"] for item in response[2]["results"]], ["review_completed", "review_completed"])
+        self.assertEqual(len(self.fixture.store.review_attempts), 1)
+
+    def test_storage_failure_returns_retryable_receipt_with_frozen_candidate(self):
+        with patch.object(self.fixture.service, "commit_practice_review", side_effect=RuntimeError("storage unavailable")):
+            result = self.process()
+        self.assertEqual(result["receipt_status"], "review_retryable")
+        self.assertTrue(result["candidate_id"])
+        confirmed = self.call(f"/v1/internal/harness/grade-results/{result['candidate_id']}/commit", {"session_id": "review-test", "input_version": 1})
+        self.assertEqual(confirmed[2]["receipt"]["status"], "review_waiting")
+
+    def test_unmatched_result_can_be_linked_by_text_without_image(self):
+        result = self.process(code=False)
+        self.assertEqual(result["receipt_status"], "review_unmatched")
+        linked = self.call(f"/v1/internal/harness/grade-results/{result['candidate_id']}/commit", {
+            "session_id": "review-test", "input_version": result["input_version"],
+            "review": {"code": self.job.checkpoint["review_manifest"][0]["code"]}})
+        self.assertEqual((linked[0], linked[2]["receipt"]["status"]), (200, "review_waiting"))
+        self.assertEqual(len(self.fixture.store.files), 2)  # PDF + original photo
+
+    def test_reference_conflict_blocks_review_until_adjudication(self):
+        self.process()
+        result = self.process(1, conflict=True, color="red")
+        self.assertEqual(result["receipt_status"], "needs_review")
+        self.assertIsNotNone(result["reference_review"])
+        self.assertFalse(self.fixture.store.review_attempts)
+        candidate = self.fixture.store.get_grade_candidate(user_id=self.fixture.owner, candidate_id=result["candidate_id"])
+        with self.assertRaises(RuntimeError):
+            self.fixture.store.commit_grade(user_id=self.fixture.owner, candidate_id=candidate.candidate_id, expected_version=1)
+        diagnosis = json.loads(candidate.evidence)
+        validation = diagnosis["cross_validation"]
+        diagnosis["reference_adjudication"] = {"schema": "question-bank-reference-adjudication/v1", "status": "consistent", "rationale": "测试独立复核", "reference_answer_sha256": validation["reference_answer_sha256"], "independent_answer_sha256": validation["independent_answer_sha256"]}
+        revised = replace(candidate, evidence=json.dumps(diagnosis))
+        receipt = asyncio.run(self.client.app._commit_candidate_receipt(self.fixture.owner, revised))
+        self.assertEqual(receipt["status"], "review_needs_correction")
+        self.assertEqual(len(self.fixture.store.errors), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

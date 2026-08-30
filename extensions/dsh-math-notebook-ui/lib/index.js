@@ -1,10 +1,28 @@
 export const inject = ["workspaceRegistry", "tools", "attachments"];
 
+const receiptStatuses = ["saved", "already_saved", "not_saved_correct", "needs_review", "review_unmatched", "review_waiting", "review_completed", "review_needs_correction", "review_reference_only", "review_stale", "review_retryable"];
+const reviewLocatorSchema = {
+  type: "object", additionalProperties: false,
+  required: ["code", "pdf_id", "error_id", "question_id", "stage", "kind"],
+  properties: {
+    code: {type: "string"}, pdf_id: {type: "string"}, error_id: {type: "string"}, question_id: {type: "string"},
+    stage: {type: "integer", enum: [0, 1, 2, 3, 4, 5, 6]}, kind: {type: "string", enum: ["", "original", "recommendation"]}
+  },
+  description: "Copy only visible review code, PDF name/id, printed error/question id, stage and original/recommendation kind. Unknown strings are empty and stage is 0. Never guess. Ordinary new questions use all empty values."
+};
+
 function nextStepText(results) {
   const statuses = results.map((item) => item.receipt_status || item.status);
+  if (statuses.includes("review_retryable")) return "下一步：直接在会话重试确认复习记录，无需重新上传图片。";
   if (results.some((item) => item.reference_review)) {
     return "下一步：系统将继续核对已验证题库解析，请等待本轮复核完成。";
   }
+  if (statuses.includes("review_unmatched")) return "下一步：请补充 PDF 名称、错题编号与阶段或复习码；直接在会话补充即可，无需再次上传图片。";
+  if (statuses.includes("review_waiting")) return "下一步：按复习回执补齐该组尚未上传的必做题；若提示尚未到期，则到期后再确认。";
+  if (statuses.includes("review_needs_correction")) return "下一步：先依据错因与解析订正本组题目，再按回执中的日期复习。";
+  if (statuses.includes("review_stale")) return "下一步：打开错题本查看当前复习计划，这份旧练习单不会改变新的阶段。";
+  if (statuses.includes("review_completed")) return "下一步：本组复习已完成，请按回执的下次日期复习，也可继续提交其他组的作答。";
+  if (statuses.includes("review_reference_only")) return "下一步：提交同组标记为必做的原题或推荐训练题。";
   if (statuses.includes("needs_review")) {
     return "下一步：请补充更清晰的题目或作答图片，也可以直接说明需要修正的题干、作答或解题过程。";
   }
@@ -20,7 +38,7 @@ function receiptText(value) {
   const referenceLabels = {consistent: "已与已验证题库解析核对一致", conflict: "与题库解析冲突，等待复核", not_found: "题库未匹配"};
   lines.push(`题库核验：${referenceLabels[value.reference_status]}`);
   lines.push(`知识点：${value.knowledge_point_count} 个`);
-  lines.push(`复习任务：${value.review_status === "scheduled" ? "已安排" : "未安排"}`);
+  if (!value.status.startsWith("review_")) lines.push(`复习任务：${value.review_status === "scheduled" ? "已安排" : "未安排"}`);
   lines.push(nextStepText([value]));
   return [{type: "text", text: lines.join("\n")}];
 }
@@ -31,14 +49,15 @@ function receiptTool() {
   if (!origin || !token) throw new Error("Harness receipt bridge is not configured");
   return {
     name: "confirm_error_notebook_entry",
-    description: "After the product grading pipeline supplies a frozen candidate_id and input_version, call this exactly once to confirm the real notebook write. Never claim that a question was saved without this tool's receipt. Call it for correct and unclear results too so the product can return an authoritative not-saved receipt.",
+    description: "Confirm a real notebook/review receipt using the frozen candidate_id and input_version. For a review_unmatched result, once the student supplies printed PDF locating details, pass review to link the already-graded photo without re-uploading. For review_retryable or an early review reaching its due time, omit review and retry this confirmation. Never invent ids or claim success before this authoritative receipt.",
     parameters: {
       type: "object",
       additionalProperties: false,
       required: ["candidate_id", "input_version"],
       properties: {
         candidate_id: {type: "string", description: "Frozen product grade candidate id."},
-        input_version: {type: "integer", description: "Frozen input version paired with the candidate."}
+        input_version: {type: "integer", description: "Frozen input version paired with the candidate."},
+        review: reviewLocatorSchema
       }
     },
     output: {
@@ -48,13 +67,16 @@ function receiptTool() {
         required: ["schema", "status", "reference_status", "knowledge_point_count", "review_status", "message"],
         properties: {
           schema: {type: "string", const: "math-notebook-entry-receipt/v1"},
-          status: {type: "string", enum: ["saved", "already_saved", "not_saved_correct", "needs_review"]},
+          status: {type: "string", enum: receiptStatuses},
           reference_status: {type: "string", enum: ["consistent", "conflict", "not_found"]},
           reference_question_id: {type: "string"},
           reference_version_no: {type: "integer"},
           error_id: {type: "string"},
           knowledge_point_count: {type: "integer"},
-          review_status: {type: "string", enum: ["scheduled", "not_scheduled"]},
+          review_status: {type: "string"},
+          completed_question_count: {type: "integer"}, required_question_count: {type: "integer"},
+          review_result: {type: "string"}, completed_at: {type: "string"}, replayed: {type: "boolean"},
+          next_stage: {oneOf: [{type: "integer"}, {type: "null"}]}, next_due_at: {oneOf: [{type: "string"}, {type: "null"}]},
           message: {type: "string"}
         }
       },
@@ -65,7 +87,7 @@ function receiptTool() {
       const response = await fetch(`${origin}/v1/internal/harness/grade-results/${args.candidate_id}/commit`, {
         method: "POST",
         headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
-        body: JSON.stringify({session_id: exec.agent.id, input_version: args.input_version}),
+        body: JSON.stringify({session_id: exec.agent.id, input_version: args.input_version, ...(Object.values(args.review || {}).some(Boolean) ? {review: args.review} : {})}),
         signal: exec.signal
       });
       const payload = await response.json();
@@ -165,6 +187,9 @@ function processResultText(value) {
     if (item.reference_review) {
       lines.push(...referenceReviewText(item), "");
     }
+    if (["review_unmatched", "review_waiting", "review_retryable"].includes(item.receipt_status)) {
+      lines.push(`仅供后续确认工具使用：candidate_id=${item.candidate_id}, input_version=${item.input_version}。学生补充 PDF 定位后调用 confirm_error_notebook_entry 并附 review；尚未到期的结果可到期后直接确认，不要要求重传。`, "");
+    }
   }
   if (value.usage) {
     lines.push(`今日学习负荷：已判题 ${value.usage.grade.count}/${value.usage.grade.limit}（建议 ${value.usage.grade.target}）；已生成推荐题 ${value.usage.recommendation.count}/${value.usage.recommendation.limit}（建议 ${value.usage.recommendation.target}）。`, "");
@@ -202,14 +227,15 @@ function processAttachmentsTool(ctx) {
     correct_solution: {type: "string"},
     final_answer: {type: "string"},
     prevention_cue: {type: "string"},
-    confidence: {type: "number"}
+    confidence: {type: "number"},
+    review: reviewLocatorSchema
   };
   const resultProperties = {
     attachment_index: {type: "integer"}, item_no: {type: "integer"}, candidate_id: {type: "string"}, input_version: {type: "integer"},
     verdict: {type: "string", enum: ["correct", "partial", "incorrect", "unclear"]}, question_text: {type: "string"}, answer_text: {type: "string"},
     first_error: {type: "string"}, cause_code: {type: "string"}, cause_evidence: {type: "string"}, knowledge_points: {type: "array", items: {type: "string"}},
     correct_solution: {type: "string"}, final_answer: {type: "string"}, prevention_cue: {type: "string"},
-    receipt_status: {type: "string", enum: ["saved", "already_saved", "not_saved_correct", "needs_review"]}, receipt_message: {type: "string"}, error_id: {type: "string"},
+    receipt_status: {type: "string", enum: receiptStatuses}, receipt_message: {type: "string"}, error_id: {type: "string"},
     reference_review: {
       oneOf: [
         {type: "null"},
@@ -226,7 +252,7 @@ function processAttachmentsTool(ctx) {
   };
   return {
     name: "process_error_notebook_attachments",
-    description: "Required once when the latest user message contains one math image. Submit every recognized question and judgment in reading order with attachment_index fixed to 1. The tool reads the actual latest attachment, validates and stores it, freezes versions, cross-checks the verified bank, writes only incorrect or partial questions, schedules review, and returns authoritative receipts. If a result contains reference_review, compare its frozen independent answer with the protected reference answer and solution, then submit all such decisions once through adjudicate_error_notebook_reference_conflicts. Use empty strings for inapplicable diagnosis fields; never invent candidate ids.",
+    description: "Required once when the latest user message contains one math image. Submit recognized questions and judgments in reading order with attachment_index=1. Keep question_text to the complete stem only; copy printed PDF/review identifiers into review. Do not submit unattempted originals marked reference-only. Ordinary new questions use empty review fields. The tool stores the image, freezes grades, cross-checks the bank, and either records new errors or accumulates PDF review results on their original tasks. Follow actual receipts, never infer stage completion. If reference_review is returned, submit the frozen independent/reference comparison through adjudicate_error_notebook_reference_conflicts. Never invent ids.",
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
       properties: {items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
@@ -261,6 +287,7 @@ function processAttachmentsTool(ctx) {
           headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
           body: JSON.stringify({
             session_id: exec.agent.id,
+            review_mode: /复习|推荐题|练习单|PDF/i.test(latestUserText(exec.agent)) || items.some((item) => Object.values(item.review || {}).some(Boolean)),
             attachment: {
               attachment_id: String(stored.ref.attachmentId),
               name: stored.ref.name || `question-${attachmentIndex}.${stored.ref.mediaType === "image/png" ? "png" : "jpg"}`,
@@ -321,7 +348,7 @@ function adjudicateReferenceConflictsTool() {
               required: ["candidate_id", "input_version", "status", "receipt_message"],
               properties: {
                 candidate_id: {type: "string"}, input_version: {type: "integer"},
-                status: {type: "string", enum: ["saved", "already_saved", "not_saved_correct", "needs_review"]},
+                status: {type: "string", enum: receiptStatuses},
                 receipt_message: {type: "string"}
               }
             }
@@ -378,7 +405,7 @@ function recheckReferenceConflictTool() {
           required: ["candidate_id", "input_version", "question_text", "receipt_status", "receipt_message", "reference_review"],
           properties: {
             candidate_id: {type: "string"}, input_version: {type: "integer"}, question_text: {type: "string"},
-            receipt_status: {type: "string", enum: ["saved", "already_saved", "not_saved_correct", "needs_review"]},
+            receipt_status: {type: "string", enum: receiptStatuses},
             receipt_message: {type: "string"}, reference_review: review
           }
         }}

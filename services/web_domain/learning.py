@@ -100,6 +100,9 @@ def _normalized_math_source(text: str) -> str:
 
 
 def normalized_question_text(text: str) -> str:
+    # Storage paths are not part of the mathematics visible in a paper photo.
+    text = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", text)
+    text = re.sub(r"【(?:原题图|题图|附图)】", "", text)
     value = _normalized_math_source(text).casefold()
     value = re.sub(r"^\s*(?:题干|题目)\s*[:：]\s*", "", value)
     value = re.sub(r"^\s*\d+\s*[.、．]\s*", "", value)

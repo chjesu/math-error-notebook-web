@@ -320,6 +320,8 @@ def build_practice_pdf(
         if group_no > 1:
             story.append(CondPageBreak((150 if original.get("image_object_key") else 80) * mm))
         story.append(Paragraph(f"{group_no}　错题编号 {escape(error_id[:8])}（第 {stage} 阶段 · {status_text}）", heading))
+        if original.get("review_code"):
+            story.append(Paragraph(f"复习码 {escape(original['review_code'])} · 拍照时请保留复习码与完整题目", meta))
         original_image = None
         if original.get("image_object_key") and asset_root:
             candidate = (asset_root / original["image_object_key"]).resolve()
@@ -335,6 +337,8 @@ def build_practice_pdf(
             difficulty = "未标注" if item.get("difficulty") is None else str(item["difficulty"])
             story.append(CondPageBreak((145 if _MARKDOWN_IMAGE_RE.search(str(item["stem_text"])) else 70) * mm))
             story.append(Paragraph(f"同类型推荐题 {index}　题库编号 {escape(str(item['question_id']))}（难度 {escape(difficulty)}/5）", heading))
+            if item.get("review_code"):
+                story.append(Paragraph(f"复习码 {escape(item['review_code'])} · 拍照时请保留复习码与完整题目", meta))
             story.extend(question_content(item["stem_text"]))
             story.extend([
                 Paragraph(f"推荐理由：{escape(str(item['reason']))}<br/>来源：{escape(str(item['source_title']))}", meta),

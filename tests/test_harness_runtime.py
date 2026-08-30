@@ -13,6 +13,35 @@ from services.web_app.harness_runtime import HarnessRuntimeAdapter, HarnessRunti
 
 
 class HarnessRuntimeTests(unittest.TestCase):
+    def test_product_tool_schemas_match_installed_harness_runtime(self) -> None:
+        node = shutil.which("node")
+        root = Path(__file__).parents[1]
+        if node is None or not (root / "node_modules/@deepseek-ai/dsh-tools/lib/index.js").is_file():
+            self.skipTest("Installed Harness is needed for native schema validation")
+        script = """
+import {assertSupportedJsonSchema, validateJsonSchemaValue} from '@deepseek-ai/dsh-tools';
+import {apply} from './extensions/dsh-math-notebook-ui/lib/index.js';
+const definitions = [];
+await apply({workspaceRegistry: {create: async () => {}}, attachments: {}, tools: {register: tool => {
+  // Registration restricts output schemas; parameter constraints are handled separately.
+  assertSupportedJsonSchema(tool.output.schema);
+  definitions.push(tool);
+}}});
+const tool = definitions.find(tool => tool.name === 'confirm_error_notebook_entry');
+for (const status of ['review_waiting', 'review_completed', 'review_needs_correction', 'review_unmatched', 'review_stale', 'review_retryable']) {
+  const value = {schema:'math-notebook-entry-receipt/v1', status, reference_status:'not_found',
+    knowledge_point_count:1, review_status:'completed', message:'已记录',
+    completed_question_count:2, required_question_count:2, next_stage:null, next_due_at:null, replayed:true};
+  const issues = validateJsonSchemaValue(tool.output.schema, value);
+  if (issues.length) throw new Error(issues.join('; '));
+  const text = tool.output.render({},value)[0].text;
+  if (!text.includes('下一步：') || text.includes('undefined')) throw new Error('invalid review receipt rendering');
+}
+"""
+        environment = dict(os.environ, LZLM_PRODUCT_ORIGIN="http://127.0.0.1:8000", LZLM_HARNESS_INTERNAL_TOKEN="synthetic-test-token", LZLM_HARNESS_WORKSPACE_ROOT=str(root))
+        result = subprocess.run([node, "--input-type=module", "-e", script], cwd=root, env=environment, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def config(self, root: Path) -> HarnessRuntimeConfig:
         return HarnessRuntimeConfig(
             project_root=root,

@@ -877,6 +877,23 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def practice_review_context(self, *, user_id: str, attempt_id: str) -> dict | None:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT evidence_text FROM grade_candidates WHERE user_id=%s AND attempt_id=%s ORDER BY created_at DESC LIMIT 50", (user_id, attempt_id))
+            for row in cursor.fetchall():
+                try:
+                    context = json.loads(row[0] or "{}").get("practice_review")
+                except (ValueError, AttributeError):
+                    continue
+                if context:
+                    return context
+            return None
+        finally:
+            cursor.close()
+            connection.close()
+
     def commit_grade(
         self, *, user_id: str, candidate_id: str, expected_version: int
     ) -> ErrorEntry:
@@ -899,6 +916,12 @@ class MySqlDomainStore:
             if str(row[2]) not in {"partial", "incorrect"}:
                 raise RuntimeError("failed_final")
             validation = reference_validation_from_evidence(row[7])
+            try:
+                is_review = json.loads(row[7] or "{}").get("practice_review")
+            except (ValueError, AttributeError):
+                is_review = None
+            if is_review:
+                raise RuntimeError("conflict")
             if validation and validation.get("status") == "conflict" and not reference_conflict_resolved(row[7]):
                 raise RuntimeError("reference_conflict")
             attempt_id = str(row[0])
@@ -1147,47 +1170,12 @@ class MySqlDomainStore:
 
     def complete_review(self, *, user_id: str, task_id: str, result: str, idempotency_key: str, now: datetime | None = None) -> ReviewTask | None:
         key = _required(idempotency_key, "idempotency_key")
-        completed_at = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
+        completed_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
         connection = self._connect()
         cursor = connection.cursor()
         try:
             connection.begin()
-            cursor.execute("SELECT error_id FROM review_attempts WHERE user_id=%s AND idempotency_key=%s", (user_id, key))
-            existing = cursor.fetchone()
-            if existing:
-                next_task = self._active_review_tx(cursor, user_id, str(existing[0]))
-                connection.commit()
-                return next_task
-            cursor.execute("SELECT error_id,stage,due_at,status FROM review_tasks WHERE id=%s AND user_id=%s FOR UPDATE", (task_id, user_id))
-            row = cursor.fetchone()
-            if not row:
-                raise LookupError("review task not found")
-            if str(row[3]) not in {"pending", "ready"} or row[2] > completed_at:
-                raise RuntimeError("conflict")
-            error_id, stage = str(row[0]), int(row[1])
-            target = next_review(stage, result, completed_at.replace(tzinfo=timezone.utc))
-            cursor.execute(
-                "INSERT INTO review_attempts (id,user_id,review_task_id,error_id,stage,result,idempotency_key,completed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                (uuid.uuid4().hex, user_id, task_id, error_id, stage, result, key, completed_at),
-            )
-            cursor.execute("UPDATE review_tasks SET status='completed' WHERE id=%s AND user_id=%s", (task_id, user_id))
-            cursor.execute("UPDATE review_tasks SET status='cancelled' WHERE user_id=%s AND error_id=%s AND id<>%s AND status IN ('pending','ready')", (user_id, error_id, task_id))
-            next_task = None
-            if target is None:
-                cursor.execute("UPDATE error_notebook_entries SET status='mastered',updated_at=%s WHERE id=%s AND user_id=%s", (completed_at, error_id, user_id))
-            else:
-                target_stage, target_due = target
-                target_due = target_due.replace(tzinfo=None)
-                next_id = uuid.uuid4().hex
-                cursor.execute(
-                    "INSERT INTO review_tasks (id,user_id,error_id,stage,due_at,status,created_at) VALUES (%s,%s,%s,%s,%s,'pending',%s) "
-                    "ON DUPLICATE KEY UPDATE due_at=VALUES(due_at),status='pending'",
-                    (next_id, user_id, error_id, target_stage, target_due, completed_at),
-                )
-                cursor.execute("SELECT id,error_id,stage,due_at,status FROM review_tasks WHERE user_id=%s AND error_id=%s AND stage=%s", (user_id, error_id, target_stage))
-                next_row = cursor.fetchone()
-                next_task = ReviewTask(str(next_row[0]), user_id, str(next_row[1]), int(next_row[2]), next_row[3].replace(tzinfo=timezone.utc), str(next_row[4]))
-            cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'review.completed','error',%s,%s,%s)", (user_id, error_id, json.dumps({"stage": stage, "result": result}), completed_at))
+            next_task = self._complete_review_tx(cursor, user_id, task_id, result, key, completed_at)
             connection.commit()
             return next_task
         except Exception:
@@ -1197,9 +1185,78 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def _complete_review_tx(self, cursor, user_id, task_id, result, key, completed_at):
+        cursor.execute("SELECT error_id FROM review_attempts WHERE user_id=%s AND idempotency_key=%s", (user_id, key))
+        existing = cursor.fetchone()
+        if existing:
+            next_task = self._active_review_tx(cursor, user_id, str(existing[0]))
+            return next_task
+        cursor.execute("SELECT error_id,stage,due_at,status FROM review_tasks WHERE id=%s AND user_id=%s FOR UPDATE", (task_id, user_id))
+        row = cursor.fetchone()
+        if not row:
+            raise LookupError("review task not found")
+        if str(row[3]) not in {"pending", "ready"} or row[2] > completed_at:
+            raise RuntimeError("conflict")
+        error_id, stage = str(row[0]), int(row[1])
+        target = next_review(stage, result, completed_at.replace(tzinfo=timezone.utc))
+        cursor.execute(
+            "INSERT INTO review_attempts (id,user_id,review_task_id,error_id,stage,result,idempotency_key,completed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (uuid.uuid4().hex, user_id, task_id, error_id, stage, result, key, completed_at),
+        )
+        cursor.execute("UPDATE review_tasks SET status='completed' WHERE id=%s AND user_id=%s", (task_id, user_id))
+        cursor.execute("UPDATE review_tasks SET status='cancelled' WHERE user_id=%s AND error_id=%s AND id<>%s AND status IN ('pending','ready')", (user_id, error_id, task_id))
+        next_task = None
+        if target is None:
+            cursor.execute("UPDATE error_notebook_entries SET status='mastered',updated_at=%s WHERE id=%s AND user_id=%s", (completed_at, error_id, user_id))
+        else:
+            target_stage, target_due = target
+            target_due = target_due.replace(tzinfo=None)
+            next_id = uuid.uuid4().hex
+            cursor.execute(
+                "INSERT INTO review_tasks (id,user_id,error_id,stage,due_at,status,created_at) VALUES (%s,%s,%s,%s,%s,'pending',%s) "
+                "ON DUPLICATE KEY UPDATE due_at=VALUES(due_at),status='pending'",
+                (next_id, user_id, error_id, target_stage, target_due, completed_at),
+            )
+            cursor.execute("SELECT id,error_id,stage,due_at,status FROM review_tasks WHERE user_id=%s AND error_id=%s AND stage=%s", (user_id, error_id, target_stage))
+            next_row = cursor.fetchone()
+            next_task = ReviewTask(str(next_row[0]), user_id, str(next_row[1]), int(next_row[2]), next_row[3].replace(tzinfo=timezone.utc), str(next_row[4]))
+        cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'review.completed','error',%s,%s,%s)", (user_id, error_id, json.dumps({"stage": stage, "result": result}), completed_at))
+        return next_task
+
+    def mutate_practice_checkpoint(self, *, user_id: str, job_id: str, operation):
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute("SELECT checkpoint_json FROM web_jobs WHERE id=%s AND user_id=%s AND job_type='practice_pdf' AND status='completed' FOR UPDATE", (job_id, user_id))
+            row = cursor.fetchone()
+            if not row:
+                raise LookupError("practice PDF not found")
+            checkpoint = self._json(row[0]) or {}
+
+            def get_task(task_id):
+                cursor.execute("SELECT t.id,t.error_id,t.stage,t.due_at,t.status FROM review_tasks t JOIN error_notebook_entries e ON e.id=t.error_id AND e.user_id=t.user_id WHERE t.id=%s AND t.user_id=%s AND e.status='open' FOR UPDATE", (task_id, user_id))
+                task = cursor.fetchone()
+                return ReviewTask(str(task[0]), user_id, str(task[1]), int(task[2]), task[3].replace(tzinfo=timezone.utc), str(task[4])) if task else None
+
+            def complete(task_id, result, key, now):
+                return self._complete_review_tx(cursor, user_id, task_id, result, key, now.astimezone(timezone.utc).replace(tzinfo=None))
+
+            result = operation(checkpoint, get_task, complete)
+            # Do not rewrite updated_at: it is the PDF generation timestamp.
+            cursor.execute("UPDATE web_jobs SET checkpoint_json=%s WHERE id=%s AND user_id=%s", (json.dumps(checkpoint, ensure_ascii=False), job_id, user_id))
+            connection.commit()
+            return result
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
     def progress(self, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
         current = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
-        today_start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = datetime.fromisoformat(learning_day(current.replace(tzinfo=timezone.utc))) - timedelta(hours=8)
         tomorrow = today_start + timedelta(days=1)
         connection = self._connect()
         cursor = connection.cursor()
@@ -1363,8 +1420,10 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
-    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool) -> Job:
+    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool, review_manifest: list[dict] | None = None) -> Job:
         checkpoint = {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers}
+        if review_manifest is not None:
+            checkpoint.update(review_manifest=review_manifest, review_job_id=job_id)
         connection = self._connect()
         cursor = connection.cursor()
         now = _utcnow()

@@ -6,6 +6,9 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from copy import deepcopy
+from threading import RLock
+from io import BytesIO
 import hashlib
 import json
 import uuid
@@ -31,6 +34,7 @@ from .learning import (
 )
 from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job, normalize_extraction_items
 from .practice_pdf import build_practice_pdf
+from .practice_review import apply_submission, build_manifest, legacy_manifest, matching_items, review_locator, unresolved_receipt
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,7 @@ class InMemoryNotebookStore:
     """Reference adapter used by unit tests and the localhost demo."""
 
     def __init__(self) -> None:
+        self._practice_lock = RLock()
         self.files: dict[str, FileRecord] = {}
         self.intakes: dict[str, IntakeItem] = {}
         self.jobs: dict[str, Job] = {}
@@ -380,6 +385,18 @@ class InMemoryNotebookStore:
         attempt = self.attempts.get(candidate.attempt_id)
         return candidate if attempt and attempt.user_id == user_id else None
 
+    def practice_review_context(self, *, user_id: str, attempt_id: str) -> dict | None:
+        for candidate in reversed(tuple(self.candidates.values())):
+            if candidate.attempt_id != attempt_id or not self.get_grade_candidate(user_id=user_id, candidate_id=candidate.candidate_id):
+                continue
+            try:
+                context = json.loads(candidate.evidence or "{}").get("practice_review")
+            except (ValueError, AttributeError):
+                continue
+            if context:
+                return context
+        return None
+
     def find_reference_conflict_candidate(self, *, user_id: str, question_text: str) -> GradeCandidate | None:
         committed_attempts = {item.attempt_id for item in self.errors.values() if item.user_id == user_id}
         for candidate in reversed(tuple(self.candidates.values())):
@@ -407,6 +424,8 @@ class InMemoryNotebookStore:
             raise RuntimeError("input_version_changed")
         if candidate.verdict not in {"partial", "incorrect"}:
             raise RuntimeError("failed_final")
+        if self.practice_review_context(user_id=user_id, attempt_id=candidate.attempt_id):
+            raise RuntimeError("conflict")
         validation = reference_validation_from_evidence(candidate.evidence)
         if validation and validation.get("status") == "conflict" and not reference_conflict_resolved(candidate.evidence):
             raise RuntimeError("reference_conflict")
@@ -557,7 +576,7 @@ class InMemoryNotebookStore:
         stage_counts = {str(stage): sum(item.stage == stage for item in active_reviews) for stage in range(1, 7)}
         gaps = sum(not any(rec.user_id == user_id and rec.error_id == item.error_id and rec.status == "assigned" for rec in self.recommendations.values()) for item in errors)
         reviews = [item for (owner, _), item in self.review_attempts.items() if owner == user_id]
-        today_reviews = [item for item in reviews if item.get("completed_at") and item["completed_at"].date() == current.date()]
+        today_reviews = [item for item in reviews if item.get("completed_at") and learning_day(item["completed_at"]) == learning_day(current)]
         correct = sum(item["result"] == "correct" for item in reviews)
         return {"error_count": len(errors), "mastered_count": sum(item.status == "mastered" for item in errors), "due_review_count": len(due), "recommendation_gap_count": gaps, "completed_review_count": len(reviews), "correct_review_count": correct, "partial_review_count": sum(item["result"] == "partial" for item in reviews), "wrong_review_count": sum(item["result"] == "wrong" for item in reviews), "review_accuracy_percent": round(correct * 100 / len(reviews)) if reviews else 0, "review_stage_counts": stage_counts, "today_completed_review_count": len(today_reviews), "today_needs_correction_count": sum(item["result"] in {"partial", "wrong"} for item in today_reviews), "sample_sufficient": len(errors) >= 3}
 
@@ -680,13 +699,40 @@ class InMemoryNotebookStore:
         self._practice_inputs[key] = digest
         return job
 
-    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool) -> Job:
+    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool, review_manifest: list[dict] | None = None) -> Job:
         job = self.get_job(user_id=user_id, job_id=job_id)
         if not job or job.job_type != "practice_pdf":
             raise LookupError("job not found")
-        completed = Job(job.job_id, user_id, job.job_type, job.resource_id, "completed", {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers}, None)
+        checkpoint = dict(job.checkpoint or {}) | {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers, "generated_at": _now().isoformat()}
+        if review_manifest is not None:
+            checkpoint.update(review_manifest=review_manifest, review_job_id=job_id)
+        completed = Job(job.job_id, user_id, job.job_type, job.resource_id, "completed", checkpoint, None)
         self.jobs[job_id] = completed
         return completed
+
+    def mutate_practice_checkpoint(self, *, user_id: str, job_id: str, operation):
+        with self._practice_lock:
+            job = self.get_job(user_id=user_id, job_id=job_id)
+            if not job or job.job_type != "practice_pdf" or job.status != "completed":
+                raise LookupError("practice PDF not found")
+            checkpoint = deepcopy(job.checkpoint or {})
+            snapshot = deepcopy((self.review_tasks, self.review_attempts, self.errors, self._review_keys))
+
+            def get_task(task_id):
+                task = self.review_tasks.get(task_id)
+                error = self.get_error(user_id=user_id, error_id=task.error_id) if task and task.user_id == user_id else None
+                return task if error and error.status == "open" else None
+
+            def complete(task_id, result, key, now):
+                return self.complete_review(user_id=user_id, task_id=task_id, result=result, idempotency_key=key, now=now)
+
+            try:
+                result = operation(checkpoint, get_task, complete)
+                self.jobs[job_id] = Job(job.job_id, user_id, job.job_type, job.resource_id, job.status, checkpoint, job.last_error_code)
+                return result
+            except Exception:
+                self.review_tasks, self.review_attempts, self.errors, self._review_keys = snapshot
+                raise
 
     def list_practice_pdfs(self, *, user_id: str) -> list[dict[str, Any]]:
         items = []
@@ -700,7 +746,7 @@ class InMemoryNotebookStore:
                 "task_id": job.job_id,
                 "filename": record.original_name,
                 "byte_size": record.byte_size,
-                "generated_at": None,
+                "generated_at": job.checkpoint.get("generated_at"),
                 "question_count": int(job.checkpoint.get("question_count", 0)),
                 "include_answers": bool(job.checkpoint.get("include_answers", False)),
             })
@@ -911,6 +957,7 @@ class NotebookService:
             bool(item.get("requires_original")) or recommendations_by_error[str(item["error_id"])] == 0
             for item in items if item["kind"] == "original"
         )
+        manifest = build_manifest(job.job_id, items, self.store.list_active_reviews(user_id=user_id))
         content = build_practice_pdf(
             items,
             include_answers=include_answers,
@@ -925,7 +972,74 @@ class NotebookService:
             question_count=task_count,
             recommendation_gap_count=gaps,
             include_answers=include_answers,
+            review_manifest=manifest,
         )
+
+    def resolve_practice_review(self, *, user_id: str, question_text: str, locator: dict | None = None, review_mode: bool = False) -> dict | None:
+        locator = review_locator(locator)
+        if not locator and not review_mode:
+            return None
+        papers = self.store.list_practice_pdfs(user_id=user_id)
+        if ref := locator.get("pdf_id"):
+            papers = [paper for paper in papers if ref in {paper["task_id"], paper["task_id"][:8], paper["filename"]}]
+        matches, parsed_bytes = [], 0
+        errors, tasks, recs = None, None, {}
+        for paper in papers[:100]:
+            job = self.store.get_job(user_id=user_id, job_id=paper["task_id"])
+            checkpoint = job.checkpoint or {}
+            manifest = checkpoint.get("review_manifest")
+            if manifest is None and not locator.get("code"):
+                # Bounded legacy import; never restore a deleted history job.
+                if not paper.get("generated_at") or int(paper["byte_size"]) > 12 * 1024 * 1024 or parsed_bytes > 32 * 1024 * 1024:
+                    continue
+                _, content = self.download_practice_pdf(user_id=user_id, job_id=job.job_id)
+                parsed_bytes += len(content)
+                from pypdf import PdfReader
+                try:
+                    reader = PdfReader(BytesIO(content))
+                    if len(reader.pages) > 100:
+                        continue
+                    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+                except Exception:
+                    continue
+                if errors is None:
+                    errors = self.store.list_errors(user_id=user_id)
+                    tasks = self.store.list_active_reviews(user_id=user_id)
+                    recs = {error.error_id: self.store.list_recommendations(user_id=user_id, error_id=error.error_id) for error in errors}
+                generated = datetime.fromisoformat(paper["generated_at"].replace("Z", "+00:00"))
+                manifest = legacy_manifest(text, job.job_id, errors, tasks, recs, generated)
+                if manifest:
+                    def freeze(saved, _get, _complete):
+                        saved.setdefault("review_manifest", manifest)
+                        saved.setdefault("review_job_id", job.job_id)
+                        return saved["review_manifest"]
+                    manifest = self.store.mutate_practice_checkpoint(user_id=user_id, job_id=job.job_id, operation=freeze)
+            for item in matching_items(manifest or [], locator, question_text, user_id):
+                group = [row for row in manifest if row["task_id"] == item["task_id"] and row["required"]]
+                signature = (item["task_id"], item["due_at"], item["kind"], item["question_id"], tuple(sorted((row["kind"], row["question_id"] or "") for row in group)))
+                matches.append((signature, job.job_id, item, bool(checkpoint.get("review_submissions"))))
+        signatures = {match[0] for match in matches}
+        if len(signatures) != 1:
+            return {"status": "unmatched", "locator": locator}
+        # Equivalent reprints share the already-started paper where possible.
+        _, job_id, item, _ = max(matches, key=lambda row: row[3])
+        return {"status": "matched", "job_id": job_id, "code": item["code"], "required": item["required"]}
+
+    def commit_practice_review(self, *, user_id: str, candidate: GradeCandidate, now: datetime | None = None) -> dict:
+        evidence = json.loads(candidate.evidence or "{}")
+        context = evidence.get("practice_review") or {}
+        if context.get("status") != "matched":
+            return unresolved_receipt("复习判题结果已保留，尚未确认对应 PDF，未重复入本或推进阶段。请补充 PDF 名称，以及图片中的错题编号、阶段或复习码，无需重新上传。")
+        current = now or _now()
+        def submit(checkpoint, get_task, complete):
+            return apply_submission(checkpoint, code=context["code"], candidate_id=candidate.candidate_id,
+                                    verdict=candidate.verdict, now=current, get_task=get_task, complete=complete)
+        try:
+            return self.store.mutate_practice_checkpoint(user_id=user_id, job_id=context["job_id"], operation=submit)
+        except LookupError as exc:
+            if str(exc) != "practice PDF not found":
+                raise
+            return unresolved_receipt("对应 PDF 历史已不存在，判题结果已保留，未推进复习。请使用当前复习计划。")
 
     def download_practice_pdf(self, *, user_id: str, job_id: str) -> tuple[str, bytes]:
         job = self.store.get_job(user_id=user_id, job_id=job_id)
