@@ -87,6 +87,22 @@ class PracticePdfMathTests(unittest.TestCase):
 
         self.assertIn(b"/Subtype /Image", content)
 
+    def test_brand_logo_is_embedded(self) -> None:
+        with TemporaryDirectory() as temporary:
+            logo = Path(temporary) / "logo.png"
+            Image.new("RGBA", (128, 128), (23, 92, 211, 255)).save(logo)
+            content = build_practice_pdf(
+                [{
+                    "kind": "original", "error_id": "logo-question", "question_id": None,
+                    "stem_text": "求一元二次方程的根。", "answer_text": None,
+                    "difficulty": None, "source_title": "个人错题本", "reason": "错题回顾",
+                }],
+                include_answers=False,
+                logo_path=logo,
+            )
+
+        self.assertIn(b"/Subtype /Image", content)
+
     def test_stage_reference_and_redo_layouts_both_build(self) -> None:
         items = [
             {"kind": "original", "error_id": "redo", "question_id": None, "stem_text": "原题甲", "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "第 2 阶段", "review_stage": 2, "requires_original": True},

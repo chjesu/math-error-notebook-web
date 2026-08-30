@@ -197,18 +197,24 @@ def _prepare_diagram_image(path: Path, max_width: float, max_height: float) -> t
         return None
 
 
-def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, asset_root: Path | None = None) -> bytes:
+def build_practice_pdf(
+    items: list[dict[str, Any]],
+    *,
+    include_answers: bool,
+    asset_root: Path | None = None,
+    logo_path: Path | None = None,
+) -> bytes:
     if not items:
         raise ValueError("practice items are required")
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.platypus import CondPageBreak, HRFlowable, Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import CondPageBreak, HRFlowable, Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     try:
         pdfmetrics.registerFont(TTFont("PracticeCN", str(Path(r"C:\Windows\Fonts\msyh.ttc")), subfontIndex=0))
@@ -221,6 +227,7 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, as
     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=17 * mm, bottomMargin=19 * mm, title="李兆霖数学错题本每日复习")
     styles = getSampleStyleSheet()
     title = ParagraphStyle("TitleCN", parent=styles["Title"], fontName=font_bold, fontSize=18, leading=24, textColor=colors.HexColor("#173B57"), alignment=TA_CENTER, spaceAfter=7 * mm)
+    brand_title = ParagraphStyle("BrandTitleCN", parent=title, alignment=TA_LEFT, spaceAfter=0)
     heading = ParagraphStyle("HeadingCN", parent=styles["Heading2"], fontName=font_bold, fontSize=13, leading=19, textColor=colors.HexColor("#175CD3"), spaceBefore=4 * mm, spaceAfter=2 * mm)
     # ReportLab's CJK line breaker cannot handle inline image fragments.  Math
     # formulas are rendered as inline images, so dense mixed Chinese/math text
@@ -263,8 +270,22 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, as
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in items:
         groups[str(item["error_id"])].append(item)
+    header: Any = Paragraph("李兆霖数学错题本", title)
+    header_gap: list[Any] = []
+    if logo_path and logo_path.is_file():
+        logo = Image(str(logo_path), width=11 * mm, height=11 * mm)
+        header = Table([[logo, Paragraph("李兆霖数学错题本", brand_title)]], colWidths=[14 * mm, 62 * mm], hAlign="CENTER")
+        header.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        header_gap = [Spacer(1, 7 * mm)]
     story: list[Any] = [
-        Paragraph("李兆霖数学错题本", title),
+        header,
+        *header_gap,
         Paragraph("姓名：____________　日期：____________　先独立完成，全部做完后拍照判题。", body),
         HRFlowable(width="100%", thickness=1, color=colors.HexColor("#84ADFF")),
     ]
