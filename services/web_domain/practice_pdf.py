@@ -25,6 +25,8 @@ _MATH_COMMAND_RE = re.compile(r"\\(?:" + "|".join(_MATH_COMMANDS) + r")(?![A-Za-
 _HAS_CJK = re.compile(r"[\u3400-\u9fff]")
 _SUPERSCRIPTS = str.maketrans("0123456789+-=()n", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿ")
 _SUBSCRIPTS = str.maketrans("0123456789+-=()aeoxn", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₒₓₙ")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+_BANK_ASSET_RE = re.compile(r"bank-assets/[0-9a-f]{64}\.(?:png|jpg|jpeg)")
 
 
 def _replace_math_args(value: str) -> str:
@@ -165,7 +167,37 @@ def _formatted_text(value: Any, font_size: float = 10.5) -> str:
     return "".join(pieces)
 
 
-def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, logo_path: Path | None = None) -> bytes:
+def _prepare_diagram_image(path: Path, max_width: float, max_height: float) -> tuple[Path, float, float] | None:
+    """Match the desktop Skill: crop white margins, honor DPI, never upscale."""
+    try:
+        from PIL import Image, ImageChops
+
+        with Image.open(path) as source:
+            source.load()
+            dpi = source.info.get("dpi", (144.0, 144.0))
+            dpi_x, dpi_y = (float(dpi[0]), float(dpi[1])) if isinstance(dpi, (tuple, list)) and len(dpi) >= 2 else (144.0, 144.0)
+            dpi_x = dpi_x if 60.0 <= dpi_x <= 600.0 else 144.0
+            dpi_y = dpi_y if 60.0 <= dpi_y <= 600.0 else 144.0
+            rgba = source.convert("RGBA")
+            canvas = Image.new("RGBA", rgba.size, "white")
+            canvas.alpha_composite(rgba)
+            rgb = canvas.convert("RGB")
+            mask = ImageChops.difference(rgb, Image.new("RGB", rgb.size, "white")).convert("L").point(lambda pixel: 255 if pixel > 12 else 0)
+            if bbox := mask.getbbox():
+                rgb = rgb.crop((max(0, bbox[0] - 8), max(0, bbox[1] - 8), min(rgb.width, bbox[2] + 8), min(rgb.height, bbox[3] + 8)))
+            digest = hashlib.sha256(path.read_bytes() + b"diagram-v2").hexdigest()[:20]
+            output = _MATH_CACHE_DIR / "diagrams" / f"diagram-{digest}.png"
+            if not output.is_file():
+                output.parent.mkdir(parents=True, exist_ok=True)
+                rgb.save(output, format="PNG", dpi=(dpi_x, dpi_y), optimize=True)
+        natural_width, natural_height = rgb.width * 72.0 / dpi_x, rgb.height * 72.0 / dpi_y
+        scale = min(1.0, max_width / natural_width, max_height / natural_height)
+        return output, natural_width * scale, natural_height * scale
+    except Exception:
+        return None
+
+
+def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, asset_root: Path | None = None) -> bytes:
     if not items:
         raise ValueError("practice items are required")
     from reportlab.lib import colors
@@ -175,30 +207,59 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, lo
     from reportlab.lib.units import mm
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-    from reportlab.platypus import Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.platypus import CondPageBreak, HRFlowable, Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
-    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    try:
+        pdfmetrics.registerFont(TTFont("PracticeCN", str(Path(r"C:\Windows\Fonts\msyh.ttc")), subfontIndex=0))
+        pdfmetrics.registerFont(TTFont("PracticeCN-Bold", str(Path(r"C:\Windows\Fonts\msyhbd.ttc")), subfontIndex=0))
+        font, font_bold = "PracticeCN", "PracticeCN-Bold"
+    except Exception:
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+        font = font_bold = "STSong-Light"
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=18 * mm, bottomMargin=17 * mm, title="李兆霖数学错题本练习")
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=17 * mm, bottomMargin=19 * mm, title="李兆霖数学错题本每日复习")
     styles = getSampleStyleSheet()
-    title = ParagraphStyle("TitleCN", parent=styles["Title"], fontName="STSong-Light", fontSize=18, leading=25, textColor=colors.HexColor("#172033"), alignment=TA_CENTER)
-    heading = ParagraphStyle("HeadingCN", parent=styles["Heading2"], fontName="STSong-Light", fontSize=13, leading=19, textColor=colors.HexColor("#3157d5"), spaceBefore=8, spaceAfter=7)
+    title = ParagraphStyle("TitleCN", parent=styles["Title"], fontName=font_bold, fontSize=18, leading=24, textColor=colors.HexColor("#173B57"), alignment=TA_CENTER, spaceAfter=7 * mm)
+    heading = ParagraphStyle("HeadingCN", parent=styles["Heading2"], fontName=font_bold, fontSize=13, leading=19, textColor=colors.HexColor("#175CD3"), spaceBefore=4 * mm, spaceAfter=2 * mm)
     # ReportLab's CJK line breaker cannot handle inline image fragments.  Math
     # formulas are rendered as inline images, so dense mixed Chinese/math text
     # could leave a zero-length fragment and abort the whole PDF.  STSong-Light
     # still wraps Chinese correctly with the normal line breaker.
-    body = ParagraphStyle("BodyCN", parent=styles["BodyText"], fontName="STSong-Light", fontSize=10.5, leading=18, textColor=colors.HexColor("#172033"))
-    meta = ParagraphStyle("MetaCN", parent=body, fontSize=8.5, leading=14, textColor=colors.HexColor("#647087"))
+    body = ParagraphStyle("BodyCN", parent=styles["BodyText"], fontName=font, fontSize=11, leading=22, textColor=colors.HexColor("#101828"), spaceAfter=3 * mm)
+    meta = ParagraphStyle("MetaCN", parent=body, fontSize=8.5, leading=15, textColor=colors.HexColor("#667085"), spaceAfter=4 * mm)
 
     def answer_space() -> Spacer:
         return Spacer(1, 28 * mm)
 
-    story: list[Any] = []
-    if logo_path and logo_path.is_file():
-        logo = Image(str(logo_path), width=13 * mm, height=13 * mm)
-        header = Table([[logo, Paragraph("李兆霖数学错题本<br/><font size='8'>今日复习练习</font>", body)]], colWidths=[17 * mm, 80 * mm])
-        header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-        story.extend([header, Spacer(1, 5 * mm)])
+    def question_content(value: Any, style: ParagraphStyle = body, prefix: str = "") -> list[Any]:
+        text = str(value)
+        flowables: list[Any] = []
+        cursor = 0
+        first_text = True
+        root = asset_root.resolve() if asset_root else None
+        for match in _MARKDOWN_IMAGE_RE.finditer(text):
+            if match.start() > cursor:
+                flowables.append(Paragraph((prefix if first_text else "") + _formatted_text(text[cursor:match.start()], style.fontSize), style))
+                first_text = False
+            reference = match.group(2).replace("\\", "/")
+            target = (root / reference).resolve() if root and _BANK_ASSET_RE.fullmatch(reference) else None
+            if target and root in target.parents and target.is_file():
+                prepared = _prepare_diagram_image(target, 110 * mm, 65 * mm)
+                if prepared:
+                    path, width, height = prepared
+                    diagram = Image(str(path), width=width, height=height)
+                    diagram.hAlign = "CENTER"
+                    flowables.extend([Spacer(1, 2 * mm), diagram, Spacer(1, 3 * mm)])
+                else:
+                    flowables.append(Paragraph("［题图暂不可用］", meta))
+            else:
+                flowables.append(Paragraph(f"［{escape(match.group(1) or '题图')}暂不可用］", meta))
+            cursor = match.end()
+        if cursor < len(text):
+            flowables.append(Paragraph((prefix if first_text else "") + _formatted_text(text[cursor:], style.fontSize), style))
+        return flowables or [Paragraph(prefix, style)]
+
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in items:
         groups[str(item["error_id"])].append(item)
@@ -209,12 +270,12 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, lo
         for group in groups.values()
     )
     task_count = redo_count + recommendation_count
-    story.extend([
-        Paragraph("错题复习练习", title),
-        Spacer(1, 3 * mm),
-        Paragraph(f"本次需完成 {task_count} 道：原题重做 {redo_count} 道，推荐训练 {recommendation_count} 道。另展示 {len(groups)} 道错题原题；未标记“需重做”的原题仅作推荐依据。", meta),
-        Spacer(1, 5 * mm),
-    ])
+    story: list[Any] = [
+        Paragraph("李兆霖数学错题本<br/><font size='11'>每日复习练习</font>", title),
+        Paragraph(f"本次需完成 {task_count} 道：原题重做 {redo_count} 道，推荐训练 {recommendation_count} 道。", body),
+        Paragraph("姓名：____________　日期：____________　先独立完成，全部做完后拍照判题。", body),
+        HRFlowable(width="100%", thickness=1, color=colors.HexColor("#84ADFF")),
+    ]
     for group_no, (error_id, group) in enumerate(groups.items(), 1):
         original = next(item for item in group if item["kind"] == "original")
         recommendations = [item for item in group if item["kind"] == "recommendation"]
@@ -223,28 +284,24 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, lo
         status_text = "需重做" if requires_original else "仅作推荐依据"
         if not recommendations and not original.get("requires_original"):
             status_text = "推荐缺口，改为重做"
-        original_block = [
-            Paragraph(f"{group_no}. 错题编号 {escape(error_id[:8])}", heading),
-            Paragraph(f"第 {stage} 阶段 · {status_text}", meta),
-            Paragraph(_text(original["stem_text"]), body),
-        ]
+        if group_no > 1:
+            story.append(CondPageBreak(80 * mm))
+        story.append(Paragraph(f"{group_no}　错题编号 {escape(error_id[:8])}（第 {stage} 阶段 · {status_text}）", heading))
+        story.extend(question_content(original["stem_text"], prefix="<b>错题回顾：</b>"))
         if requires_original:
-            original_block.extend([Paragraph("原题作答区", meta), answer_space(), Spacer(1, 4 * mm)])
-        else:
-            original_block.append(Spacer(1, 4 * mm))
-        story.append(KeepTogether(original_block))
+            story.extend([Paragraph("原题作答区", meta), answer_space()])
         if not recommendations:
             story.append(Paragraph("暂无符合验证与授权要求的推荐题，本次改为重做原题。", meta))
         for index, item in enumerate(recommendations, 1):
             difficulty = "未标注" if item.get("difficulty") is None else str(item["difficulty"])
-            story.append(KeepTogether([
-                Paragraph(f"本阶段推荐训练题 {index}", heading),
-                Paragraph(f"题库编号：{escape(str(item['question_id']))}　难度：{escape(difficulty)}<br/>推荐原因：{escape(str(item['reason']))}<br/>来源：{escape(str(item['source_title']))}", meta),
-                Paragraph(_text(item["stem_text"]), body),
+            story.append(CondPageBreak((145 if _MARKDOWN_IMAGE_RE.search(str(item["stem_text"])) else 70) * mm))
+            story.append(Paragraph(f"同类型推荐题 {index}　题库编号 {escape(str(item['question_id']))}（难度 {escape(difficulty)}/5）", heading))
+            story.extend(question_content(item["stem_text"]))
+            story.extend([
+                Paragraph(f"推荐理由：{escape(str(item['reason']))}<br/>来源：{escape(str(item['source_title']))}", meta),
                 Paragraph("推荐题作答区", meta),
-                answer_space(),
-                Spacer(1, 5 * mm),
-            ]))
+                Spacer(1, 22 * mm),
+            ])
     if include_answers:
         story.extend([PageBreak(), Paragraph("答案", title), Spacer(1, 5 * mm)])
         answer_no = 0
@@ -254,14 +311,14 @@ def build_practice_pdf(items: list[dict[str, Any]], *, include_answers: bool, lo
             answer_no += 1
             answer = item.get("answer_text") or "题库未提供答案"
             story.append(Paragraph(f"{answer_no}. 题库编号 {escape(str(item['question_id']))}", heading))
-            story.append(Paragraph(_text(answer), body))
+            story.extend(question_content(answer))
 
     def footer(canvas, document) -> None:
         canvas.saveState()
-        canvas.setFont("STSong-Light", 8)
-        canvas.setFillColor(colors.HexColor("#647087"))
-        canvas.drawString(18 * mm, 9 * mm, "李兆霖数学错题本")
-        canvas.drawRightString(A4[0] - 18 * mm, 9 * mm, f"第 {document.page} 页")
+        canvas.setFont(font, 8)
+        canvas.setFillColor(colors.HexColor("#667085"))
+        canvas.drawString(18 * mm, 12 * mm, "李兆霖数学错题本 · 每日复习")
+        canvas.drawRightString(A4[0] - 18 * mm, 12 * mm, f"第 {document.page} 页")
         canvas.restoreState()
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)

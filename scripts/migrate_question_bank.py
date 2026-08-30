@@ -7,9 +7,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import Any
+
+
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 
 
 def _run_notebook(source_root: Path, *arguments: str) -> Any:
@@ -45,12 +50,40 @@ def extract(source_root: Path) -> dict[str, Any]:
     if not isinstance(sources, list) or not isinstance(questions, list):
         raise RuntimeError("unexpected desktop notebook response")
     source_map = {str(item.get("name", "")): item for item in sources}
-    rows = [map_question(item, source_map.get(str(item.get("source_name", "")), {})) for item in questions]
+    assets: dict[str, dict[str, Any]] = {}
+    rows = []
+    for item in questions:
+        portable = dict(item)
+        for field in ("stem", "answer", "solution"):
+            portable[field] = _portable_images(portable.get(field), source_root, assets)
+        rows.append(map_question(portable, source_map.get(str(item.get("source_name", "")), {})))
     ids = [item["source_question_id"] for item in rows]
     if len(ids) != len(set(ids)):
         raise RuntimeError("duplicate source question ids")
     digest = hashlib.sha256(json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-    return {"source": health.get("canonical_path", str(source_root / "data" / "math_notebook.db")), "questions": rows, "count": len(rows), "verified": sum(item["status"] == "verified" for item in rows), "sha256": digest}
+    return {"source": health.get("canonical_path", str(source_root / "data" / "math_notebook.db")), "questions": rows, "assets": sorted(assets.values(), key=lambda item: item["object_key"]), "count": len(rows), "verified": sum(item["status"] == "verified" for item in rows), "sha256": digest}
+
+
+def _portable_images(value: Any, source_root: Path, assets: dict[str, dict[str, Any]]) -> Any:
+    if not isinstance(value, str):
+        return value
+    root = source_root.resolve()
+
+    def replace(match: re.Match[str]) -> str:
+        reference = match.group(2).replace("\\", "/")
+        relative = Path(reference)
+        if relative.is_absolute() or relative.suffix.lower() not in _IMAGE_SUFFIXES:
+            return match.group(0)
+        source = (root / relative).resolve()
+        if root not in source.parents or not source.is_file():
+            return match.group(0)
+        content = source.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        object_key = f"bank-assets/{digest}{source.suffix.lower()}"
+        assets[object_key] = {"object_key": object_key, "local_path": str(source), "content_sha256": digest}
+        return f"![{match.group(1)}]({object_key})"
+
+    return _MARKDOWN_IMAGE_RE.sub(replace, value)
 
 
 def map_question(question: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
@@ -121,6 +154,7 @@ def _connection():
 
 
 def commit(plan: dict[str, Any]) -> None:
+    _store_assets(plan.get("assets", []))
     connection = _connection()
     cursor = connection.cursor()
     try:
@@ -141,6 +175,34 @@ def commit(plan: dict[str, Any]) -> None:
     finally:
         cursor.close()
         connection.close()
+
+
+def _store_assets(assets: list[dict[str, Any]]) -> None:
+    if not assets:
+        return
+    if os.environ.get("LZLM_OBJECT_ROOT"):
+        root = Path(os.environ["LZLM_OBJECT_ROOT"]).resolve()
+    else:
+        try:
+            from scripts.local_env import RUNTIME
+        except ModuleNotFoundError:
+            from local_env import RUNTIME
+        root = (RUNTIME / "quarantine").resolve()
+    for asset in assets:
+        source = Path(str(asset["local_path"]))
+        content = source.read_bytes()
+        if hashlib.sha256(content).hexdigest() != asset["content_sha256"]:
+            raise RuntimeError(f"question asset changed after extraction: {source.name}")
+        target = (root / str(asset["object_key"])).resolve()
+        if root not in target.parents:
+            raise ValueError("unsafe question asset path")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with target.open("xb") as stream:
+                stream.write(content)
+        except FileExistsError:
+            if target.read_bytes() != content:
+                raise RuntimeError(f"question asset collision: {target.name}")
 
 
 def main() -> int:

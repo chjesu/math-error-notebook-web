@@ -897,7 +897,7 @@ class NotebookService:
         content = build_practice_pdf(
             items,
             include_answers=include_answers,
-            logo_path=Path(__file__).resolve().parents[2] / "assets" / "branding" / "logo-symbol-color-128-v1.png",
+            asset_root=self.files.root,
         )
         record = self.upload(user_id=user_id, purpose="practice_pdf", original_name=f"practice-{job.job_id[:8]}.pdf", content=content)
         return self.store.complete_practice_job(

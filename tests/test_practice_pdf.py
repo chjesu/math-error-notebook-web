@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
+
+from PIL import Image
 
 from services.web_domain.practice_pdf import _formatted_text, _replace_math_args, build_practice_pdf
 
@@ -64,6 +68,24 @@ class PracticePdfMathTests(unittest.TestCase):
         )
 
         self.assertTrue(content.startswith(b"%PDF-"))
+
+    def test_portable_question_image_is_embedded(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            asset = root / "bank-assets" / ("a" * 64 + ".png")
+            asset.parent.mkdir()
+            Image.new("RGB", (320, 180), "white").save(asset)
+            content = build_practice_pdf(
+                [{
+                    "kind": "original", "error_id": "image-question", "question_id": None,
+                    "stem_text": f"如图。![原题图](bank-assets/{asset.name})\n求证。", "answer_text": None,
+                    "difficulty": None, "source_title": "个人错题本", "reason": "错题回顾",
+                }],
+                include_answers=False,
+                asset_root=root,
+            )
+
+        self.assertIn(b"/Subtype /Image", content)
 
     def test_stage_reference_and_redo_layouts_both_build(self) -> None:
         items = [

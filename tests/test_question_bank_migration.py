@@ -68,6 +68,21 @@ class QuestionBankMigrationTests(unittest.TestCase):
         self.assertEqual(first["sha256"], second["sha256"])
         self.assertEqual((first["count"], first["verified"]), (1, 1))
 
+    def test_question_images_are_rewritten_to_portable_assets(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "data" / "imports" / "question.png"
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b"\x89PNG\r\n\x1a\nquestion-image")
+            assets = {}
+            rendered = migrate_question_bank._portable_images(
+                "如图。![原题图](data/imports/question.png)", root, assets
+            )
+
+        self.assertRegex(rendered, r"!\[原题图\]\(bank-assets/[0-9a-f]{64}\.png\)")
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(next(iter(assets.values()))["content_sha256"], next(iter(assets)).split("/")[1].split(".")[0])
+
     def test_missing_provenance_fails_closed(self) -> None:
         broken = dict(QUESTION)
         broken["license"] = ""
@@ -110,7 +125,7 @@ class QuestionBankMigrationTests(unittest.TestCase):
         connection = Connection()
         item = migrate_question_bank.map_question(QUESTION, {"rights_confirmed": 1})
         with mock.patch.object(migrate_question_bank, "_connection", return_value=connection):
-            migrate_question_bank.commit({"questions": [item]})
+            migrate_question_bank.commit({"questions": [item], "assets": []})
         statements = [sql for sql, _ in connection.cursor_instance.calls]
         self.assertTrue(all("ON DUPLICATE KEY UPDATE id=id" not in sql for sql in statements))
         verification = next(args for sql, args in connection.cursor_instance.calls if sql.startswith("INSERT INTO question_verifications"))
