@@ -388,6 +388,8 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .error-select { display: grid; align-self: start; width: 28px; height: 28px; place-items: center; cursor: pointer; }
 .error-select input { width: 18px; height: 18px; accent-color: var(--brand); }
 .error-card article { min-width: 0; }
+.error-record-id { margin: 8px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.error-record-id code { font-family: ui-monospace, Consolas, monospace; user-select: text; }
 .error-card h3 { margin: 10px 0 14px; font-size: 15px; line-height: 1.65; white-space: pre-wrap; }
 .error-card dl { display: grid; gap: 10px; margin: 0; }
 .error-card dl > div { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 12px; }

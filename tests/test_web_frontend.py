@@ -10,6 +10,38 @@ WEB = ROOT / "web"
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_notebook_cards_show_full_error_ids(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is needed for frontend behavior checks")
+        script = r"""
+const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+const source = fs.readFileSync('web/app.js', 'utf8'), list = {innerHTML:''};
+const ids = ['0123456789abcdef0123456789abcdef', 'fedcba9876543210fedcba9876543210'];
+const context = {$:()=>list, errors:ids.map((error_id,i)=>({error_id,status:i?'mastered':'open',
+  created_at:'2026-08-31T00:00:00Z', question_text:'题目', first_error:'错因'})),
+  selectedErrorIds:new Set([ids[0]]), selectionMode:'auto', causeLabels:{},
+  stageLabel:item=>item.status==='mastered'?'已掌握':'待安排', escapeHtml:s=>String(s??''), renderMath:()=>{}};
+vm.createContext(context);
+vm.runInContext(source.slice(source.indexOf('  function renderErrors()'), source.indexOf('  async function showError(')),context);
+for (const mode of ['auto','manual','fixed']) {
+  context.selectionMode = mode;
+  context.renderErrors();
+  const displayed = [...list.innerHTML.matchAll(/<p class="error-record-id">错题编号（error_id）：<code>([0-9a-f]{32})<\/code><\/p>/g)].map(m=>m[1]);
+  assert.deepEqual(displayed,ids);
+  for (const id of ids) assert.ok(list.innerHTML.includes(`data-error-detail="${id}"`));
+}
+context.errors = [];
+context.renderErrors();
+assert.ok(list.innerHTML.includes('还没有错题。'));
+assert.ok(!list.innerHTML.includes('error-record-id'));
+"""
+        result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        css = (WEB / "app.css").read_text(encoding="utf-8")
+        self.assertIn("overflow-wrap: anywhere", css.split(".error-record-id {", 1)[1].split("}", 1)[0])
+        self.assertIn("user-select: text", css.split(".error-record-id code {", 1)[1].split("}", 1)[0])
+
     def test_calendar_controls_are_borderless_accessible_icons(self) -> None:
         html = (WEB / "progress.html").read_text(encoding="utf-8")
         css = (WEB / "app.css").read_text(encoding="utf-8")
