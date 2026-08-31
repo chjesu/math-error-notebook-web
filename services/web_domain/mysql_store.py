@@ -1084,6 +1084,9 @@ class MySqlDomainStore:
         error = self.get_error(user_id=user_id, error_id=error_id)
         if not error:
             raise LookupError("error not found")
+        existing = self.list_recommendations(user_id=user_id, error_id=error_id)
+        if len(existing) >= limit:
+            return existing[:limit], False
         connection = self._connect()
         cursor = connection.cursor()
         try:
@@ -1101,7 +1104,7 @@ class MySqlDomainStore:
         finally:
             cursor.close()
             connection.close()
-        ranked = rank_questions(error.question_text, candidates, limit)
+        ranked = rank_questions(error.question_text, candidates, limit - len(existing))
         if ranked:
             now = _utcnow()
             day = learning_day()
@@ -1470,13 +1473,17 @@ class MySqlDomainStore:
 
     def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool, review_manifest: list[dict] | None = None, plan_kind: str = "daily_review") -> Job:
         now = _utcnow()
-        checkpoint = {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers, "plan_kind": plan_kind, "generated_at": now.replace(tzinfo=timezone.utc).isoformat()}
-        if review_manifest is not None:
-            checkpoint.update(review_manifest=review_manifest, review_job_id=job_id)
         connection = self._connect()
         cursor = connection.cursor()
         try:
             connection.begin()
+            cursor.execute("SELECT checkpoint_json FROM web_jobs WHERE id=%s AND user_id=%s AND job_type='practice_pdf' FOR UPDATE", (job_id, user_id))
+            row = cursor.fetchone()
+            if not row:
+                raise LookupError("job not found")
+            checkpoint = (self._json(row[0]) or {}) | {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers, "plan_kind": plan_kind, "generated_at": now.replace(tzinfo=timezone.utc).isoformat()}
+            if review_manifest is not None:
+                checkpoint.update(review_manifest=review_manifest, review_job_id=job_id)
             changed = cursor.execute("UPDATE web_jobs SET status='completed',checkpoint_json=%s,result_json=%s,updated_at=%s WHERE id=%s AND user_id=%s AND job_type='practice_pdf'", (json.dumps(checkpoint), json.dumps(checkpoint), now, job_id, user_id))
             if changed != 1:
                 raise LookupError("job not found")

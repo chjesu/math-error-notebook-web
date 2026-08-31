@@ -90,6 +90,23 @@ class LearningLoopTests(unittest.TestCase):
         self.assertEqual(repeated, [])
         self.assertTrue(gap)
 
+    def test_existing_recommendation_satisfies_repeated_request_without_using_another(self) -> None:
+        self.store.add_question(Question("1" * 32, "解方程 x+2=5", "x=3", 10, 2.0, "授权题库"))
+        self.store.add_question(Question("2" * 32, "解方程 x+3=7", "x=4", 10, 2.0, "授权题库"))
+
+        first, _ = self.store.assign_recommendations(user_id=self.user_id, error_id=self.error_id, limit=1)
+        repeated, gap = self.store.assign_recommendations(user_id=self.user_id, error_id=self.error_id, limit=1)
+
+        self.assertEqual([item.recommendation_id for item in repeated], [first[0].recommendation_id])
+        self.assertFalse(gap)
+        self.assertEqual(len(self.store.recommendations), 1)
+        self.assertEqual(self.store.learning_usage(user_id=self.user_id)["recommendation"]["count"], 1)
+        expanded, gap = self.store.assign_recommendations(user_id=self.user_id, error_id=self.error_id, limit=2)
+        self.assertEqual(len(expanded), 2)
+        self.assertFalse(gap)
+        self.assertEqual(len(self.store.recommendations), 2)
+        self.assertEqual(self.store.learning_usage(user_id=self.user_id)["recommendation"]["count"], 2)
+
     def test_daily_grade_quota_counts_unique_successes_and_keeps_a_started_batch(self) -> None:
         now = datetime(2026, 8, 29, 4, tzinfo=timezone.utc)
         first = [f"{index:032x}" for index in range(39)]
@@ -173,10 +190,13 @@ class LearningLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             service = NotebookService(self.store, Path(directory))
             job = service.create_practice_pdf(user_id=self.user_id, error_ids=[self.error_id], idempotency_key="practice-0001")
+            repeated = service.create_practice_pdf(user_id=self.user_id, error_ids=[self.error_id], idempotency_key="practice-0002")
             filename, content = service.download_practice_pdf(user_id=self.user_id, job_id=job.job_id)
             self.assertTrue(filename.endswith(".pdf"))
             self.assertTrue(content.startswith(b"%PDF-"))
             self.assertFalse(job.checkpoint["include_answers"])
+            self.assertEqual(repeated.job_id, job.job_id)
+            self.assertEqual(len(service.list_practice_pdfs(user_id=self.user_id)), 1)
             with self.assertRaisesRegex(RuntimeError, "conflict"):
                 service.create_practice_pdf(user_id=self.user_id, error_ids=[self.error_id], idempotency_key="practice-0001", include_answers=True)
             with self.assertRaises(LookupError):

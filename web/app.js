@@ -1306,13 +1306,15 @@ function bindErrors() {
     }
   });
   $("#generate-review-pdf").addEventListener("click", async event => {
-    if (generatingPdf || !(await loadDashboard()) || fixedPlan) return;
-    let ids = [...selectedErrorIds];
-    if (!ids.length) return status($("#today-pdf-status"), "当前没有可生成的复习题。", true);
+    if (generatingPdf) return;
+    const button = event.currentTarget;
     generatingPdf = true;
-    event.currentTarget.disabled = true;
+    button.disabled = true;
     status($("#today-pdf-status"), "正在匹配已验证推荐题并生成 PDF…");
     try {
+      if (!(await loadDashboard()) || fixedPlan) return;
+      let ids = [...selectedErrorIds];
+      if (!ids.length) return status($("#today-pdf-status"), "当前没有可生成的复习题。", true);
       await Promise.all(ids.map(id => api(`/v1/errors/${id}/recommendations?limit=1`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}})));
       const prepared = new Set(ids);
       if (!(await loadDashboard()) || fixedPlan) return;

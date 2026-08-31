@@ -453,6 +453,14 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         for heading in ("题目整理", "学生作答还原", "错因分析与点评", "知识点梳理", "详细解析", "最终答案", "错题本记录检查"):
             self.assertIn(heading, script)
         self.assertIn('（小建议：${diagnosis.prevention_cue}）', script)
+
+    def test_daily_pdf_button_locks_before_first_await(self) -> None:
+        script = (WEB / "app.js").read_text(encoding="utf-8")
+        handler = script.split('$("#generate-review-pdf").addEventListener("click", async event => {', 1)[1].split("  const refreshWhenVisible", 1)[0]
+        self.assertLess(handler.index("generatingPdf = true;"), handler.index("await loadDashboard()"))
+        self.assertIn("const button = event.currentTarget;", handler)
+        self.assertIn("button.disabled = true;", handler)
+        self.assertNotIn("event.currentTarget.disabled", handler)
         self.assertNotIn('6. 最终答案及小建议', script)
 
     def test_mobile_layout_and_keyboard_focus_are_defined_for_product_pages(self) -> None:

@@ -502,6 +502,9 @@ class InMemoryNotebookStore:
         error = self.get_error(user_id=user_id, error_id=error_id)
         if not error:
             raise LookupError("error not found")
+        existing = self.list_recommendations(user_id=user_id, error_id=error_id)
+        if len(existing) >= limit:
+            return existing[:limit], False
         eligible = [
             question
             for question_id, question in self.questions.items()
@@ -509,7 +512,7 @@ class InMemoryNotebookStore:
             and not any(attempt.user_id == user_id and getattr(attempt, "question_id", None) == question_id for attempt in self.attempts.values())
             and not any(item.user_id == user_id and item.question.question_id == question_id for item in self.recommendations.values())
         ]
-        ranked = rank_questions(error.question_text, eligible, limit)
+        ranked = rank_questions(error.question_text, eligible, limit - len(existing))
         day = learning_day()
         current = self.learning_usage(user_id=user_id)["recommendation"]["count"]
         new_ranked = [
@@ -957,6 +960,7 @@ class NotebookService:
     def __init__(self, store: Any, quarantine_root: Path) -> None:
         self.store = store
         self.files = FileIntake(quarantine_root)
+        self._practice_pdf_lock = RLock()
 
     def upload(self, *, user_id: str, purpose: str, original_name: str, content: bytes, idempotency_key: str | None = None) -> FileRecord:
         candidate = self.files.quarantine(user_id=user_id, original_name=original_name, content=content)
@@ -1008,36 +1012,51 @@ class NotebookService:
     def create_practice_pdf(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool = False, plan_kind: str = "daily_review") -> Job:
         if plan_kind not in {"daily_review", "practice"}:
             raise ValueError("invalid plan_kind")
-        job = self.store.create_practice_job(user_id=user_id, error_ids=error_ids, idempotency_key=idempotency_key, include_answers=include_answers, plan_kind=plan_kind)
-        if job.status == "completed":
-            return job
-        items, gaps = self.store.practice_items(user_id=user_id, error_ids=error_ids)
-        recommendations_by_error = {error_id: 0 for error_id in error_ids}
-        for item in items:
-            if item["kind"] == "recommendation":
-                recommendations_by_error[str(item["error_id"])] += 1
-        task_count = sum(item["kind"] == "recommendation" for item in items) + sum(
-            bool(item.get("requires_original")) or recommendations_by_error[str(item["error_id"])] == 0
-            for item in items if item["kind"] == "original"
-        )
-        manifest = build_manifest(job.job_id, items, self.store.list_active_reviews(user_id=user_id))
-        content = build_practice_pdf(
-            items,
-            include_answers=include_answers,
-            asset_root=self.files.root,
-            logo_path=Path(__file__).resolve().parents[2] / "assets" / "branding" / "logo-symbol-color-128-v1.png",
-        )
-        record = self.upload(user_id=user_id, purpose="practice_pdf", original_name=f"practice-{job.job_id[:8]}.pdf", content=content)
-        return self.store.complete_practice_job(
-            user_id=user_id,
-            job_id=job.job_id,
-            file_id=record.file_id,
-            question_count=task_count,
-            recommendation_gap_count=gaps,
-            include_answers=include_answers,
-            review_manifest=manifest,
-            plan_kind=plan_kind,
-        )
+        expected_ids = sorted(set(error_ids))
+        with self._practice_pdf_lock:
+            if plan_kind == "daily_review":
+                for paper in self.store.list_practice_pdfs(user_id=user_id, include_checkpoints=True):
+                    checkpoint = paper.get("_checkpoint") or {}
+                    saved_ids = checkpoint.get("error_ids") or [row.get("error_id") for row in checkpoint.get("review_manifest") or []]
+                    generated_at = paper.get("generated_at")
+                    if (paper.get("source", "generated") == "generated" and generated_at
+                            and learning_day(datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))) == learning_day()
+                            and paper.get("plan_kind", "daily_review") == "daily_review"
+                            and bool(paper.get("include_answers")) == include_answers
+                            and sorted(set(filter(None, saved_ids))) == expected_ids):
+                        existing = self.store.get_job(user_id=user_id, job_id=paper["task_id"])
+                        if existing:
+                            return existing
+            job = self.store.create_practice_job(user_id=user_id, error_ids=error_ids, idempotency_key=idempotency_key, include_answers=include_answers, plan_kind=plan_kind)
+            if job.status == "completed":
+                return job
+            items, gaps = self.store.practice_items(user_id=user_id, error_ids=error_ids)
+            recommendations_by_error = {error_id: 0 for error_id in error_ids}
+            for item in items:
+                if item["kind"] == "recommendation":
+                    recommendations_by_error[str(item["error_id"])] += 1
+            task_count = sum(item["kind"] == "recommendation" for item in items) + sum(
+                bool(item.get("requires_original")) or recommendations_by_error[str(item["error_id"])] == 0
+                for item in items if item["kind"] == "original"
+            )
+            manifest = build_manifest(job.job_id, items, self.store.list_active_reviews(user_id=user_id))
+            content = build_practice_pdf(
+                items,
+                include_answers=include_answers,
+                asset_root=self.files.root,
+                logo_path=Path(__file__).resolve().parents[2] / "assets" / "branding" / "logo-symbol-color-128-v1.png",
+            )
+            record = self.upload(user_id=user_id, purpose="practice_pdf", original_name=f"practice-{job.job_id[:8]}.pdf", content=content)
+            return self.store.complete_practice_job(
+                user_id=user_id,
+                job_id=job.job_id,
+                file_id=record.file_id,
+                question_count=task_count,
+                recommendation_gap_count=gaps,
+                include_answers=include_answers,
+                review_manifest=manifest,
+                plan_kind=plan_kind,
+            )
 
     def prepare_review_candidate(self, *, user_id: str, candidate: GradeCandidate, locator: dict | None = None) -> GradeCandidate:
         """Carry the frozen adjudication forward without rewriting the OCR input."""

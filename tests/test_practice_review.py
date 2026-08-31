@@ -41,8 +41,8 @@ class PracticeReviewTests(unittest.TestCase):
         self.store.add_question(self.question)
         self.store.recommendations["r1"] = Recommendation("r1", self.owner, self.error.error_id, self.question, "同知识点", "assigned")
 
-    def paper(self, *, key="paper", legacy=False):
-        job = self.service.create_practice_pdf(user_id=self.owner, error_ids=[self.error.error_id], idempotency_key=key)
+    def paper(self, *, key="paper", legacy=False, plan_kind="daily_review"):
+        job = self.service.create_practice_pdf(user_id=self.owner, error_ids=[self.error.error_id], idempotency_key=key, plan_kind=plan_kind)
         if legacy:
             checkpoint = dict(job.checkpoint)
             checkpoint.pop("review_manifest")
@@ -77,7 +77,7 @@ class PracticeReviewTests(unittest.TestCase):
 
     def test_reprints_share_partial_submissions_and_complete_once(self):
         original = self.paper(key="original")
-        reprint = self.paper(key="reprint")
+        reprint = self.paper(key="reprint", plan_kind="practice")
         self.job = original
         self.assertEqual(self.submit(1)["completed_question_count"], 1)
         papers = self.service.list_practice_pdfs(user_id=self.owner)
@@ -94,7 +94,7 @@ class PracticeReviewTests(unittest.TestCase):
 
     def test_calendar_keeps_paper_progress_and_actual_submission_day_separate(self):
         original = self.paper(key="original")
-        reprint = self.paper(key="reprint")
+        reprint = self.paper(key="reprint", plan_kind="practice")
         for job in (original, reprint):
             self.store.jobs[job.job_id] = replace(job, checkpoint=job.checkpoint | {"generated_at": "2026-08-28T23:00:00+00:00"})
         self.job = original
@@ -133,7 +133,7 @@ class PracticeReviewTests(unittest.TestCase):
 
     def test_reprint_failure_rolls_back_without_losing_other_paper_submission(self):
         original = self.paper(key="original")
-        reprint = self.paper(key="reprint")
+        reprint = self.paper(key="reprint", plan_kind="practice")
         self.job = original
         self.submit(1)
         before = deepcopy(self.store.jobs)
@@ -162,6 +162,7 @@ class PracticeReviewTests(unittest.TestCase):
 
     def test_today_plan_stays_fixed_when_same_task_finishes_from_older_pdf(self):
         older = self.paper(key="older")
+        self.store.jobs[older.job_id] = replace(older, checkpoint=older.checkpoint | {"generated_at": "2026-08-29T00:00:00+00:00"})
         today = self.paper(key="today")
         self.service.create_practice_pdf(user_id=self.owner, error_ids=[self.error.error_id], idempotency_key="extra-practice", plan_kind="practice")
         papers = self.store.list_practice_pdfs(user_id=self.owner)
@@ -402,7 +403,7 @@ class PracticeReviewApiTests(unittest.TestCase):
             answer_text="f(x)=-1/2")
         self.fixture.store.add_question(question)
         self.fixture.store.recommendations["r1"] = replace(self.fixture.store.recommendations["r1"], question=question)
-        self.job = self.fixture.paper(key="numeric-paper")
+        self.job = self.fixture.paper(key="numeric-paper", plan_kind="practice")
         with patch.object(self.client, "call", return_value=(200, {}, {"results": [{}]})):
             self.process(1, code=code, conflict=True, color="red")
         self.last_payload["items"][0]["question_text"] = question.stem_text.replace(r"\frac{5}{4}", r"\frac{3}{4}")
