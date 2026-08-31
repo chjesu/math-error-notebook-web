@@ -54,6 +54,27 @@ class PracticePdfMathTests(unittest.TestCase):
         rendered = _formatted_text("学生填写 e_1，但没有使用公式。")
         self.assertIn("e_1", rendered)
 
+    def test_tex_shorthand_is_rendered_without_corrupting_commands(self) -> None:
+        examples = {
+            r"x\in[-\frac\pi6,\frac\pi{12}]": r"x\in[-\frac{\pi}{6},\frac{\pi}{12}]",
+            r"e=\frac2{\sqrt5}": r"e=\frac{2}{\sqrt{5}}",
+            r"e=\frac{\sqrt{10}}5": r"e=\frac{\sqrt{10}}{5}",
+            r"\sqrt3a": r"\sqrt{3}a",
+            r"\sqrt[3]8": r"\sqrt[3]{8}",
+            r"x\in\mathbb R,0\le\varphi<2\pi,n\ge3": r"x\in\mathbb{R},0\leq\varphi<2\pi,n\geq3",
+            r"A_n=\{1,2,\cdots,n\}(n\in\mathbb N^*)": r"A_n=\{1,2,\cdots,n\}(n\in\mathbb{N}^*)",
+            r"\frac{\frac12}{\sqrt3}": r"\frac{\frac{1}{2}}{\sqrt{3}}",
+            r"x\ne0，y：2": r"x\neq0,y:2",
+        }
+        for source, expected in examples.items():
+            with self.subTest(source=source):
+                self.assertEqual(_normalize_math_text(source), expected)
+                self.assertIsNotNone(_render_math_image(source, 11))
+
+    def test_fallback_replaces_whole_commands_not_prefixes(self) -> None:
+        self.assertEqual(_replace_math_args(r"\{1,2,\cdots,n\}\rightarrow\mathbb R"), "{1,2,⋯,n}→R")
+        self.assertEqual(_replace_math_args(r"0\le\varphi<\frac\pi{12}"), "0≤φ<π⁄12")
+
     def test_common_unbraced_math_and_markdown_image_paths_are_normalized(self) -> None:
         rendered = _formatted_text(r"向量 \vec a，系数为 \frac56，角为 $\omega=60^\circ$。![原题图](data/private/image.png)")
 

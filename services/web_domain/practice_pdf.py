@@ -43,9 +43,10 @@ def _replace_math_args(value: str) -> str:
         r"\langle": "⟨", r"\rangle": "⟩",
         r"\alpha": "α", r"\beta": "β", r"\gamma": "γ",
         r"\theta": "θ", r"\omega": "ω", r"\circ": "°",
+        r"\phi": "φ", r"\varphi": "φ", r"\mid": "|", r"\cdots": "⋯",
     }
-    for command, symbol in replacements.items():
-        value = value.replace(command, symbol)
+    value = _normalize_math_text(value)
+    value = re.sub(r"(\\(?:[A-Za-z]+|[,;]))[ \t]*", lambda m: replacements.get(m[1], m.group()), value)
     for _ in range(8):
         before = value
 
@@ -80,7 +81,8 @@ def _replace_math_args(value: str) -> str:
     value = re.sub(r"\^([0-9A-Za-z])", lambda m: m.group(1).translate(_SUPERSCRIPTS), value)
     value = re.sub(r"_([0-9A-Za-z])", lambda m: m.group(1).translate(_SUBSCRIPTS), value)
     value = value.replace("^°", "°")
-    value = value.replace("\\\\", " ").replace("{", "").replace("}", "")
+    value = re.sub(r"(?<!\\)[{}]", "", value.replace("\\\\", " "))
+    value = value.replace(r"\{", "{").replace(r"\}", "}")
     return re.sub(r"\\([A-Za-z]+)", r"\1", value)
 
 
@@ -112,17 +114,47 @@ def _math_spans(value: str) -> list[tuple[int, int, str]]:
     return sorted(spans)
 
 
+def _math_argument(value: str, start: int) -> tuple[str, int] | None:
+    """Read one TeX token/group without splitting commands such as \\pi."""
+    while start < len(value) and value[start].isspace():
+        start += 1
+    if start == len(value):
+        return None
+    if value[start] != "{":
+        token = re.match(r"\\(?:[A-Za-z]+|.)|[^{}\s]", value[start:])
+        return (token.group(), start + token.end()) if token else None
+    depth, end = 1, start + 1
+    while end < len(value):
+        if value[end] == "\\":
+            end += 2
+            continue
+        depth += (value[end] == "{") - (value[end] == "}")
+        if depth == 0:
+            return value[start + 1:end], end + 1
+        end += 1
+    return None
+
+
 def _normalize_math_text(value: str) -> str:
     value = value.replace(r"\dfrac", r"\frac").replace(r"\tfrac", r"\frac")
+    value = re.sub(r"\\(le|ge|ne)(?![A-Za-z])", lambda m: "\\" + {"le": "leq", "ge": "geq", "ne": "neq"}[m[1]], value)
+    value = value.translate(str.maketrans("，：；（）", ",:;()"))
     value = value.replace("⟨", r"\langle ").replace("⟩", r"\rangle ")
     value = re.sub(r"\\operatorname\{vec\}\s*\(([^()]*)\)", lambda match: rf"\vec{{{match.group(1)}}}", value)
-    value = re.sub(
-        r"\\frac\s*(\\[A-Za-z]+|[A-Za-z0-9])\s*(\\[A-Za-z]+|[A-Za-z0-9])",
-        lambda match: rf"\frac{{{match.group(1)}}}{{{match.group(2)}}}",
-        value,
-    )
+    # MathText requires braces where TeX accepts a single token. Work inside
+    # out so nested radicals/fractions and mixed braced arguments stay intact.
+    for match in reversed(list(re.finditer(r"\\(frac|sqrt|mathbb)(?![A-Za-z])(?:\[[^\[\]]+\])?", value))):
+        end, arguments = match.end(), []
+        for _ in range(2 if match[1] == "frac" else 1):
+            argument = _math_argument(value, end)
+            if argument is None:
+                break
+            text, end = argument
+            arguments.append("{" + text + "}")
+        else:
+            value = value[:match.end()] + "".join(arguments) + value[end:]
     return re.sub(
-        r"(?<![A-Za-z0-9}])(\\[A-Za-z]+|[A-Za-z0-9])\s*/\s*(\\[A-Za-z]+|[A-Za-z0-9]+)(?![A-Za-z0-9{])",
+        r"(?<![A-Za-z0-9}])(\\[A-Za-z]+(?![A-Za-z])|[A-Za-z0-9])\s*/\s*(\\[A-Za-z]+(?![A-Za-z])|[A-Za-z0-9]+)(?![A-Za-z0-9{])",
         lambda match: rf"\frac{{{match.group(1)}}}{{{match.group(2)}}}",
         value,
     )
@@ -137,7 +169,7 @@ def _render_math_image(math_text: str, font_size: float) -> tuple[Path, float, f
         from PIL import Image
 
         normalized = _normalize_math_text(math_text)
-        key = hashlib.sha256(f"v5|{normalized}|{font_size:.2f}".encode("utf-8")).hexdigest()[:20]
+        key = hashlib.sha256(f"v6|{normalized}|{font_size:.2f}".encode("utf-8")).hexdigest()[:20]
         output = _MATH_CACHE_DIR / f"math-{key}.png"
         if not output.is_file():
             _MATH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
