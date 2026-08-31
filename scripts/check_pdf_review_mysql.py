@@ -75,7 +75,9 @@ def main():
                 cursor.execute("UPDATE review_tasks SET due_at=%s WHERE user_id=%s", ((current - timedelta(days=2)).replace(tzinfo=None), owner))
             job = service.create_practice_pdf(user_id=owner, error_ids=[error.error_id], idempotency_key="transaction-paper")
             item = job.checkpoint["review_manifest"][0]
-            reprint = service.create_practice_pdf(user_id=owner, error_ids=[error.error_id], idempotency_key="transaction-reprint")
+            repeated = service.create_practice_pdf(user_id=owner, error_ids=[error.error_id], idempotency_key="transaction-repeat")
+            assert repeated.job_id == job.job_id
+            reprint = service.create_practice_pdf(user_id=owner, error_ids=[error.error_id], idempotency_key="transaction-reprint", plan_kind="practice")
             context = service.resolve_practice_review(user_id=owner, question_text=item["stem_text"], locator={"code": item["code"]})
             assert context["status"] == "matched"
             candidate = grade("blue", {"schema": "math-error-diagnosis/v1", "practice_review": context, "knowledge_points": ["方程"]}, "correct")
@@ -100,7 +102,7 @@ def main():
             assert store.list_practice_pdfs(user_id="0" * 32) == []
             # An operation failing after the shared state machine must roll back
             # both the task mutation and its paper checkpoint.
-            second = service.create_practice_pdf(user_id=owner, error_ids=[error.error_id], idempotency_key="rollback-paper")
+            second = service.create_practice_pdf(user_id=owner, error_ids=[error.error_id], idempotency_key="rollback-paper", plan_kind="practice")
             task = store.list_active_reviews(user_id=owner)[0]
             def fail(checkpoint, get_task, complete):
                 assert get_task(task.task_id)
