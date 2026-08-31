@@ -2,7 +2,7 @@
 
 > 文档基线：v0.4.0
 > 基线日期：2026-08-23
-> 当前状态：v0.4.0 本地候选已实现；OpenAPI 为 44 paths，230 项测试通过，真实 MySQL smoke、官方 Codex app-server 连续会话与数学候选实测和浏览器学习流程验收已完成。只读脱敏运营后台已实现，生产门禁未通过。
+> 当前状态：v0.4.0 本地候选学习闭环已实现，生产门禁未通过。2026-08-31 按用户要求删除运营后台运行代码及接口，历史设计文档中有关“已实现后台”的描述不再代表当前功能；以 `PROJECT_ARCHITECTURE.md` 和 `openapi/web-v1.json` 为准。历史数据库迁移、记录及共用会话计量保留。
 
 ## 当前产品口径
 
@@ -38,7 +38,7 @@
 | [18-MODEL-PROVIDER-MIGRATION.md](./18-MODEL-PROVIDER-MIGRATION.md) | 阿里云环境的模型供应商替换、应用自有 Harness、评测与灰度方案 | v0.1 | 已记录，待评测和实施批准 |
 | [22-ALIYUN-DEPLOYMENT-RUNBOOK.md](./22-ALIYUN-DEPLOYMENT-RUNBOOK.md) | 阿里云资源采购、生产化门禁、部署、灰度、回滚与恢复手册 | v0.1 | 可执行准备基线；当前版本仍禁止直接公网部署 |
 | [23-PRICING-STRATEGY.md](./23-PRICING-STRATEGY.md) | 首发套餐、成本假设、计费口径和试运营验证指标 | v0.1 | 讨论记录；待试运营数据验证 |
-| [24-OPERATIONS-ADMIN-PRD.md](./24-OPERATIONS-ADMIN-PRD.md) | 独立运营后台的权限、脱敏数据、页面和本地验收基线 | v0.1 | 本地候选实施中；生产治理待完成 |
+| [24-OPERATIONS-ADMIN-PRD.md](./24-OPERATIONS-ADMIN-PRD.md) | 已移除后台的历史设计留档 | v0.1 | 2026-08-31 已移除运行代码，不再提供此功能 |
 | [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前完整本地候选机器可校验 API 契约 | v0.4.0 | 44 paths；生产部署前仍需契约复核 |
 
 ## 活跃需求

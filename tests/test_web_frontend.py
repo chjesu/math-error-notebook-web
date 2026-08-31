@@ -236,24 +236,16 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_operations_dashboard_is_separate_read_only_and_responsive(self) -> None:
-        html = (WEB / "admin.html").read_text(encoding="utf-8")
-        script = (WEB / "admin.js").read_text(encoding="utf-8")
+    def test_admin_code_removed_without_removing_shared_model_usage(self) -> None:
+        self.assertFalse((WEB / "admin.html").exists())
+        self.assertFalse((WEB / "admin.js").exists())
+        self.assertFalse(list((ROOT / "services" / "web_ops").glob("*.py")))
         style = (WEB / "app.css").read_text(encoding="utf-8")
-        for text in ("后台管理", "用户管理", "用户行为分析", "模型 Token 消耗", "失败与等待任务", "候选题与待复核内容", "短信与风控", "注销工单", "后台访问审计"):
-            self.assertIn(text, html)
-        self.assertIn('fetch("/v1/admin/dashboard?limit=50"', script)
-        self.assertIn("本视图不支持按手机号查询", html)
-        self.assertNotIn('href="/errors"', html)
-        self.assertNotIn("修改判题", html)
-        self.assertIn(".admin-metrics", style)
-        self.assertIn(".admin-table-wrap", style)
-        self.assertIn('data-label="状态"', script)
-        self.assertIn('data-label="题库内容"', script)
-        self.assertIn('unreviewed: "待复核"', script)
+        self.assertNotIn(".admin-", style)
+        launcher = (ROOT / "scripts" / "local_env.py").read_text(encoding="utf-8")
+        self.assertNotIn("grant-admin", launcher)
+        self.assertNotIn("web_ops", launcher)
         self.assertIn("/v1/harness/sessions/usage", (ROOT / "extensions" / "dsh-math-notebook-ui" / "lib" / "client.js").read_text(encoding="utf-8"))
-        self.assertIn('data-label="Token"', script)
-        self.assertIn("content: attr(data-label)", style)
 
     def test_product_pages_remain_independent_documents(self) -> None:
         pages = {

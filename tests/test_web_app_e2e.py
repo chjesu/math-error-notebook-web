@@ -15,7 +15,6 @@ from services.web_app import NotebookAsgiApp
 from services.web_auth import AuthConfig, InMemoryCaptchaVerifier, InMemoryRegistrationStore, RecordingSmsSender, RegistrationService
 from services.web_domain import GradeCandidate, InMemoryNotebookStore, NotebookService, Question, cross_validate_reference
 from services.web_domain.notebook import Attempt
-from services.web_ops import InMemoryOperationsStore, OperationsService
 
 
 class NotebookE2ETests(unittest.TestCase):
@@ -94,35 +93,19 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual((katex[0], katex[1]["content-type"]), (200, "text/javascript; charset=utf-8"))
         self.assertIn(b"KaTeX", katex[2])
         self.assertEqual(self.call("/web/vendor/katex/auto-render.min.js")[0], 200)
-        self.assertEqual(self.call("/web/admin.js")[0], 200)
-        self.assertEqual(self.call("/admin")[0], 401)
         self.assertEqual(self.call("/assets/branding/../README.md")[0], 401)
 
-    def test_admin_dashboard_requires_operator_role_and_filters_sections(self) -> None:
+    def test_retired_admin_routes_are_not_found_with_or_without_login(self) -> None:
         cookie = self.login("13600136010")
-        other_cookie = self.login("13600136011")
-        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
-        operations = InMemoryOperationsStore({
-            "overview": {"active_users": 2, "attention_tasks": 1, "candidate_questions": 3, "pending_privacy_cases": 0},
-            "tasks": [{"task_id": "task-1", "user_ref": "用户 ····6010", "type": "grade", "status": "failed_retryable", "error_code": "model_network_error", "updated_at": "2026-08-30T00:00:00+00:00"}],
-            "content": [{"question_id": "question-1", "status": "candidate", "version": 1, "license": "open", "updated_at": "2026-08-30T00:00:00+00:00", "verification": "unreviewed"}],
-            "risk": {"sms_requested_today": 8, "sms_sent_today": 7, "sms_failed_today": 1, "rate_limited_today": 2},
-        })
-        operations.grant(user_id=user.user_id, role="reviewer")
-        self.app.operations = OperationsService(operations)
-
-        self.assertEqual(self.call("/admin", cookie=other_cookie)[0], 403)
-        page = self.call("/admin", cookie=cookie)
-        self.assertEqual(page[0], 200)
-        self.assertIn("后台管理".encode("utf-8"), page[2])
-        dashboard = self.call("/v1/admin/dashboard?limit=25", cookie=cookie)
-        self.assertEqual(dashboard[0], 200)
-        self.assertEqual(set(dashboard[2]["sections"]), {"overview", "tasks", "content"})
-        self.assertNotIn("risk", dashboard[2]["sections"])
-        serialized = json.dumps(dashboard[2], ensure_ascii=False)
-        for forbidden in ("phone_lookup_hash", "question_text", "answer_text", "object_key", "prompt"):
-            self.assertNotIn(forbidden, serialized)
-        self.assertEqual(len(operations.audit_events), 1)
+        for route in ("/admin", "/admin/", "/web/admin.html", "/web/admin.js", "/v1/admin", "/v1/admin/dashboard?limit=25"):
+            for session in (None, cookie):
+                for method in ("GET", "POST"):
+                    with self.subTest(route=route, logged_in=bool(session), method=method):
+                        response = self.call(route, method=method, cookie=session)
+                        self.assertEqual(response[0], 404)
+                        self.assertEqual(response[2]["error"]["code"], "not_found")
+        self.assertEqual(self.call("/v1/workbench", cookie=cookie)[0], 200)
+        self.assertEqual(self.call("/v1/workbench")[0], 401)
 
     def test_harness_token_usage_is_bound_to_the_authenticated_user(self) -> None:
         cookie = self.login("13600136020")

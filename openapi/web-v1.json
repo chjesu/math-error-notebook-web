@@ -66,27 +66,6 @@
         "responses": {"204": {"description": "全部会话已撤销"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}}
       }
     },
-    "/v1/admin/dashboard": {
-      "get": {
-        "operationId": "getOperationsDashboard",
-        "description": "返回当前后台角色允许查看的脱敏、只读运营区段，并记录访问审计。",
-        "security": [{"sessionCookie": []}],
-        "parameters": [{"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30}}],
-        "responses": {
-          "200": {
-            "description": "按角色过滤后的运营快照",
-            "content": {"application/json": {"schema": {"type": "object", "required": ["operator", "generated_at", "sections"], "properties": {
-              "operator": {"type": "object", "required": ["role", "label", "sections"], "properties": {"role": {"type": "string", "enum": ["operations", "reviewer", "security", "administrator"]}, "label": {"type": "string"}, "sections": {"type": "array", "items": {"type": "string"}}}},
-              "generated_at": {"type": "string", "format": "date-time"},
-              "sections": {"type": "object", "additionalProperties": true}
-            }}}}
-          },
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"},
-          "403": {"$ref": "#/components/responses/Error"}
-        }
-      }
-    },
     "/v1/workbench": {
       "get": {
         "operationId": "getWorkbench",

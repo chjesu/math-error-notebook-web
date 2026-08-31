@@ -482,43 +482,6 @@ def _existing_user_count() -> int:
     return int(_run_sql("SELECT COUNT(*) FROM web_users;", root=False, database=True, label="local user count"))
 
 
-def grant_admin(phone_last4: str, role: str) -> dict[str, str]:
-    """Grant a local-only operator role without accepting or displaying a full phone number."""
-
-    if not re.fullmatch(r"\d{4}", phone_last4):
-        raise ValueError("phone_last4 must contain exactly four digits")
-    if role not in {"operations", "reviewer", "security", "administrator"}:
-        raise ValueError("invalid operator role")
-    start()
-    _apply_migrations()
-    connection = _connection_factory()()
-    cursor = connection.cursor()
-    try:
-        cursor.execute(
-            "SELECT id FROM web_users WHERE phone_last4=%s AND status='active' ORDER BY created_at",
-            (phone_last4,),
-        )
-        rows = cursor.fetchall()
-        if len(rows) != 1:
-            raise ValueError("phone_last4 must match exactly one active local account")
-        user_id = str(rows[0][0])
-        connection.begin()
-        cursor.execute(
-            "INSERT INTO admin_operators (user_id,role,status,granted_by,created_at,updated_at) "
-            "VALUES (%s,%s,'active',NULL,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)) "
-            "ON DUPLICATE KEY UPDATE role=VALUES(role),status='active',updated_at=UTC_TIMESTAMP(6)",
-            (user_id, role),
-        )
-        connection.commit()
-        return {"status": "ok", "operator": f"用户 ····{phone_last4}", "role": role}
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        cursor.close()
-        connection.close()
-
-
 def _clear_smoke_auth(service: Any, phones: list[str], user_ids: list[str]) -> None:
     """Remove only identities created by smoke; never touch existing local users."""
 
@@ -1090,7 +1053,6 @@ def serve(
         RegistrationService,
     )
     from services.web_domain import MySqlDomainStore, NotebookService
-    from services.web_ops import MySqlOperationsStore, OperationsService
     import uvicorn
 
     sender = ConsoleSmsSender()
@@ -1102,7 +1064,6 @@ def serve(
         config=AuthConfig(captcha_after_phone_day=99, captcha_after_ip_hour=99),
     )
     notebook = NotebookService(MySqlDomainStore(_connection_factory()), RUNTIME / "quarantine")
-    operations = OperationsService(MySqlOperationsStore(_connection_factory()))
     harness_internal_token = secrets.token_urlsafe(32) if enable_harness_ui else None
     if enable_codex_model and enable_harness_model:
         raise RuntimeError("choose either the Harness model or the legacy Codex model")
@@ -1125,7 +1086,6 @@ def serve(
         require_https=False,
         model_runner=model_runner,
         harness_internal_token=harness_internal_token,
-        operations=operations,
     )
     app.resume_pending_deletions()
     harness_web = _start_harness_web(harness_internal_token) if harness_internal_token else None
@@ -1167,9 +1127,6 @@ def main() -> int:
     serve_parser.add_argument("--enable-codex-model", action="store_true")
     serve_parser.add_argument("--enable-harness-model", action="store_true")
     serve_parser.add_argument("--enable-harness-ui", action="store_true")
-    grant_admin_parser = sub.add_parser("grant-admin")
-    grant_admin_parser.add_argument("--phone-last4", required=True)
-    grant_admin_parser.add_argument("--role", choices=("operations", "reviewer", "security", "administrator"), default="administrator")
     args = parser.parse_args()
     try:
         if args.command == "init":
@@ -1198,8 +1155,6 @@ def main() -> int:
                 enable_harness_ui=args.enable_harness_ui,
             )
             return 0
-        elif args.command == "grant-admin":
-            result = grant_admin(args.phone_last4, args.role)
         else:
             result = doctor()
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
