@@ -136,6 +136,29 @@ class PracticePdfMathTests(unittest.TestCase):
 
         self.assertIn(b"/Subtype /Image", content)
 
+    def test_upload_photo_is_omitted_but_recommendation_diagram_is_kept(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            upload = root / "student-upload.png"
+            Image.new("RGB", (400, 600), "red").save(upload)
+            asset = root / "bank-assets" / ("b" * 64 + ".png")
+            asset.parent.mkdir()
+            Image.new("RGB", (320, 180), "blue").save(asset)
+            original = {"kind": "original", "error_id": "a" * 32, "stem_text": "原题题干",
+                        "error_reason": "遗漏分类讨论", "image_object_key": upload.name}
+            recommendation = {"kind": "recommendation", "error_id": "a" * 32,
+                              "question_id": "c" * 32, "stem_text": f"推荐题。![示意图](bank-assets/{asset.name})",
+                              "answer_text": "参考答案", "reason": "同类练习", "source_title": "授权题库"}
+            for include_answers in (False, True):
+                for stage in (1, 4):
+                    with self.subTest(include_answers=include_answers, stage=stage):
+                        original.update(review_stage=stage, requires_original=stage == 1)
+                        without_diagram = build_practice_pdf([original], include_answers=include_answers, asset_root=root)
+                        self.assertNotIn(b"/Subtype /Image", without_diagram)
+                        with_diagram = build_practice_pdf([original, recommendation], include_answers=include_answers, asset_root=root)
+                        self.assertEqual(with_diagram.count(b"/Subtype /Image"), 1)
+            self.assertTrue(upload.is_file())
+
     def test_stage_reference_and_redo_layouts_both_build(self) -> None:
         items = [
             {"kind": "original", "error_id": "redo", "question_id": None, "stem_text": "原题甲", "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "第 2 阶段", "review_stage": 2, "requires_original": True},

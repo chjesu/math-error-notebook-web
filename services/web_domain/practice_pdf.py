@@ -284,7 +284,7 @@ def build_practice_pdf(
     def answer_space() -> Spacer:
         return Spacer(1, 28 * mm)
 
-    def question_content(value: Any, style: ParagraphStyle = body, prefix: str = "", image_path: Path | None = None) -> list[Any]:
+    def question_content(value: Any, style: ParagraphStyle = body, prefix: str = "") -> list[Any]:
         text = str(value)
         flowables: list[Any] = []
         cursor = 0
@@ -310,13 +310,6 @@ def build_practice_pdf(
             cursor = match.end()
         if cursor < len(text):
             flowables.append(Paragraph((prefix if first_text else "") + _formatted_text(text[cursor:], style.fontSize), style))
-        if image_path and image_path.is_file():
-            prepared = _prepare_diagram_image(image_path, 110 * mm, 65 * mm)
-            if prepared:
-                path, width, height = prepared
-                diagram = Image(str(path), width=width, height=height)
-                diagram.hAlign = "CENTER"
-                flowables.extend([Spacer(1, 2 * mm), diagram, Spacer(1, 3 * mm)])
         return flowables or [Paragraph(prefix, style)]
 
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -350,16 +343,11 @@ def build_practice_pdf(
         if not recommendations and not original.get("requires_original"):
             status_text = "推荐缺口，改为重做"
         if group_no > 1:
-            story.append(CondPageBreak((150 if original.get("image_object_key") else 80) * mm))
+            story.append(CondPageBreak((150 if _MARKDOWN_IMAGE_RE.search(str(original["stem_text"])) else 80) * mm))
         story.append(Paragraph(f"{group_no}　错题编号 {escape(error_id[:8])}（第 {stage} 阶段 · {status_text}）", heading))
         if original.get("review_code"):
             story.append(Paragraph(f"复习码 {escape(original['review_code'])} · 拍照时请保留复习码与完整题目", meta))
-        original_image = None
-        if original.get("image_object_key") and asset_root:
-            candidate = (asset_root / original["image_object_key"]).resolve()
-            if asset_root.resolve() in candidate.parents and candidate.is_file():
-                original_image = candidate
-        story.extend(question_content(original["stem_text"], prefix="<b>错题回顾：</b>", image_path=original_image))
+        story.extend(question_content(original["stem_text"], prefix="<b>错题回顾：</b>"))
         story.append(Paragraph(f"<b>错题原因：</b>{_formatted_text(original.get('error_reason') or '未记录', body.fontSize)}", body))
         if requires_original:
             story.extend([Paragraph("原题作答区", meta), answer_space()])
