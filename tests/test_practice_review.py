@@ -20,7 +20,7 @@ from pypdf import PdfReader
 from services.web_domain import ErrorEntry, GradeCandidate, InMemoryNotebookStore, NotebookService, Question
 from services.web_domain.learning import Recommendation, ReviewTask
 from services.web_domain.notebook import Attempt
-from services.web_domain.practice_review import fixed_plan_items, legacy_manifest, review_locator
+from services.web_domain.practice_review import fixed_plan_items, legacy_manifest, review_locator, shared_review_checkpoints
 import test_web_app_e2e as api_tests
 
 
@@ -74,6 +74,91 @@ class PracticeReviewTests(unittest.TestCase):
         self.assertTrue(replay["replayed"])
         self.assertEqual(replay["completed_at"], second["completed_at"])
         self.assertEqual((len(self.store.review_attempts), len(self.store.errors)), (1, 1))
+
+    def test_reprints_share_partial_submissions_and_complete_once(self):
+        original = self.paper(key="original")
+        reprint = self.paper(key="reprint")
+        self.job = original
+        self.assertEqual(self.submit(1)["completed_question_count"], 1)
+        papers = self.service.list_practice_pdfs(user_id=self.owner)
+        self.assertEqual([paper["progress"]["answered_count"] for paper in papers], [1, 1])
+        self.assertNotIn("_checkpoint", papers[0])
+        self.job = reprint
+        self.assertEqual(self.submit(0)["status"], "review_completed")
+        self.job = original
+        replay = self.submit(1, now=self.now + timedelta(days=1))
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["completed_at"], self.now.isoformat())
+        self.assertEqual(len(self.store.review_attempts), 1)
+        self.assertEqual([paper["progress"]["answered_count"] for paper in self.service.list_practice_pdfs(user_id=self.owner)], [2, 2])
+
+    def test_calendar_keeps_paper_progress_and_actual_submission_day_separate(self):
+        original = self.paper(key="original")
+        reprint = self.paper(key="reprint")
+        for job in (original, reprint):
+            self.store.jobs[job.job_id] = replace(job, checkpoint=job.checkpoint | {"generated_at": "2026-08-28T23:00:00+00:00"})
+        self.job = original
+        # UTC August 30 evening is August 31 in China.
+        submitted = datetime(2026, 8, 30, 16, 30, tzinfo=timezone.utc)
+        self.submit(1, now=submitted)
+        self.job = reprint
+        self.submit(1, now=self.now)
+        calendar = self.service.review_calendar(user_id=self.owner, month="2026-08", now=self.now)
+        days = {day["date"]: day for day in calendar["days"]}
+        self.assertEqual((days["2026-08-29"]["paper_answered_count"], days["2026-08-29"]["paper_required_count"]), (1, 2))
+        self.assertEqual(len(days["2026-08-29"]["practice_plans"]), 1)
+        self.assertEqual(days["2026-08-29"]["submitted_question_count"], 0)
+        self.assertEqual(days["2026-08-30"]["submitted_question_count"], 0)
+        self.assertEqual(days["2026-08-31"]["submitted_question_count"], 1)
+        self.assertEqual(days["2026-08-31"]["practice_activity"][0]["submitted_at"], submitted.isoformat())
+        self.assertEqual(calendar["summary"]["submitted_question_count"], 1)
+        self.assertEqual(calendar["summary"]["completed_review_count"], 0)
+        other = self.service.review_calendar(user_id="other", month="2026-08", now=self.now)
+        self.assertTrue(all(not day["practice_plans"] and not day["practice_activity"] for day in other["days"]))
+
+    def test_reprint_state_does_not_leak_to_new_round_or_other_account(self):
+        original = self.paper()
+        self.job = original
+        self.submit(1)
+        old_checkpoint = self.store.jobs[original.job_id].checkpoint
+        changed = deepcopy(original.checkpoint)
+        for row in changed["review_manifest"]:
+            row["due_at"] = (self.task.due_at + timedelta(days=1)).isoformat()
+        shared = shared_review_checkpoints({"old": old_checkpoint, "new": changed})
+        self.assertFalse(shared["new"].get("review_submissions"))
+        changed = deepcopy(original.checkpoint)
+        changed["review_manifest"][1]["stem_text"] += " 条件改为十一。"
+        self.assertFalse(shared_review_checkpoints({"old": old_checkpoint, "changed": changed})["changed"].get("review_submissions"))
+        self.assertEqual(self.service.list_practice_pdfs(user_id="other"), [])
+
+    def test_reprint_failure_rolls_back_without_losing_other_paper_submission(self):
+        original = self.paper(key="original")
+        reprint = self.paper(key="reprint")
+        self.job = original
+        self.submit(1)
+        before = deepcopy(self.store.jobs)
+        self.job = reprint
+        with patch.object(self.store, "complete_review", side_effect=RuntimeError("simulated storage failure")):
+            with self.assertRaises(RuntimeError):
+                self.submit(0)
+        self.assertEqual(before, self.store.jobs)
+        self.assertFalse(self.store.review_attempts)
+        self.assertEqual(self.submit(0)["status"], "review_completed")
+
+    def test_reprints_with_different_required_items_do_not_share_completion_receipt(self):
+        self.job = self.paper()
+        self.submit(0)
+        self.submit(1)
+        completed = self.store.jobs[self.job.job_id].checkpoint
+        shorter = deepcopy(self.job.checkpoint)
+        shorter["review_manifest"] = shorter["review_manifest"][:1]
+        shared = shared_review_checkpoints({"full": completed, "short": shorter})
+        self.assertFalse(shared["short"].get("review_receipts"))
+
+    def test_unfrozen_legacy_pdf_does_not_claim_zero_completed(self):
+        self.paper(legacy=True)
+        paper = self.service.list_practice_pdfs(user_id=self.owner)[0]
+        self.assertFalse(paper["progress"]["available"])
 
     def test_today_plan_stays_fixed_when_same_task_finishes_from_older_pdf(self):
         older = self.paper(key="older")

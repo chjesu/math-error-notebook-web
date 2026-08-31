@@ -616,7 +616,7 @@ class NotebookAsgiApp:
                 await self._json(send, 200, {"completed": True, "next_review": self._review(next_task) if next_task else None, "mastered": next_task is None})
             elif path == "/v1/progress/calendar" and method == "GET":
                 month = self._query(scope, allowed={"month"}).get("month", "")
-                calendar = await self._sync(self.notebook.store.review_calendar, user_id=user.user_id, month=month)
+                calendar = await self._sync(self.notebook.review_calendar, user_id=user.user_id, month=month)
                 await self._json(send, 200, calendar)
             elif path == "/v1/progress" and method == "GET":
                 progress = await self._sync(self.notebook.store.progress, user_id=user.user_id)
@@ -624,7 +624,7 @@ class NotebookAsgiApp:
             elif path == "/v1/bank/status" and method == "GET":
                 await self._json(send, 200, await self._sync(self.notebook.store.bank_status))
             elif path == "/v1/practice-pdfs" and method == "GET":
-                items = await self._sync(self.notebook.store.list_practice_pdfs, user_id=user.user_id)
+                items = await self._sync(self.notebook.list_practice_pdfs, user_id=user.user_id)
                 plan = await self._sync(self.notebook.today_practice_plan, user_id=user.user_id, papers=items)
                 await self._json(send, 200, {"items": [item | {"download_url": f"/v1/practice-pdfs/{item['task_id']}/download"} for item in items], "count": len(items), "today_plan": plan})
             elif path == "/v1/practice-pdfs" and method == "POST":

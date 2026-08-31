@@ -58,7 +58,7 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   const grid = $('#review-calendar').innerHTML;
   assert.ok(grid.includes('今日到期<strong>0</strong>'));
   assert.ok(grid.includes('历史逾期<strong>13</strong>'));
-  assert.ok(grid.includes('今日已完成<strong>0</strong>'));
+  assert.ok(grid.includes('完成复习组<strong>0</strong>'));
   assert.ok(grid.includes('data-calendar-date="2026-08-24"'));
   assert.equal($('#calendar-stat-due').textContent,1);
   $('#review-calendar').handlers.click({target:{closest:()=>({dataset:{calendarDate:'2026-08-31',calendarKind:'backlog'}})}});
@@ -96,6 +96,26 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   clickDay('2026-08-23');
   assert.equal($('#calendar-day-detail').hidden,false);
   assert.ok($('#calendar-day-items').innerHTML.includes('没有符合筛选条件'));
+  // Paper progress belongs to the printed day; submitted activity belongs to
+  // the real day. Partial work must remain visible while group count is zero.
+  const row = {item_id:'q1',error_id:'historic',question_text:'推荐题内容',kind:'recommendation',stage:1,
+    status:'correct',required:true,submitted_at:'2026-08-30T16:10:00Z'};
+  const paper = {task_id:'paper1',filename:'29日练习.pdf',progress:{available:true,answered_count:1,required_count:3,
+    pending_count:2,needs_correction_count:0,groups:[{error_id:'historic',stage:1,answered_count:1,required_count:3}],items:[row]}};
+  history.days.push({date:'2026-08-29',items:[],practice_plans:[paper],paper_answered_count:1,paper_required_count:3},
+    {date:'2026-08-31',items:[],practice_activity:[{...row,filename:paper.filename}],submitted_question_count:1});
+  history.summary.submitted_question_count=1;
+  await $('#refresh-progress').handlers.click();
+  assert.ok($('#review-calendar').innerHTML.includes('PDF已答<strong>1/3</strong>'));
+  assert.ok($('#review-calendar').innerHTML.includes('当日已答题<strong>1</strong>'));
+  assert.equal($('#calendar-stat-answered').textContent,1);
+  clickDay('2026-08-29','papers');
+  assert.ok($('#calendar-day-items').innerHTML.includes('已答 1/3'));
+  assert.ok($('#calendar-day-items').innerHTML.includes('重印共享作答'));
+  assert.ok($('#calendar-day-items').innerHTML.includes('待答 2'));
+  clickDay('2026-08-31','answered');
+  assert.ok($('#calendar-day-items').innerHTML.includes('实际提交'));
+  assert.ok($('#calendar-day-items').innerHTML.includes('已答正确'));
   // Move to a future month: only real pending plans, with no completion/overdue prediction.
   errors.push({error_id:'future',status:'open',review:{stage:3,status:'pending',due_at:'2026-09-02T00:00:00Z'}});
   history.days = [{date:'2026-09-02',items:[{...recorded('future'),stage:3,original_due_date:'2026-09-02'}],stage_counts:{'3':1}}];
@@ -103,7 +123,7 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   const futureGrid = $('#review-calendar').innerHTML;
   assert.ok(futureGrid.includes('计划复习<strong>1</strong>'));
   assert.ok(futureGrid.includes('第3阶段×1'));
-  assert.ok(!futureGrid.includes('当日未完成') && !futureGrid.includes('当日已完成'));
+  assert.ok(!futureGrid.includes('当日未完成') && !futureGrid.includes('完成复习组'));
   clickDay('2026-09-02','due');
   assert.equal(($('#calendar-day-items').innerHTML.match(/name="calendar-error"/g)||[]).length,1);
   assert.ok($('#calendar-history-note').textContent.includes('选题不改变原定复习日期'));

@@ -3,11 +3,155 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from copy import deepcopy
 import hashlib
+import json
 import re
 from typing import Any
 
 from .learning import ReviewTask, question_match_score, learning_day, normalized_question_text
+
+
+def review_item_key(item: dict) -> str | None:
+    """Same printed exercise in the same frozen round, independent of PDF/code."""
+    if not all(item.get(key) for key in ("error_id", "task_id", "due_at", "stem_text")):
+        return None
+    if item.get("kind") not in {"original", "recommendation"}:
+        return None
+    if item["kind"] == "recommendation" and not item.get("question_id"):
+        return None
+    try:
+        due = datetime.fromisoformat(item["due_at"])
+        if due.tzinfo is None:
+            return None
+        identity = [item["error_id"], item["task_id"], item["stage"], due.astimezone(timezone.utc).isoformat(),
+                    item["kind"], item.get("question_id"), normalized_question_text(item["stem_text"])]
+        return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def review_group_key(manifest: list[dict], task_id: str) -> tuple:
+    rows = [item for item in manifest if item.get("task_id") == task_id and item.get("required")]
+    keys = [review_item_key(item) for item in rows]
+    return tuple(sorted(keys)) if keys and all(keys) else ()
+
+
+def shared_review_checkpoints(checkpoints: dict[str, dict]) -> dict[str, dict]:
+    """Read/transaction helper. Caller must supply only one account's live PDFs.
+
+    Keep original timestamps and the first accepted grade; never merge rounds
+    or copy a group receipt to a reprint with different required exercises.
+    """
+    result = deepcopy(checkpoints)
+    submissions, receipts = {}, {}
+    for checkpoint in result.values():
+        manifest = checkpoint.get("review_manifest") or []
+        for item in manifest:
+            key = review_item_key(item)
+            saved = (checkpoint.get("review_submissions") or {}).get(item.get("code"))
+            if not key or not item.get("required") or not saved or saved.get("verdict") not in {"correct", "partial", "incorrect"} or not saved.get("candidate_id"):
+                continue
+            try:
+                moment = datetime.fromisoformat(saved["submitted_at"])
+                if moment.tzinfo is None:
+                    continue
+            except (KeyError, ValueError, TypeError):
+                continue
+            rank = (moment, saved["candidate_id"])
+            if key not in submissions or rank < submissions[key][0]:
+                submissions[key] = (rank, saved)
+        for task_id, receipt in (checkpoint.get("review_receipts") or {}).items():
+            key = review_group_key(manifest, task_id)
+            if key and receipt.get("status") in {"review_completed", "review_needs_correction"}:
+                if key not in receipts or receipt.get("completed_at", "") < receipts[key].get("completed_at", ""):
+                    receipts[key] = receipt
+    for checkpoint in result.values():
+        manifest = checkpoint.get("review_manifest") or []
+        for item in manifest:
+            key = review_item_key(item)
+            if item.get("required") and key in submissions:
+                checkpoint.setdefault("review_submissions", {})[item["code"]] = deepcopy(submissions[key][1])
+        for task_id in {item.get("task_id") for item in manifest}:
+            key = review_group_key(manifest, task_id)
+            if key in receipts:
+                checkpoint.setdefault("review_receipts", {})[task_id] = deepcopy(receipts[key])
+    return result
+
+
+def practice_paper_progress(papers: list[dict]) -> list[dict]:
+    checkpoints = shared_review_checkpoints({paper["task_id"]: paper.get("_checkpoint") or {} for paper in papers})
+    result = []
+    for paper in papers:
+        checkpoint = checkpoints[paper["task_id"]]
+        manifest = checkpoint.get("review_manifest") or []
+        rows, seen = [], set()
+        for item in manifest:
+            key = review_item_key(item)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            saved = (checkpoint.get("review_submissions") or {}).get(item["code"]) if item.get("required") else None
+            verdict = saved.get("verdict") if saved else None
+            rows.append({"item_id": key, "error_id": item["error_id"], "question_id": item.get("question_id"),
+                         "question_text": item["stem_text"], "kind": item["kind"], "stage": item["stage"],
+                         "required": bool(item.get("required")), "status": "reference_only" if not item.get("required") else "correct" if verdict == "correct" else "needs_correction" if verdict in {"partial", "incorrect"} else "pending",
+                         "verdict": verdict, "submitted_at": saved.get("submitted_at") if saved else None})
+        required = [row for row in rows if row["required"]]
+        answered = [row for row in required if row["submitted_at"]]
+        groups = []
+        for task_id in dict.fromkeys(item.get("task_id") for item in manifest):
+            group_items = [item for item in manifest if item.get("task_id") == task_id]
+            keys = set(review_group_key(manifest, task_id))
+            if not keys:
+                continue
+            group_rows = [row for row in rows if row["item_id"] in keys]
+            receipt = (checkpoint.get("review_receipts") or {}).get(task_id, {})
+            groups.append({"error_id": group_items[0]["error_id"], "stage": group_items[0]["stage"],
+                           "answered_count": sum(bool(row["submitted_at"]) for row in group_rows), "required_count": len(keys),
+                           "completed": receipt.get("status") in {"review_completed", "review_needs_correction"}})
+        progress = {"available": bool(manifest) and len(seen) == len(manifest), "required_count": len(required),
+                    "answered_count": len(answered), "pending_count": len(required) - len(answered),
+                    "correct_count": sum(row["status"] == "correct" for row in answered),
+                    "needs_correction_count": sum(row["status"] == "needs_correction" for row in answered),
+                    "completed_group_count": sum(group["completed"] for group in groups), "group_count": len(groups),
+                    "groups": groups, "items": rows}
+        signature = sorted((row["item_id"], row["required"]) for row in rows)
+        plan_id = hashlib.sha256(json.dumps(signature).encode()).hexdigest() if progress["available"] else paper["task_id"]
+        result.append({key: value for key, value in paper.items() if key != "_checkpoint"} |
+                      {"plan_id": plan_id, "progress": progress})
+    return result
+
+
+def add_practice_calendar(calendar: dict, papers: list[dict]) -> dict:
+    """PDF progress is current; activity is attributed to the actual local day."""
+    days = {day["date"]: day for day in calendar["days"]}
+    for day in days.values():
+        day.update(practice_plans=[], practice_activity=[], submitted_question_count=0,
+                   paper_answered_count=0, paper_required_count=0)
+    seen_plans, seen_activity, planned_items = set(), set(), {}
+    for paper in papers:
+        if paper.get("generated_at"):
+            date = learning_day(datetime.fromisoformat(paper["generated_at"]))
+            key = (date, paper["plan_id"])
+            if date in days and key not in seen_plans:
+                seen_plans.add(key)
+                days[date]["practice_plans"].append(paper)
+                items = planned_items.setdefault(date, {})
+                items.update({row["item_id"]: row for row in paper["progress"]["items"] if row["required"]})
+        for row in paper["progress"]["items"]:
+            if not row["submitted_at"] or row["item_id"] in seen_activity:
+                continue
+            seen_activity.add(row["item_id"])
+            date = learning_day(datetime.fromisoformat(row["submitted_at"]))
+            if date in days:
+                days[date]["practice_activity"].append(row | {"filename": paper["filename"]})
+                days[date]["submitted_question_count"] += 1
+    for date, items in planned_items.items():
+        days[date]["paper_answered_count"] = sum(bool(row["submitted_at"]) for row in items.values())
+        days[date]["paper_required_count"] = len(items)
+    calendar["summary"]["submitted_question_count"] = sum(day["submitted_question_count"] for day in days.values())
+    return calendar
 
 
 def review_locator(value: Any) -> dict[str, Any]:

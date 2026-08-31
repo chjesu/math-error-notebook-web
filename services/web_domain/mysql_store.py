@@ -29,6 +29,7 @@ from .learning import (
     reference_validation_from_evidence,
     review_requires_original,
 )
+from .practice_review import shared_review_checkpoints
 
 
 class Cursor(Protocol):
@@ -1258,16 +1259,28 @@ class MySqlDomainStore:
         cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'review.completed','error',%s,%s,%s)", (user_id, error_id, json.dumps({"stage": stage, "result": result}), completed_at))
         return next_task
 
-    def mutate_practice_checkpoint(self, *, user_id: str, job_id: str, operation):
+    def mutate_practice_checkpoint(self, *, user_id: str, job_id: str, operation, share_reviews: bool = False):
         connection = self._connect()
         cursor = connection.cursor()
         try:
             connection.begin()
+            if share_reviews:
+                # Serialize reprint submissions for this account before taking
+                # PDF/task locks. Only the selected PDF is written below.
+                cursor.execute("SELECT id FROM web_users WHERE id=%s FOR UPDATE", (user_id,))
+                if not cursor.fetchone():
+                    raise LookupError("practice PDF not found")
             cursor.execute("SELECT checkpoint_json FROM web_jobs WHERE id=%s AND user_id=%s AND job_type='practice_pdf' AND status='completed' FOR UPDATE", (job_id, user_id))
             row = cursor.fetchone()
             if not row:
                 raise LookupError("practice PDF not found")
             checkpoint = self._json(row[0]) or {}
+            if share_reviews:
+                cursor.execute("SELECT j.id,j.checkpoint_json FROM web_jobs j JOIN web_files f ON f.id=JSON_UNQUOTE(JSON_EXTRACT(j.checkpoint_json,'$.file_id')) AND f.user_id=j.user_id WHERE j.user_id=%s AND j.job_type='practice_pdf' AND j.status='completed' AND f.purpose='practice_pdf' AND f.status='ready' ORDER BY j.id FOR UPDATE", (user_id,))
+                checkpoints = {str(key): self._json(value) or {} for key, value in cursor.fetchall()}
+                if job_id not in checkpoints:
+                    raise LookupError("practice PDF not found")
+                checkpoint = shared_review_checkpoints(checkpoints)[job_id]
 
             def get_task(task_id):
                 cursor.execute("SELECT t.id,t.error_id,t.stage,t.due_at,t.status FROM review_tasks t JOIN error_notebook_entries e ON e.id=t.error_id AND e.user_id=t.user_id WHERE t.id=%s AND t.user_id=%s AND e.status='open' FOR UPDATE", (task_id, user_id))
@@ -1478,7 +1491,7 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
-    def list_practice_pdfs(self, *, user_id: str) -> list[dict[str, Any]]:
+    def list_practice_pdfs(self, *, user_id: str, include_checkpoints: bool = False) -> list[dict[str, Any]]:
         connection = self._connect()
         cursor = connection.cursor()
         try:
@@ -1502,6 +1515,7 @@ class MySqlDomainStore:
                     "include_answers": bool(checkpoint.get("include_answers", False)),
                     "source": str(checkpoint.get("source", "generated")),
                     "plan_kind": str(checkpoint.get("plan_kind", "daily_review")),
+                    **({"_checkpoint": checkpoint} if include_checkpoints else {}),
                 })
             return items
         finally:

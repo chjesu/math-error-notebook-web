@@ -1166,6 +1166,8 @@ function bindErrors() {
       $("#selected-error-count").textContent = fixedPlan?.available ? `今日计划固定 ${counts.total} 道` : "今日 PDF 的选题清单不可还原";
       $("#pdf-step-state").textContent = "今日已生成，计划不再自动换题";
       $("#correction-step-state").textContent = counts.correction ? `已完成 ${counts.completed} 道，${counts.correction} 道需继续改错` : `已完成 ${counts.completed} 道，待完成 ${counts.pending} 道`;
+      const paperProgress = fixedPlan?.progress;
+      if (paperProgress?.available) $("#correction-step-state").textContent = `必做题已答 ${paperProgress.answered_count}/${paperProgress.required_count} · 待答 ${paperProgress.pending_count} · 需订正 ${paperProgress.needs_correction_count}`;
       $("#completion-step-state").textContent = counts.unavailable ? `${counts.unavailable} 道历史状态无法核对` : unfinished ? `还有 ${counts.pending} 道待完成` : "今日固定计划已完成";
       $("#today-plan-state").textContent = fixedPlan?.available ? `固定计划 ${counts.total} 道 · 完成 ${counts.completed} · 待做 ${counts.pending}${counts.correction ? ` · 需改错 ${counts.correction}` : ""}` : "今日已生成 PDF，但旧文件缺少可核对的冻结清单";
       $("#generate-review-pdf").disabled = true;
@@ -1403,7 +1405,7 @@ function bindProgress() {
   let selectionScope = "";
   let selectedErrorIds = new Set();
   let currentReviews = new Map();
-  const filterLabels = {all: "全部活动", new: "新增错题", due: "待复习", completed: "已完成", correction: "需改错"};
+  const filterLabels = {all: "全部活动", new: "新增错题", due: "待复习", completed: "作答与完成", correction: "需改错", papers: "PDF 当前进度", answered: "当日已答题"};
 
   function monthKey() {
     return `${monthCursor.getFullYear()}-${String(monthCursor.getMonth() + 1).padStart(2, "0")}`;
@@ -1437,6 +1439,7 @@ function bindProgress() {
     const kind = selectedMetric || activeFilter;
     const due = day.items.filter(item => item.type === "due" && (day.date < todaySnapshot.date || selectable(item)));
     const backlog = backlogFor(day);
+    if (["papers", "answered"].includes(kind)) return [];
     if (kind === "backlog") return backlog;
     if (kind === "due") return selectedMetric ? due : [...due, ...backlog];
     if (kind === "new") return day.items.filter(item => item.type === "new");
@@ -1450,6 +1453,7 @@ function bindProgress() {
     $("#calendar-stat-new").textContent = summary.new_error_count || 0;
     $("#calendar-stat-due").textContent = summary.due_review_count || 0;
     $("#calendar-stat-completed").textContent = summary.completed_review_count || 0;
+    $("#calendar-stat-answered").textContent = summary.submitted_question_count || 0;
     $("#calendar-stat-correction").textContent = summary.needs_correction_count || 0;
     $("#calendar-stat-overdue").textContent = summary.overdue_review_count || 0;
     $("#calendar-stat-rate").textContent = `${summary.planned_completion_percent || 0}%`;
@@ -1480,17 +1484,21 @@ function bindProgress() {
     const label = selectedMetric === "backlog" ? selectedDate === todaySnapshot.date ? "历史逾期" : "截至当天未完成" : selectedMetric === "due" ? selectedDate > todaySnapshot.date ? "计划复习" : "当日到期" : filterLabels[selectedMetric || activeFilter];
     $("#calendar-day-title").textContent = `${selectedDate} · ${label}`;
     $("#calendar-history-note").textContent = day.history_complete === false ? "历史记录不完整：部分旧到期日期已被覆盖或任务已取消，以下只展示可核实的记录，不能视为完整统计。" : selectedDate < todaySnapshot.date ? "未完成数量截至所选日期当天结束（中国时间）；已在之后完成的题仍保留在当时的记录中。" : selectedDate > todaySnapshot.date ? "仅展示已经安排的复习计划，后续阶段按实际完成情况生成；选题不改变原定复习日期。" : "历史逾期包含以前月份，不包含今天到期的题目。";
+    $("#calendar-history-note").textContent += " PDF 显示截至现在的逐题进度；当日已答题按实际提交日统计，完成复习组后才推进阶段。重印共享作答，不重复计数。";
     $("#calendar-selection-status").hidden = ![...groups.values()].some(group => group.selectable);
     status($("#calendar-selection-status"), `已选 ${selectedErrorIds.size}/12 道。仅仍在待复习任务中的题目可加入今日选题，勾选后打开左侧「错题本」继续生成 PDF。`);
-    $("#calendar-day-items").innerHTML = [...groups.values()].map(group => {
+    const kind = selectedMetric || activeFilter;
+    const paperHtml = ["all", "due", "completed", "papers"].includes(kind) ? (day.practice_plans || []).map(paper => `<article class="calendar-detail-item"><h4>${escapeHtml(paper.filename)}</h4>${practiceProgressMarkup(paper)}<a href="/v1/practice-pdfs/${encodeURIComponent(paper.task_id)}/download" download>下载 PDF</a></article>`).join("") : "";
+    const activityHtml = ["all", "completed", "answered", "correction"].includes(kind) ? (day.practice_activity || []).filter(row => kind !== "correction" || row.status === "needs_correction").map(row => `<article class="calendar-detail-item"><div class="calendar-event-labels"><span>${row.kind === "original" ? "原题重做" : "推荐训练"} · ${practiceVerdictLabel(row)}</span><span>实际提交 ${escapeHtml(new Date(row.submitted_at).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"}))}</span></div><p data-math-text>${escapeHtml(row.question_text)}</p><small>来源：${escapeHtml(row.filename)} · 错题 ${escapeHtml(row.error_id.slice(0, 8))}</small></article>`).join("") : "";
+    $("#calendar-day-items").innerHTML = paperHtml + activityHtml + [...groups.values()].map(group => {
       const labels = [...group.labels].map(label => `<span>${escapeHtml(label)}</span>`).join("");
-      const cause = group.item.first_error ? `<p><strong>错误原因：</strong>${escapeHtml(group.item.first_error)}</p>` : "";
-      const knowledge = group.knowledge.size ? `<p><strong>知识点：</strong>${[...group.knowledge].map(escapeHtml).join("、")}</p>` : "";
+      const cause = group.item.first_error ? `<p data-math-text><strong>错误原因：</strong>${escapeHtml(group.item.first_error)}</p>` : "";
+      const knowledge = group.knowledge.size ? `<p data-math-text><strong>知识点：</strong>${[...group.knowledge].map(escapeHtml).join("、")}</p>` : "";
       const checkbox = group.selectable ? `<label class="calendar-backlog-select"><input type="checkbox" name="calendar-error" value="${escapeHtml(group.item.error_id)}"${selectedErrorIds.has(group.item.error_id) ? " checked" : ""}><span>加入今日复习</span></label>` : "";
-      return `<article class="calendar-detail-item">${checkbox}<div class="calendar-event-labels">${labels}</div><h4>${escapeHtml(group.item.question_text)}</h4>${cause}${knowledge}</article>`;
+      return `<article class="calendar-detail-item">${checkbox}<div class="calendar-event-labels">${labels}</div><h4 data-math-text>${escapeHtml(group.item.question_text)}</h4>${cause}${knowledge}</article>`;
     }).join("") || '<p class="empty">当前没有符合筛选条件的题目。</p>';
     detail.hidden = false;
-    renderMath($("#calendar-day-items"));
+    $("#calendar-day-items").querySelectorAll("[data-math-text]").forEach(renderMath);
   }
 
   function renderCalendar() {
@@ -1511,7 +1519,9 @@ function bindProgress() {
       const metrics = [
         ["all", "due"].includes(activeFilter) ? metric(dateKey, "due", isFuture ? "计划复习" : isToday ? "今日到期" : "当日到期", isToday ? todaySnapshot.due_count : plans.length, "is-due", incomplete) : "",
         !isFuture && ["all", "due"].includes(activeFilter) ? metric(dateKey, "backlog", isToday ? "历史逾期" : "当日未完成", backlogFor(record).length, "is-overdue", incomplete) : "",
-        !isFuture && ["all", "completed"].includes(activeFilter) ? metric(dateKey, "completed", isToday ? "今日已完成" : "当日已完成", isToday ? todaySnapshot.completed_count : record.completed_review_count || 0, "is-completed") : "",
+        !isFuture && ["all", "completed"].includes(activeFilter) ? metric(dateKey, "completed", "完成复习组", isToday ? todaySnapshot.completed_count : record.completed_review_count || 0, "is-completed") : "",
+        !isFuture && ["all", "completed"].includes(activeFilter) && record.submitted_question_count ? metric(dateKey, "answered", "当日已答题", record.submitted_question_count, "is-completed") : "",
+        ["all", "due", "completed"].includes(activeFilter) && record.practice_plans?.length ? metric(dateKey, "papers", "PDF已答", record.paper_required_count ? `${record.paper_answered_count}/${record.paper_required_count}` : "待核对", "is-completed") : "",
         !isFuture && (activeFilter === "new" || activeFilter === "all" && record.new_error_count) ? metric(dateKey, "new", "新增错题", record.new_error_count || 0, "is-new") : "",
         !isFuture && (activeFilter === "correction" || activeFilter === "all" && record.needs_correction_count) ? metric(dateKey, "correction", "需改错", record.needs_correction_count || 0, "is-correction") : "",
       ].join("");
@@ -1522,7 +1532,7 @@ function bindProgress() {
     }
     while (cells.length % 7) cells.push('<div class="calendar-day is-empty" aria-hidden="true"></div>');
     $("#calendar-month").textContent = `${year} 年 ${month + 1} 月`;
-    const activeDays = calendar.days.filter(day => filteredItems(day).length).length;
+    const activeDays = calendar.days.filter(day => filteredItems(day).length || ["all", "completed"].includes(activeFilter) && day.submitted_question_count || ["all", "due", "completed"].includes(activeFilter) && day.practice_plans?.length).length;
     $("#calendar-summary").textContent = `${filterLabels[activeFilter]}：${activeDays} 天有记录；累计 ${calendar.total_error_count || 0} 道错题。`;
     $("#review-calendar").innerHTML = cells.join("");
     renderDayDetail();
@@ -1580,6 +1590,18 @@ function bindProgress() {
   loadProgress();
 }
 
+function practiceVerdictLabel(row) {
+  return {correct: "已答正确", needs_correction: "已答待订正", pending: "待作答", reference_only: "仅作推荐依据"}[row.status] || "待核对";
+}
+
+function practiceProgressMarkup(paper) {
+  const progress = paper.progress;
+  if (!progress?.available) return '<p class="pdf-progress-note">旧 PDF 的题目清单尚未完整核对，暂不推测完成数量。</p>';
+  const groups = progress.groups.filter(group => group.answered_count > 0).map(group => `<span>错题 ${escapeHtml(group.error_id.slice(0, 8))} · 第 ${group.stage} 阶段 · 已答 ${group.answered_count}/${group.required_count}${group.completed ? " · 本组已记录" : ""}</span>`).join("");
+  const items = progress.items.map(row => `<li><strong>${row.kind === "original" ? "原题" : "推荐题"} · ${practiceVerdictLabel(row)}</strong><p data-math-text>${escapeHtml(row.question_text)}</p>${row.submitted_at ? `<small>提交于 ${escapeHtml(new Date(row.submitted_at).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"}))}</small>` : ""}</li>`).join("");
+  return `<div class="pdf-progress"><p>必做题已答 <strong>${progress.answered_count}/${progress.required_count}</strong> · 待答 ${progress.pending_count} · 需订正 ${progress.needs_correction_count}</p><div class="pdf-progress-groups">${groups}</div><details><summary>查看逐题作答状态</summary><ol>${items}</ol></details><small>截至当前的进度，重印共享作答；全部必做题完成后才汇总复习阶段。</small></div>`;
+}
+
 function bindPractice() {
   api("/v1/practice-pdfs").then(result => {
     $("#practice-pdf-history").innerHTML = result.items.length ? result.items.map(item => {
@@ -1591,8 +1613,9 @@ function bindPractice() {
         ? `每日复习练习-${dateParts.year}年${dateParts.month}月${dateParts.day}日-${dateParts.hour}时${dateParts.minute}分.pdf`
         : item.filename;
       const details = item.source === "desktop_skill" ? `${generated} · Skill 历史文件` : `${generated} · ${item.question_count || 0} 道题${item.include_answers ? " · 含答案" : ""}`;
-      return `<article class="pdf-history-item"><div><strong>${escapeHtml(displayName)}</strong><small>${escapeHtml(details)}</small></div><a class="pdf-download" href="${escapeHtml(item.download_url)}" download>下载</a></article>`;
+      return `<article class="pdf-history-item"><div><strong>${escapeHtml(displayName)}</strong><small>${escapeHtml(details)}</small>${practiceProgressMarkup(item)}</div><a class="pdf-download" href="${escapeHtml(item.download_url)}" download>下载</a></article>`;
     }).join("") : '<p class="empty">还没有生成过练习 PDF。</p>';
+    $("#practice-pdf-history").querySelectorAll("[data-math-text]").forEach(renderMath);
   }).catch(error => { $("#practice-pdf-history").innerHTML = `<p class="status error">${escapeHtml(authError(error))}</p>`; });
 }
 

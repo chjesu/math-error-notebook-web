@@ -535,6 +535,13 @@ textarea:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset
 .pdf-history-item div { display: grid; min-width: 0; gap: 3px; }
 .pdf-history-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pdf-history-item small { color: var(--muted); }
+.pdf-progress { margin: 8px 0; font-size: 13px; line-height: 1.6; }
+.pdf-progress p { margin: 4px 0; }
+.pdf-progress-groups { display: grid; gap: 4px; color: var(--muted); }
+.pdf-progress details { margin-block: 8px; }
+.pdf-progress summary { cursor: pointer; color: var(--brand); }
+.pdf-progress li { margin-bottom: 12px; overflow-wrap: anywhere; }
+.pdf-progress small, .pdf-progress-note { color: var(--muted); font-size: 12px; }
 .pdf-download { flex: 0 0 auto; padding: 7px 14px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink); font-weight: 650; text-decoration: none; }
 .progress-stats { margin-top: 22px; }
 .settings-panel { max-width: 680px; }

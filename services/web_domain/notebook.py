@@ -36,7 +36,7 @@ from .learning import (
 )
 from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job, normalize_extraction_items
 from .practice_pdf import build_practice_pdf
-from .practice_review import apply_submission, build_manifest, fixed_plan_items, legacy_manifest, matching_items, review_locator, unresolved_receipt
+from .practice_review import add_practice_calendar, apply_submission, build_manifest, fixed_plan_items, legacy_manifest, matching_items, practice_paper_progress, review_locator, shared_review_checkpoints, unresolved_receipt
 
 
 @dataclass(frozen=True)
@@ -738,12 +738,18 @@ class InMemoryNotebookStore:
         self.jobs[job_id] = completed
         return completed
 
-    def mutate_practice_checkpoint(self, *, user_id: str, job_id: str, operation):
+    def mutate_practice_checkpoint(self, *, user_id: str, job_id: str, operation, share_reviews: bool = False):
         with self._practice_lock:
             job = self.get_job(user_id=user_id, job_id=job_id)
             if not job or job.job_type != "practice_pdf" or job.status != "completed":
                 raise LookupError("practice PDF not found")
             checkpoint = deepcopy(job.checkpoint or {})
+            if share_reviews:
+                papers = self.list_practice_pdfs(user_id=user_id, include_checkpoints=True)
+                checkpoints = {paper["task_id"]: paper["_checkpoint"] for paper in papers}
+                if job_id not in checkpoints:
+                    raise LookupError("practice PDF not found")
+                checkpoint = shared_review_checkpoints(checkpoints)[job_id]
             snapshot = deepcopy((self.review_tasks, self.review_attempts, self.errors, self._review_keys))
 
             def get_task(task_id):
@@ -762,7 +768,7 @@ class InMemoryNotebookStore:
                 self.review_tasks, self.review_attempts, self.errors, self._review_keys = snapshot
                 raise
 
-    def list_practice_pdfs(self, *, user_id: str) -> list[dict[str, Any]]:
+    def list_practice_pdfs(self, *, user_id: str, include_checkpoints: bool = False) -> list[dict[str, Any]]:
         items = []
         for job in reversed(self.jobs.values()):
             if job.user_id != user_id or job.job_type != "practice_pdf" or job.status != "completed" or not job.checkpoint:
@@ -779,6 +785,7 @@ class InMemoryNotebookStore:
                 "include_answers": bool(job.checkpoint.get("include_answers", False)),
                 "source": str(job.checkpoint.get("source", "generated")),
                 "plan_kind": str(job.checkpoint.get("plan_kind", "daily_review")),
+                **({"_checkpoint": deepcopy(job.checkpoint)} if include_checkpoints else {}),
             })
         return items
 
@@ -974,6 +981,13 @@ class NotebookService:
     def clear_conversation(self, *, user_id: str) -> None:
         self.store.clear_conversation(user_id=user_id)
 
+    def list_practice_pdfs(self, *, user_id: str) -> list[dict]:
+        return practice_paper_progress(self.store.list_practice_pdfs(user_id=user_id, include_checkpoints=True))
+
+    def review_calendar(self, *, user_id: str, month: str, now: datetime | None = None) -> dict:
+        calendar = self.store.review_calendar(user_id=user_id, month=month, now=now)
+        return add_practice_calendar(calendar, self.list_practice_pdfs(user_id=user_id))
+
     def today_practice_plan(self, *, user_id: str, papers: list[dict], now: datetime | None = None) -> dict | None:
         today = learning_day(now or _now())
         papers = [paper for paper in papers if paper.get("source", "generated") == "generated" and paper.get("plan_kind", "daily_review") == "daily_review" and paper.get("generated_at")
@@ -988,7 +1002,7 @@ class NotebookService:
         ids = list({row["task_id"] for row in manifest if row.get("task_id")})
         completions = self.store.list_review_completions(user_id=user_id, task_ids=ids)
         items = fixed_plan_items(manifest, completions, self.store.list_active_reviews(user_id=user_id))
-        return {"task_id": job.job_id, "available": bool(manifest), "items": items,
+        return {"task_id": job.job_id, "available": bool(manifest), "items": items, "progress": paper.get("progress"),
                 "download_url": f"/v1/practice-pdfs/{job.job_id}/download"}
 
     def create_practice_pdf(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool = False, plan_kind: str = "daily_review") -> Job:
@@ -1134,7 +1148,7 @@ class NotebookService:
             return apply_submission(checkpoint, code=context["code"], candidate_id=candidate.candidate_id,
                                     verdict=candidate.verdict, now=current, get_task=get_task, complete=complete)
         try:
-            return self.store.mutate_practice_checkpoint(user_id=user_id, job_id=context["job_id"], operation=submit)
+            return self.store.mutate_practice_checkpoint(user_id=user_id, job_id=context["job_id"], operation=submit, share_reviews=True)
         except LookupError as exc:
             if str(exc) != "practice PDF not found":
                 raise

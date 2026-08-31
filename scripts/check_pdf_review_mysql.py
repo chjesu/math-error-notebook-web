@@ -75,6 +75,7 @@ def main():
                 cursor.execute("UPDATE review_tasks SET due_at=%s WHERE user_id=%s", ((current - timedelta(days=2)).replace(tzinfo=None), owner))
             job = service.create_practice_pdf(user_id=owner, error_ids=[error.error_id], idempotency_key="transaction-paper")
             item = job.checkpoint["review_manifest"][0]
+            reprint = service.create_practice_pdf(user_id=owner, error_ids=[error.error_id], idempotency_key="transaction-reprint")
             context = service.resolve_practice_review(user_id=owner, question_text=item["stem_text"], locator={"code": item["code"]})
             assert context["status"] == "matched"
             candidate = grade("blue", {"schema": "math-error-diagnosis/v1", "practice_review": context, "knowledge_points": ["方程"]}, "correct")
@@ -84,6 +85,15 @@ def main():
             assert datetime.fromisoformat(receipt["next_due_at"]) == current + timedelta(days=1)
             replay = service.commit_practice_review(user_id=owner, candidate=candidate, now=current + timedelta(days=2))
             assert replay["replayed"] and replay["completed_at"] == receipt["completed_at"]
+            reprint_item = reprint.checkpoint["review_manifest"][0]
+            reprint_context = service.resolve_practice_review(user_id=owner, question_text=reprint_item["stem_text"], locator={"code": reprint_item["code"]})
+            reprint_candidate = grade("green", {"schema": "math-error-diagnosis/v1", "practice_review": reprint_context, "knowledge_points": ["方程"]}, "correct")
+            replay = service.commit_practice_review(user_id=owner, candidate=reprint_candidate, now=current + timedelta(days=2))
+            assert replay["replayed"] and replay["completed_at"] == receipt["completed_at"]
+            papers = service.list_practice_pdfs(user_id=owner)
+            assert len(papers) == 2 and all(paper["progress"]["answered_count"] == 1 for paper in papers)
+            calendar = service.review_calendar(user_id=owner, month=current.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m"), now=current)
+            assert calendar["summary"]["submitted_question_count"] == 1
             progress = store.progress(user_id=owner)
             assert progress["error_count"] == 1 and progress["completed_review_count"] == 1
             assert progress["today_completed_review_count"] == 1
@@ -98,7 +108,7 @@ def main():
                 checkpoint["should_not_persist"] = True
                 raise RuntimeError("simulated checkpoint failure")
             try:
-                store.mutate_practice_checkpoint(user_id=owner, job_id=second.job_id, operation=fail)
+                store.mutate_practice_checkpoint(user_id=owner, job_id=second.job_id, operation=fail, share_reviews=True)
             except RuntimeError:
                 pass
             else:
@@ -106,7 +116,7 @@ def main():
             assert "should_not_persist" not in store.get_job(user_id=owner, job_id=second.job_id).checkpoint
             assert store.list_active_reviews(user_id=owner)[0] == task
             assert store.progress(user_id=owner)["completed_review_count"] == 1
-            print(json.dumps({"mysql_transaction": "passed", "cross_day": "passed", "replay": "passed", "rollback": "passed", "synthetic_rows": "rolled_back"}))
+            print(json.dumps({"mysql_transaction": "passed", "cross_day": "passed", "reprints": "passed", "activity_dedup": "passed", "replay": "passed", "rollback": "passed", "synthetic_rows": "rolled_back"}))
     finally:
         connection.rollback()
         connection.close()
