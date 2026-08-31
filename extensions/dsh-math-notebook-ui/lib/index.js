@@ -17,6 +17,7 @@ function nextStepText(results) {
   if (results.some((item) => item.reference_review)) {
     return "下一步：系统将继续核对已验证题库解析，请等待本轮复核完成。";
   }
+  if (results.some((item) => item.reference_status === "conflict")) return "下一步：继续核对已保存的题库复核结果，无需重新上传图片或反复确认题干。";
   if (statuses.includes("review_unmatched")) return "下一步：请补充 PDF 名称、错题编号与阶段或复习码；直接在会话补充即可，无需再次上传图片。";
   if (statuses.includes("review_waiting")) return "下一步：按复习回执补齐该组尚未上传的必做题；若提示尚未到期，则到期后再确认。";
   if (statuses.includes("review_needs_correction")) return "下一步：先依据错因与解析订正本组题目，再按回执中的日期复习。";
@@ -67,6 +68,7 @@ function receiptTool() {
         required: ["schema", "status", "reference_status", "knowledge_point_count", "review_status", "message"],
         properties: {
           schema: {type: "string", const: "math-notebook-entry-receipt/v1"},
+          candidate_id: {type: "string"}, input_version: {type: "integer"},
           status: {type: "string", enum: receiptStatuses},
           reference_status: {type: "string", enum: ["consistent", "conflict", "not_found"]},
           reference_question_id: {type: "string"},

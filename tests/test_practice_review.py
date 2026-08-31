@@ -311,6 +311,87 @@ class PracticeReviewApiTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "review_needs_correction")
         self.assertEqual(len(self.fixture.store.errors), 1)
 
+    def numeric_conflict(self, *, code=False):
+        question = replace(self.fixture.question,
+            stem_text=r"已知函数 f(x) 的值域为 [-1,1]，函数 g(x)=[f(x)]^2+f(x)+\frac{5}{4}，由 g(x)=1 求 f(x) 的值。",
+            answer_text="f(x)=-1/2")
+        self.fixture.store.add_question(question)
+        self.fixture.store.recommendations["r1"] = replace(self.fixture.store.recommendations["r1"], question=question)
+        self.job = self.fixture.paper(key="numeric-paper")
+        with patch.object(self.client, "call", return_value=(200, {}, {"results": [{}]})):
+            self.process(1, code=code, conflict=True, color="red")
+        self.last_payload["items"][0]["question_text"] = question.stem_text.replace(r"\frac{5}{4}", r"\frac{3}{4}")
+        response = self.call("/v1/internal/harness/intakes/process", self.last_payload)
+        self.assertEqual(response[0], 200, response)
+        result = response[2]["results"][0]
+        self.assertEqual(result["receipt_status"], "needs_review")
+        return result
+
+    def adjudicate(self, result):
+        response = self.call("/v1/internal/harness/reference-conflicts/adjudicate", {
+            "session_id": "review-test", "items": [{
+                "candidate_id": result["candidate_id"], "input_version": 1,
+                "status": "conflict", "rationale": "图片常数识别与已验证题库不同，按题库当前版本重新核验学生作答为正确。",
+                "authoritative_grade": {"verdict": "correct", "first_error": "", "cause_code": "", "cause_evidence": "",
+                    "knowledge_points": ["方程"], "prevention_cue": "", "confidence": 0.99}}]})
+        self.assertEqual(response[0], 200, response)
+        return response[2]["results"][0]
+
+    def test_corrected_candidate_survives_locator_confirmation_and_old_id_replay(self):
+        original = self.numeric_conflict()
+        revised = self.adjudicate(original)
+        self.assertNotEqual(revised["candidate_id"], original["candidate_id"])
+        self.assertEqual(revised["status"], "review_unmatched")
+        self.assertFalse(self.fixture.store.jobs[self.job.job_id].checkpoint.get("review_submissions"))
+        payload = {"session_id": "review-test", "input_version": 1,
+                   "review": {"code": self.job.checkpoint["review_manifest"][1]["code"]}}
+        path = f"/v1/internal/harness/grade-results/{original['candidate_id']}/commit"
+        for _ in range(2):
+            response = self.call(path, payload)
+            self.assertEqual(response[0], 200, response)
+            receipt = response[2]["receipt"]
+            self.assertEqual((receipt["status"], receipt["reference_status"]), ("review_waiting", "consistent"))
+            candidate = self.fixture.store.get_grade_candidate(user_id=self.fixture.owner, candidate_id=receipt["candidate_id"])
+            self.assertEqual(candidate.verdict, "correct")
+            self.assertIn("reference_match", json.loads(candidate.evidence)["practice_review"])
+        submissions = self.fixture.store.jobs[self.job.job_id].checkpoint["review_submissions"]
+        self.assertEqual([row["verdict"] for row in submissions.values()], ["correct"])
+        self.assertFalse(self.fixture.store.review_attempts)  # Original still required.
+        self.assertEqual(len(self.fixture.store.errors), 1)
+        replay = self.call("/v1/internal/harness/intakes/process", self.last_payload)
+        self.assertEqual(replay[2]["results"][0]["verdict"], "correct")
+        self.assertIsNone(replay[2]["results"][0]["reference_review"])
+        # A typo after linking must not move the saved result to another item.
+        payload["review"]["code"] = self.job.checkpoint["review_manifest"][0]["code"]
+        self.assertEqual(self.call(path, payload)[0], 400)
+
+    def test_adjudication_automatically_links_numeric_ocr_difference(self):
+        original = self.numeric_conflict(code=True)
+        revised = self.adjudicate(original)
+        self.assertEqual(revised["status"], "review_waiting")
+        candidate = self.fixture.store.get_grade_candidate(user_id=self.fixture.owner, candidate_id=revised["candidate_id"])
+        self.assertEqual((candidate.verdict, json.loads(candidate.evidence)["practice_review"]["status"]), ("correct", "matched"))
+
+    def test_locator_cannot_bypass_unresolved_or_changed_reference(self):
+        original = self.numeric_conflict()
+        path = f"/v1/internal/harness/grade-results/{original['candidate_id']}/commit"
+        payload = {"session_id": "review-test", "input_version": 1,
+                   "review": {"code": self.job.checkpoint["review_manifest"][1]["code"]}}
+        self.assertEqual(self.call(path, payload)[2]["receipt"]["status"], "needs_review")
+        self.assertFalse(self.fixture.store.jobs[self.job.job_id].checkpoint.get("review_submissions"))
+        self.adjudicate(original)
+        question = self.fixture.store.questions[self.fixture.question.question_id]
+        self.fixture.store.add_question(replace(question, version_id="d" * 32, version_no=2))
+        self.assertEqual(self.call(path, payload)[0], 409)
+        self.assertFalse(self.fixture.store.jobs[self.job.job_id].checkpoint.get("review_submissions"))
+
+    def test_resolved_candidate_lookup_is_account_and_version_scoped(self):
+        result = self.numeric_conflict()
+        self.adjudicate(result)
+        candidate = self.fixture.store.get_grade_candidate(user_id=self.fixture.owner, candidate_id=result["candidate_id"])
+        self.assertIsNone(self.fixture.store.find_resolved_grade_candidate(user_id="other", candidate=candidate))
+        self.assertIsNone(self.fixture.store.find_resolved_grade_candidate(user_id=self.fixture.owner, candidate=replace(candidate, input_version=2)))
+
 
 if __name__ == "__main__":
     unittest.main()

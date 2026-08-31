@@ -1145,6 +1145,7 @@ class NotebookAsgiApp:
                         question_id=str(validation["question_id"]),
                     )
                 receipt = await self._commit_candidate_receipt(user_id, candidate)
+                candidate = await self._sync(self.notebook.store.get_grade_candidate, user_id=user_id, candidate_id=receipt["candidate_id"])
                 diagnosis = self._diagnosis(candidate.evidence)
                 result_item = {
                     "item_no": intake.item_no,
@@ -1165,7 +1166,7 @@ class NotebookAsgiApp:
                     "error_id": str(receipt.get("error_id") or ""),
                     "reference_review": None,
                 }
-                if reference is not None and isinstance(validation, dict) and validation.get("status") == "conflict":
+                if reference is not None and receipt["reference_status"] == "conflict":
                     result_item["reference_review"] = {
                         "source_title": reference.source_title,
                         "version_no": reference.version_no,
@@ -1230,18 +1231,8 @@ class NotebookAsgiApp:
                 raise LookupError("grade candidate not found")
             if candidate.input_version != int(payload["input_version"]):
                 raise RuntimeError("input_version_changed")
-            if payload.get("review"):
-                locator = review_locator(payload["review"])
-                diagnosis = self._diagnosis(candidate.evidence)
-                context = diagnosis.get("practice_review") or {}
-                if context.get("status") != "unmatched":
-                    raise ValueError("only unmatched review results may be linked")
-                attempt = await self._sync(self.notebook.store.get_attempt, user_id=user_id, attempt_id=candidate.attempt_id)
-                diagnosis["practice_review"] = await self._sync(self.notebook.resolve_practice_review, user_id=user_id,
-                    question_text=attempt.question_text, locator=locator, review_mode=True)
-                candidate = await self._sync(self.notebook.store.record_grade_candidate, user_id=user_id,
-                    attempt_id=candidate.attempt_id, input_version=candidate.input_version, verdict=candidate.verdict,
-                    first_error=candidate.first_error, evidence=json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":")))
+            candidate = await self._sync(self.notebook.prepare_review_candidate, user_id=user_id,
+                candidate=candidate, locator=payload.get("review"))
             receipt = await self._commit_candidate_receipt(user_id, candidate)
             await self._json(send, 200, {"receipt": receipt})
         except LookupError:
@@ -1405,7 +1396,7 @@ class NotebookAsgiApp:
                 )
                 receipt = await self._commit_candidate_receipt(user_id, revised)
                 results.append({
-                    "candidate_id": candidate_id,
+                    "candidate_id": receipt["candidate_id"],
                     "input_version": input_version,
                     "status": receipt["status"],
                     "receipt_message": receipt["message"],
@@ -1483,7 +1474,7 @@ class NotebookAsgiApp:
                 )
             receipt = await self._commit_candidate_receipt(user_id, revised)
             review = None
-            if validation["status"] == "conflict":
+            if receipt["reference_status"] == "conflict":
                 review = {
                     "source_title": reference.source_title,
                     "version_no": reference.version_no,
@@ -1492,7 +1483,7 @@ class NotebookAsgiApp:
                     "reference_solution": reference.solution_text or "",
                 }
             await self._json(send, 200, {"result": {
-                "candidate_id": revised.candidate_id,
+                "candidate_id": receipt["candidate_id"],
                 "input_version": revised.input_version,
                 "question_text": attempt.question_text,
                 "receipt_status": receipt["status"],
@@ -1575,7 +1566,8 @@ class NotebookAsgiApp:
         return user_id
 
     async def _commit_candidate_receipt(self, user_id: str, candidate: GradeCandidate) -> dict[str, Any]:
-        receipt = self._grade_receipt(candidate)
+        candidate = await self._sync(self.notebook.prepare_review_candidate, user_id=user_id, candidate=candidate)
+        receipt = self._grade_receipt(candidate) | {"candidate_id": candidate.candidate_id, "input_version": candidate.input_version}
         adjudication = reference_adjudication_from_evidence(candidate.evidence)
         reference_preferred = bool(adjudication and adjudication.get("status") == "reference_preferred")
         reference_prefix = (

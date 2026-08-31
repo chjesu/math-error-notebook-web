@@ -23,12 +23,14 @@ from .learning import (
     ReviewTask,
     VerifiedQuestionReference,
     build_review_calendar,
+    cross_validate_reference,
     learning_day,
     learning_usage_payload,
     next_review,
     question_match_score,
     rank_questions,
     reference_conflict_resolved,
+    reference_adjudication_from_evidence,
     reference_validation_from_evidence,
     review_requires_original,
 )
@@ -395,6 +397,18 @@ class InMemoryNotebookStore:
                 continue
             if context:
                 return context
+        return None
+
+    def find_resolved_grade_candidate(self, *, user_id: str, candidate: GradeCandidate) -> GradeCandidate | None:
+        validation = reference_validation_from_evidence(candidate.evidence)
+        if not validation:
+            return None
+        for item in reversed(tuple(self.candidates.values())):
+            if (item.attempt_id == candidate.attempt_id and item.input_version == candidate.input_version
+                    and self.get_grade_candidate(user_id=user_id, candidate_id=item.candidate_id)
+                    and reference_conflict_resolved(item.evidence)
+                    and reference_validation_from_evidence(item.evidence) == validation):
+                return item
         return None
 
     def find_reference_conflict_candidate(self, *, user_id: str, question_text: str) -> GradeCandidate | None:
@@ -1010,6 +1024,55 @@ class NotebookService:
             review_manifest=manifest,
             plan_kind=plan_kind,
         )
+
+    def prepare_review_candidate(self, *, user_id: str, candidate: GradeCandidate, locator: dict | None = None) -> GradeCandidate:
+        """Carry the frozen adjudication forward without rewriting the OCR input."""
+        attempt = self.store.get_attempt(user_id=user_id, attempt_id=candidate.attempt_id)
+        if attempt is None:
+            raise LookupError("attempt not found")
+        if attempt.input_version != candidate.input_version:
+            raise RuntimeError("input_version_changed")
+        candidate = self.store.find_resolved_grade_candidate(user_id=user_id, candidate=candidate) or candidate
+        diagnosis = json.loads(candidate.evidence or "{}")
+        context = diagnosis.get("practice_review") or {}
+        if not context:
+            if locator:
+                raise ValueError("only review results may be linked")
+            return candidate
+        reference = None
+        adjudication = reference_adjudication_from_evidence(candidate.evidence)
+        if reference_conflict_resolved(candidate.evidence):
+            reference = self.store.find_verified_question(question_text=attempt.question_text)
+            fresh = cross_validate_reference(reference, "") if reference else {}
+            validation = reference_validation_from_evidence(candidate.evidence)
+            if any(fresh.get(key) != validation.get(key) for key in ("question_id", "version_id", "reference_answer_sha256")):
+                raise RuntimeError("reference_conflict")
+        if context.get("status") != "unmatched" and not locator:
+            return candidate
+        locating = review_locator(locator if locator is not None else context.get("locator"))
+        linked = self.resolve_practice_review(user_id=user_id, question_text=attempt.question_text, locator=locating, review_mode=True)
+        if (linked.get("status") == "unmatched" and reference is not None
+                and adjudication.get("status") == "reference_preferred" and locating.get("kind") != "original"):
+            # Only the adjudicated, current reference can bridge a numeric OCR
+            # difference, and only to the same recommended question in an owned PDF.
+            expected_ids = {reference.question_id}
+            if ref := locating.get("question_id"):
+                expected_ids = {ref, hashlib.sha256(f"question:{ref}".encode()).hexdigest()[:32]}
+            if reference.question_id in expected_ids:
+                linked = self.resolve_practice_review(user_id=user_id, question_text=reference.stem_text,
+                    locator=locating | {"question_id": reference.question_id, "kind": "recommendation"}, review_mode=True)
+                if linked.get("status") == "matched":
+                    linked["reference_match"] = {key: fresh[key] for key in ("question_id", "version_id", "reference_answer_sha256")}
+        if context.get("status") != "unmatched":
+            if any(linked.get(key) != context.get(key) for key in ("status", "job_id", "code")):
+                raise ValueError("an already linked review cannot be reassigned")
+            return candidate
+        if linked == context:
+            return candidate
+        diagnosis["practice_review"] = linked
+        return self.store.record_grade_candidate(user_id=user_id, attempt_id=candidate.attempt_id,
+            input_version=candidate.input_version, verdict=candidate.verdict, first_error=candidate.first_error,
+            evidence=json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":")))
 
     def resolve_practice_review(self, *, user_id: str, question_text: str, locator: dict | None = None, review_mode: bool = False) -> dict | None:
         locator = review_locator(locator)

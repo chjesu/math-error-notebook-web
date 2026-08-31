@@ -970,6 +970,25 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def find_resolved_grade_candidate(self, *, user_id: str, candidate: GradeCandidate) -> GradeCandidate | None:
+        validation = reference_validation_from_evidence(candidate.evidence)
+        if not validation:
+            return None
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT id,evidence_text FROM grade_candidates WHERE user_id=%s AND attempt_id=%s AND input_version=%s ORDER BY created_at DESC,id DESC LIMIT 50",
+                (user_id, candidate.attempt_id, candidate.input_version),
+            )
+            for candidate_id, evidence in cursor.fetchall():
+                if reference_conflict_resolved(evidence) and reference_validation_from_evidence(evidence) == validation:
+                    return self.get_grade_candidate(user_id=user_id, candidate_id=str(candidate_id))
+            return None
+        finally:
+            cursor.close()
+            connection.close()
+
     def find_reference_conflict_candidate(self, *, user_id: str, question_text: str) -> GradeCandidate | None:
         connection = self._connect()
         cursor = connection.cursor()
