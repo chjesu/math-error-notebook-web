@@ -126,7 +126,7 @@ const result = await tool.execute({{candidate_id: 'a'.repeat(32), input_version:
 }});
 if (result.status !== 'saved' || concluded !== 1) throw new Error('receipt did not conclude the turn');
 const rendered = tool.output.render({{}}, result)[0].text;
-if (!rendered.includes('错题编号：' + 'b'.repeat(32)) || !rendered.includes('知识点：2 个') || !rendered.includes('复习任务：已安排')) throw new Error('receipt details were not rendered');
+if (!rendered.startsWith('错题编号（error_id）：' + 'b'.repeat(32)) || !rendered.includes('知识点：2 个') || !rendered.includes('复习任务：已安排')) throw new Error('receipt details were not rendered');
 if (!rendered.includes('下一步：') || !rendered.includes('打开「错题本」')) throw new Error('receipt next step missing');
 """
         environment = dict(os.environ)
@@ -165,7 +165,7 @@ globalThis.fetch = async (url, options) => {{
   if (url.endsWith('/v1/internal/harness/reference-conflicts/adjudicate')) {{
     if (body.session_id !== 'session-process' || body.items[0].status !== 'consistent') throw new Error('wrong adjudication');
     return {{ok: true, status: 200, json: async () => ({{results: [{{
-      candidate_id: 'a'.repeat(32), input_version: 1, status: 'saved', receipt_message: '第二阶段复核一致，已计入错题本'
+      candidate_id: 'a'.repeat(32), input_version: 1, status: 'saved', error_id: 'b'.repeat(32), receipt_message: '第二阶段复核一致，已计入错题本'
     }}]}})}};
   }}
   if (url.endsWith('/v1/internal/harness/errors/remove')) {{
@@ -210,6 +210,19 @@ const result = await tool.execute({{items: [{{
 if (result.schema !== 'math-notebook-process-result/v1' || result.results[0].attachment_index !== 1) throw new Error('wrong result');
 const rendered = tool.output.render({{}}, result)[0].text;
 if (!rendered.includes('第 1 题') || !rendered.includes('已计入错题本')) throw new Error('result not rendered');
+if (!rendered.startsWith('第 1 题\\n错题编号（error_id）：' + 'b'.repeat(32) + '\\n题目：')) throw new Error('full error id must precede question');
+for (const [receipt_status,error_id,label] of [
+  ['already_saved','b'.repeat(32),'b'.repeat(32)],
+  ['review_completed','b'.repeat(32),'b'.repeat(32)],
+  ['not_saved_correct','','无（本题正确，未计入错题本）'],
+  ['review_unmatched','','待确认（尚未关联原错题）'],
+  ['needs_review','','暂不可用（等待入本或关联确认）'],
+  ['needs_review','ERR-12345678','暂不可用（等待入本或关联确认）'],
+  ['needs_review','b'.repeat(8),'暂不可用（等待入本或关联确认）'],
+]) {{
+  const text = tool.output.render({{}}, {{results:[{{...result.results[0],receipt_status,error_id}}]}})[0].text;
+  if (!text.startsWith('第 1 题\\n错题编号（error_id）：' + label + '\\n题目：')) throw new Error('incorrect id display for ' + receipt_status);
+}}
 if (!rendered.includes('下一步：') || !rendered.includes('打开「错题本」')) throw new Error('processing next step missing');
 let multipleImagesRejected = false;
 try {{
@@ -239,6 +252,11 @@ const adjudicated = await adjudicator.execute({{items: [{{
 }}]}}, {{agent: {{id: 'session-process'}}, signal: new AbortController().signal}});
 if (adjudicated.results[0].status !== 'saved') throw new Error('reference conflict not adjudicated');
 const adjudicatedRendered = adjudicator.output.render({{}}, adjudicated)[0].text;
+if (!adjudicatedRendered.startsWith('错题编号（error_id）：' + 'b'.repeat(32))) throw new Error('adjudication error id missing');
+if (!adjudicator.output.schema.properties.results.items.properties.error_id) throw new Error('adjudication id missing from schema');
+const resolvedRecheck = {{result:{{...rechecked.result, receipt_status:'saved', error_id:'b'.repeat(32),reference_review:null}}}};
+if (!rechecker.output.render({{}}, resolvedRecheck)[0].text.startsWith('错题编号（error_id）：' + 'b'.repeat(32))) throw new Error('resolved recheck id missing');
+if (!rechecker.output.schema.properties.result.properties.error_id) throw new Error('recheck id missing from schema');
 if (!adjudicatedRendered.includes('下一步：') || !adjudicatedRendered.includes('打开「错题本」')) throw new Error('adjudication next step missing');
 const remover = registered.find((value) => value.name === 'remove_error_notebook_entry');
 let concluded = false;

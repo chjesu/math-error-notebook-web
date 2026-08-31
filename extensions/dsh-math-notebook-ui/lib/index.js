@@ -33,9 +33,17 @@ function nextStepText(results) {
   return "下一步：本轮题目无需计入错题本；可以继续上传下一张题目图片，或在当前会话追问解析。";
 }
 
+function errorIdText(value) {
+  const prefix = "错题编号（error_id）：";
+  if (typeof value.error_id === "string" && /^[0-9a-f]{32}$/.test(value.error_id)) return prefix + value.error_id;
+  const status = value.receipt_status || value.status;
+  if (status === "not_saved_correct") return prefix + "无（本题正确，未计入错题本）";
+  if (status === "review_unmatched") return prefix + "待确认（尚未关联原错题）";
+  return prefix + "暂不可用（等待入本或关联确认）";
+}
+
 function receiptText(value) {
-  const lines = [value.message];
-  if (value.error_id) lines.push(`错题编号：${value.error_id}`);
+  const lines = [errorIdText(value), value.message];
   const referenceLabels = {consistent: "已与已验证题库解析核对一致", conflict: "与题库解析冲突，等待复核", not_found: "题库未匹配"};
   lines.push(`题库核验：${referenceLabels[value.reference_status]}`);
   lines.push(`知识点：${value.knowledge_point_count} 个`);
@@ -174,6 +182,7 @@ function processResultText(value) {
   for (const item of value.results) {
     lines.push(
       `第 ${item.item_no} 题`,
+      errorIdText(item),
       `题目：${item.question_text}`,
       `学生作答：${item.answer_text || "未作答"}`,
       `判定：${item.verdict}`,
@@ -363,13 +372,13 @@ function adjudicateReferenceConflictsTool() {
               properties: {
                 candidate_id: {type: "string"}, input_version: {type: "integer"},
                 status: {type: "string", enum: receiptStatuses},
-                receipt_message: {type: "string"}
+                receipt_message: {type: "string"}, error_id: {type: "string"}
               }
             }
           }
         }
       },
-      render: (_args, value) => [{type: "text", text: [...value.results.map((item) => item.receipt_message), "", nextStepText(value.results)].join("\n")}]
+      render: (_args, value) => [{type: "text", text: [...value.results.map((item) => `${errorIdText(item)}\n${item.receipt_message}`), "", nextStepText(value.results)].join("\n")}]
     },
     async execute(args, exec) {
       if (!exec.agent) throw new Error("Reference adjudication requires an owning Harness session");
@@ -420,11 +429,12 @@ function recheckReferenceConflictTool() {
           properties: {
             candidate_id: {type: "string"}, input_version: {type: "integer"}, question_text: {type: "string"},
             receipt_status: {type: "string", enum: receiptStatuses},
-            receipt_message: {type: "string"}, reference_review: review
+            receipt_message: {type: "string"}, error_id: {type: "string"}, reference_review: review
           }
         }}
       },
       render: (_args, value) => [{type: "text", text: [
+        errorIdText(value.result),
         value.result.receipt_message,
         ...(value.result.reference_review ? ["", ...referenceReviewText(value.result)] : []),
         "",

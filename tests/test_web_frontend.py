@@ -463,6 +463,11 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertNotIn("dsh-tool-", preset)
         self.assertIn("confirm_error_notebook_entry", preset)
         for prompt in (patch, preset, runtime_config):
+            self.assertIn('第一行必须是“错题编号（error_id）：<完整编号>”', prompt)
+            self.assertIn('放在“题目整理”之前', prompt)
+            self.assertIn('32 位小写十六进制 error_id', prompt)
+            self.assertIn('在工具返回前不得猜测编号', prompt)
+            self.assertIn('不得补零或截断', prompt)
             self.assertIn('process_error_notebook_attachments', prompt)
             self.assertIn('recheck_error_notebook_reference_conflict', prompt)
             self.assertIn('adjudicate_error_notebook_reference_conflicts', prompt)

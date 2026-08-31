@@ -1383,6 +1383,7 @@ class NotebookAsgiApp:
                     "input_version": input_version,
                     "status": receipt["status"],
                     "receipt_message": receipt["message"],
+                    "error_id": str(receipt.get("error_id") or ""),
                 })
             await self._json(send, 200, {"results": results})
         except LookupError:
@@ -1471,6 +1472,7 @@ class NotebookAsgiApp:
                 "question_text": attempt.question_text,
                 "receipt_status": receipt["status"],
                 "receipt_message": receipt["message"],
+                "error_id": str(receipt.get("error_id") or ""),
                 "reference_review": review,
             }})
         except LookupError:

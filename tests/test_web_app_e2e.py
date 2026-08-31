@@ -563,6 +563,7 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual((adjudicated[0], adjudicated[2]["results"][0]["status"]), (200, "saved"))
         self.assertIn("第二阶段语义复核一致", adjudicated[2]["results"][0]["receipt_message"])
         self.assertEqual(len(self.domain_store.errors), 1)
+        self.assertEqual(adjudicated[2]["results"][0]["error_id"], next(iter(self.domain_store.errors)))
         evidence = json.loads(next(iter(self.domain_store.errors.values())).evidence)
         self.assertEqual(evidence["reference_adjudication"]["status"], "consistent")
 
@@ -624,6 +625,7 @@ class NotebookE2ETests(unittest.TestCase):
             extra_headers={"authorization": "Bearer test-internal-token"},
         )
         self.assertEqual((adjudicated[0], adjudicated[2]["results"][0]["status"]), (200, "not_saved_correct"))
+        self.assertEqual(adjudicated[2]["results"][0]["error_id"], "")
         self.assertIn("已按题库答案与解析重新判题", adjudicated[2]["results"][0]["receipt_message"])
         self.assertEqual(len(self.domain_store.errors), 0)
         revised = list(self.domain_store.candidates.values())[-1]
@@ -693,6 +695,7 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertIsNone(rechecked[2]["result"]["reference_review"])
         self.assertIn("确定性校验一致", rechecked[2]["result"]["receipt_message"])
         self.assertEqual(len(self.domain_store.errors), 1)
+        self.assertEqual(rechecked[2]["result"]["error_id"], next(iter(self.domain_store.errors)))
         self.assertEqual(next(iter(self.domain_store.errors.values())).question_id, question.question_id)
 
     def test_deletion_keeps_durable_pending_state_when_domain_cleanup_fails(self) -> None:
