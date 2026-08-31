@@ -359,6 +359,8 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 #calendar-prev:hover, #calendar-next:hover, #calendar-day-close:hover { background: #f0f1f3; color: var(--ink); }
 #calendar-prev svg, #calendar-next svg, #calendar-day-close svg { width: 16px; height: 16px; pointer-events: none; }
 .calendar-day-items { display: grid; gap: 10px; margin-top: 12px; }
+.calendar-pdf-actions { margin-top: 10px; }
+.calendar-pdf-actions .status { margin: 0; }
 .calendar-detail-item { display: grid; gap: 7px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
 .calendar-detail-item h4 { margin: 0; font-size: 14px; line-height: 1.55; }
 .calendar-event-labels { display: flex; flex-wrap: wrap; gap: 5px; }

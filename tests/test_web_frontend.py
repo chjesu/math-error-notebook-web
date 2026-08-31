@@ -37,7 +37,7 @@ const source = fs.readFileSync('web/app.js', 'utf8');
 const nodes = new Map(), storage = new Map();
 function $(id) {
   if (!nodes.has(id)) nodes.set(id, {textContent:'', innerHTML:'', hidden:true, handlers:{},
-    addEventListener(event, fn) { this.handlers[event] = fn; }, scrollIntoView() {}, querySelectorAll() {return [];} });
+    addEventListener(event, fn) { this.handlers[event] = fn; }, replaceChildren(...children) { this.children=children; }, scrollIntoView() {}, querySelectorAll() {return [];} });
   return nodes.get(id);
 }
 const errors = Array.from({length:13}, (_,i) => ({error_id:String(i),status:'open',question_text:'题目',first_error:'错因',
@@ -45,10 +45,17 @@ const errors = Array.from({length:13}, (_,i) => ({error_id:String(i),status:'ope
 const history = {days:[{date:'2026-08-24',items:[{type:'due',error_id:'historic',stage:1}],due_review_count:1}],
   summary:{due_review_count:1},total_error_count:13};
 const before = JSON.stringify(history);
+const requests = [];
+let todayPlan = null, failPlanRead = false, beforeRecommendations = null;
 const context = {Intl, $, Date:class extends Date {constructor(...args) {super(...(args.length ? args : ['2026-08-30T16:30:00Z']));}},
+  crypto:{randomUUID:()=>`key-${requests.length}`}, document:{createElement:tag=>({tag,setAttribute(){}})},
   sessionStorage:{getItem:k=>storage.get(k)??null, setItem:(k,v)=>storage.set(k,v)},
   escapeHtml:s=>String(s??''), renderMath:()=>{}, authError:e=>String(e), status:(node,text,error=false)=>{node.textContent=text;node.error=error;},
-  api:async path=>path==='/v1/errors' ? {items:errors,selection_scope:'a'.repeat(24)} : path==='/v1/progress' ? {today_completed_review_count:0} : history};
+  api:async (path,options={})=>{requests.push({path,options}); if(path==='/v1/errors') return {items:errors,selection_scope:'a'.repeat(24)};
+    if(path==='/v1/progress') return {today_completed_review_count:0};
+    if(path==='/v1/practice-pdfs') {if(failPlanRead) throw new Error('unavailable');
+      return options.method==='POST' ? {download_url:'/v1/practice-pdfs/paper/download'} : {items:[],today_plan:todayPlan};}
+    if(path.includes('/recommendations?')) {beforeRecommendations?.(); return {items:[],gap:false};} return history;}};
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('function chinaDate('), source.indexOf('function bindPractice(')), context);
 const tick = () => new Promise(resolve=>setImmediate(resolve));
@@ -73,9 +80,44 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   assert.equal(context.readReviewSelection('a'.repeat(24),new Map(errors.map(x=>[x.error_id,x.review.review_id||null]))).length,12);
   change('0',false); change('12',true);
   assert.equal(context.readReviewSelection('a'.repeat(24),new Map(errors.map(x=>[x.error_id,x.review.review_id||null]))).includes('12'),true);
+  assert.equal($('#calendar-generate-pdf').disabled,false);
+  const generate = () => $('#calendar-generate-pdf').handlers.click({currentTarget:$('#calendar-generate-pdf')});
+  const pending = generate();
+  assert.equal($('#calendar-generate-pdf').disabled,true);
+  assert.equal(($('#calendar-day-items').innerHTML.match(/ disabled/g)||[]).length,13);
+  change('12',false); // Cannot edit the print selection while generating.
+  await Promise.all([pending,generate()]);
+  const generated = requests.find(row=>row.path==='/v1/practice-pdfs'&&row.options.method==='POST');
+  assert.equal(JSON.parse(generated.options.body).error_ids.length,12);
+  assert.equal(requests.filter(row=>row.path==='/v1/practice-pdfs'&&row.options.method==='POST').length,1);
+  assert.equal($('#calendar-pdf-status').children[1].href,'/v1/practice-pdfs/paper/download');
   await $('#refresh-progress').handlers.click();
   assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,12);
   assert.equal(JSON.stringify(history),before);
+  // A plan created by another page after loading must be reused without writes.
+  const fixed = {available:true,items:errors.slice(1),download_url:'/v1/practice-pdfs/existing/download'};
+  todayPlan = fixed;
+  const writes = () => requests.filter(row=>row.options.method==='POST').length;
+  const writesBefore = writes();
+  await generate();
+  assert.equal(writes(),writesBefore);
+  assert.equal($('#calendar-generate-pdf').disabled,true);
+  assert.ok($('#calendar-pdf-status').innerHTML.includes(fixed.download_url));
+  change('12',false);
+  await generate();
+  assert.equal(writes(),writesBefore);
+  todayPlan = null; await $('#refresh-progress').handlers.click();
+  failPlanRead = true; await generate();
+  assert.equal(writes(),writesBefore);
+  assert.equal($('#calendar-pdf-status').error,true);
+  assert.equal($('#calendar-generate-pdf').disabled,false);
+  failPlanRead = false;
+  // Check again after recommendation matching, before submitting the PDF job.
+  beforeRecommendations = () => {todayPlan=fixed;};
+  await generate();
+  assert.equal(requests.filter(row=>row.path==='/v1/practice-pdfs'&&row.options.method==='POST').length,1);
+  assert.equal($('#calendar-generate-pdf').disabled,true);
+  todayPlan = null; beforeRecommendations = null; await $('#refresh-progress').handlers.click();
   context.sessionStorage.setItem=()=>{throw new Error('blocked');}; change('12',false);
   assert.equal($('#calendar-selection-status').error,true);
   assert.ok($('#calendar-selection-status').textContent.includes('无法保存选题'));
@@ -284,7 +326,7 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "错题与复习日历", "新增错题", "应复习", "需改错", "逾期", "复习正确率"):
             self.assertIn(text, html)
         self.assertNotIn("各复习阶段", html)
-        for marker in ("review-calendar", "calendar-month", "calendar-prev", "calendar-next", "calendar-summary", "calendar-stats", "calendar-filters", "calendar-day-detail", "calendar-day-items", "refresh-progress"):
+        for marker in ("review-calendar", "calendar-month", "calendar-prev", "calendar-next", "calendar-summary", "calendar-stats", "calendar-filters", "calendar-day-detail", "calendar-day-items", "calendar-generate-pdf", "calendar-pdf-status", "refresh-progress"):
             self.assertIn(f'id="{marker}"', html)
         self.assertNotIn('id="stage-count-1"', html)
         self.assertIn('function bindProgress()', script)

@@ -1315,20 +1315,14 @@ function bindErrors() {
       if (!(await loadDashboard()) || fixedPlan) return;
       let ids = [...selectedErrorIds];
       if (!ids.length) return status($("#today-pdf-status"), "当前没有可生成的复习题。", true);
-      await Promise.all(ids.map(id => api(`/v1/errors/${id}/recommendations?limit=1`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}})));
+      await ensureReviewRecommendations(ids);
       const prepared = new Set(ids);
       if (!(await loadDashboard()) || fixedPlan) return;
       ids = [...selectedErrorIds];
       if (!ids.length) return status($("#today-pdf-status"), "复习任务刚刚完成，当前没有可生成的题目。", false);
-      await Promise.all(ids.filter(id => !prepared.has(id)).map(id => api(`/v1/errors/${id}/recommendations?limit=1`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}})));
-      const result = await api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: ids, include_answers: $("#review-pdf-answers").checked, plan_kind: "daily_review"}), headers: {"Idempotency-Key": crypto.randomUUID()}});
-      if (result.download_url) {
-        const link = document.createElement("a");
-        link.href = result.download_url;
-        link.textContent = "下载今日复习推荐题 PDF";
-        link.setAttribute("download", "");
-        $("#today-pdf-status").replaceChildren("已生成：", link);
-      } else status($("#today-pdf-status"), "PDF 正在生成，请稍后刷新。");
+      await ensureReviewRecommendations(ids.filter(id => !prepared.has(id)));
+      const result = await createDailyReviewPdf(ids, $("#review-pdf-answers").checked);
+      showPracticePdfResult(result, $("#today-pdf-status"));
       await Promise.all([loadDashboard(), loadLearningUsage()]);
     } catch (error) {
       status($("#today-pdf-status"), authError(error), true);
@@ -1396,6 +1390,23 @@ function resolveReviewSelection({fixedPlan, dueReviews, saved, mode, currentIds}
   return {mode: "auto", ids: dueReviews.slice(0, 12).map(item => item.error_id)};
 }
 
+function ensureReviewRecommendations(ids) {
+  return Promise.all(ids.map(id => api(`/v1/errors/${id}/recommendations?limit=1`, {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}})));
+}
+
+function createDailyReviewPdf(ids, includeAnswers = false) {
+  return api("/v1/practice-pdfs", {method: "POST", body: JSON.stringify({error_ids: ids, include_answers: includeAnswers, plan_kind: "daily_review"}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+}
+
+function showPracticePdfResult(result, target) {
+  if (!result.download_url) return status(target, "PDF 正在生成，请稍后刷新。");
+  const link = document.createElement("a");
+  link.href = result.download_url;
+  link.textContent = "下载今日复习推荐题 PDF";
+  link.setAttribute("download", "");
+  target.replaceChildren("已生成：", link);
+}
+
 function bindProgress() {
   let monthCursor = new Date(`${chinaDate()}T12:00:00`);
   monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
@@ -1407,6 +1418,8 @@ function bindProgress() {
   let selectionScope = "";
   let selectedErrorIds = new Set();
   let currentReviews = new Map();
+  let fixedPlan = null;
+  let generatingPdf = false;
   const filterLabels = {all: "全部活动", new: "新增错题", due: "待复习", completed: "作答与完成", correction: "需改错", papers: "PDF 当前进度", answered: "当日已答题"};
 
   function monthKey() {
@@ -1487,8 +1500,12 @@ function bindProgress() {
     $("#calendar-day-title").textContent = `${selectedDate} · ${label}`;
     $("#calendar-history-note").textContent = day.history_complete === false ? "历史记录不完整：部分旧到期日期已被覆盖或任务已取消，以下只展示可核实的记录，不能视为完整统计。" : selectedDate < todaySnapshot.date ? "未完成数量截至所选日期当天结束（中国时间）；已在之后完成的题仍保留在当时的记录中。" : selectedDate > todaySnapshot.date ? "仅展示已经安排的复习计划，后续阶段按实际完成情况生成；选题不改变原定复习日期。" : "历史逾期包含以前月份，不包含今天到期的题目。";
     $("#calendar-history-note").textContent += " PDF 显示截至现在的逐题进度；当日已答题按实际提交日统计，完成复习组后才推进阶段。重印共享作答，不重复计数。";
-    $("#calendar-selection-status").hidden = ![...groups.values()].some(group => group.selectable);
-    status($("#calendar-selection-status"), `已选 ${selectedErrorIds.size}/12 道。仅仍在待复习任务中的题目可加入今日选题，勾选后打开左侧「错题本」继续生成 PDF。`);
+    const hasSelectable = [...groups.values()].some(group => group.selectable);
+    $("#calendar-selection-status").hidden = !hasSelectable;
+    status($("#calendar-selection-status"), `已选 ${selectedErrorIds.size}/12 道。仅仍在待复习任务中的题目可加入今日选题。`);
+    $("#calendar-pdf-actions").hidden = !hasSelectable;
+    $("#calendar-generate-pdf").disabled = !selectedErrorIds.size || generatingPdf || Boolean(fixedPlan);
+    if (fixedPlan) $("#calendar-pdf-status").innerHTML = fixedPlan.download_url ? `今日计划已固定：<a href="${escapeHtml(fixedPlan.download_url)}" download>下载 PDF</a>` : "今日计划已固定。";
     const kind = selectedMetric || activeFilter;
     const paperHtml = ["all", "due", "completed", "papers"].includes(kind) ? (day.practice_plans || []).map(paper => `<article class="calendar-detail-item"><h4>${escapeHtml(paper.filename)}</h4>${practiceProgressMarkup(paper)}<a href="/v1/practice-pdfs/${encodeURIComponent(paper.task_id)}/download" download>下载 PDF</a></article>`).join("") : "";
     const activityHtml = ["all", "completed", "answered", "correction"].includes(kind) ? (day.practice_activity || []).filter(row => kind !== "correction" || row.status === "needs_correction").map(row => `<article class="calendar-detail-item"><div class="calendar-event-labels"><span>${row.kind === "original" ? "原题重做" : "推荐训练"} · ${practiceVerdictLabel(row)}</span><span>实际提交 ${escapeHtml(new Date(row.submitted_at).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"}))}</span></div><p data-math-text>${escapeHtml(row.question_text)}</p><small>来源：${escapeHtml(row.filename)} · 错题 ${escapeHtml(row.error_id.slice(0, 8))}</small></article>`).join("") : "";
@@ -1496,7 +1513,7 @@ function bindProgress() {
       const labels = [...group.labels].map(label => `<span>${escapeHtml(label)}</span>`).join("");
       const cause = group.item.first_error ? `<p data-math-text><strong>错误原因：</strong>${escapeHtml(group.item.first_error)}</p>` : "";
       const knowledge = group.knowledge.size ? `<p data-math-text><strong>知识点：</strong>${[...group.knowledge].map(escapeHtml).join("、")}</p>` : "";
-      const checkbox = group.selectable ? `<label class="calendar-backlog-select"><input type="checkbox" name="calendar-error" value="${escapeHtml(group.item.error_id)}"${selectedErrorIds.has(group.item.error_id) ? " checked" : ""}><span>加入今日复习</span></label>` : "";
+      const checkbox = group.selectable ? `<label class="calendar-backlog-select"><input type="checkbox" name="calendar-error" value="${escapeHtml(group.item.error_id)}"${selectedErrorIds.has(group.item.error_id) ? " checked" : ""}${fixedPlan || generatingPdf ? " disabled" : ""}><span>加入今日复习</span></label>` : "";
       return `<article class="calendar-detail-item">${checkbox}<div class="calendar-event-labels">${labels}</div><h4 data-math-text>${escapeHtml(group.item.question_text)}</h4>${cause}${knowledge}</article>`;
     }).join("") || '<p class="empty">当前没有符合筛选条件的题目。</p>';
     detail.hidden = false;
@@ -1543,17 +1560,20 @@ function bindProgress() {
   async function loadProgress() {
     status($("#progress-status"), "正在读取学习记录…");
     try {
-      const [history, errorResult, progress] = await Promise.all([api(`/v1/progress/calendar?month=${monthKey()}`), api("/v1/errors"), api("/v1/progress")]);
+      const [history, errorResult, progress, pdfResult] = await Promise.all([api(`/v1/progress/calendar?month=${monthKey()}`), api("/v1/errors"), api("/v1/progress"), api("/v1/practice-pdfs")]);
       calendar = history;
       todaySnapshot = todayReviewSnapshot(errorResult.items, progress);
       selectionScope = errorResult.selection_scope;
       currentReviews = new Map(errorResult.items.filter(item => item.status === "open" && ["pending", "ready"].includes(item.review?.status)).map(item => [item.error_id, item.review]));
-      selectedErrorIds = new Set(readReviewSelection(selectionScope, currentReviews) || []);
+      fixedPlan = pdfResult.today_plan || null;
+      selectedErrorIds = new Set(fixedPlan?.available ? fixedPlan.items.map(item => item.error_id).slice(0, 12) : readReviewSelection(selectionScope, currentReviews) || []);
       renderStats();
       renderCalendar();
       status($("#progress-status"), "数据已更新。");
+      return true;
     } catch (error) {
       status($("#progress-status"), authError(error), true);
+      return false;
     }
   }
   $("#calendar-prev").addEventListener("click", () => { monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1); selectedDate = ""; loadProgress(); });
@@ -1577,7 +1597,7 @@ function bindProgress() {
   $("#calendar-day-items").addEventListener("change", event => {
     const input = event.target;
     const day = calendar.days.find(item => item.date === selectedDate) || {date: selectedDate, items: []};
-    if (input.name !== "calendar-error" || !detailItems(day).some(item => item.error_id === input.value && selectable(item))) return;
+    if (fixedPlan || generatingPdf || input.name !== "calendar-error" || !detailItems(day).some(item => item.error_id === input.value && selectable(item))) return;
     if (input.checked && selectedErrorIds.size >= 12) {
       input.checked = false;
       return status($("#calendar-selection-status"), "今日复习一次最多选择 12 道，请先取消其他题目。", true);
@@ -1585,7 +1605,36 @@ function bindProgress() {
     if (input.checked) selectedErrorIds.add(input.value);
     else selectedErrorIds.delete(input.value);
     const saved = writeReviewSelection(selectionScope, selectedErrorIds, currentReviews);
-    status($("#calendar-selection-status"), saved ? `已选 ${selectedErrorIds.size}/12 道，已同步选题。打开左侧「错题本」继续生成 PDF。` : "当前浏览器无法保存选题，请到错题本页面重新选择。", !saved);
+    status($("#calendar-selection-status"), saved ? `已选 ${selectedErrorIds.size}/12 道，已同步选题，可在下方直接生成 PDF。` : "当前浏览器无法保存选题，请重新选择。", !saved);
+    $("#calendar-generate-pdf").disabled = !selectedErrorIds.size || generatingPdf;
+  });
+  $("#calendar-generate-pdf").addEventListener("click", async event => {
+    if (generatingPdf || fixedPlan || !selectedErrorIds.size) return;
+    const button = event.currentTarget;
+    let ids = [...selectedErrorIds];
+    generatingPdf = true;
+    button.disabled = true;
+    renderDayDetail();
+    status($("#calendar-pdf-status"), "正在匹配已验证推荐题并生成 PDF…");
+    try {
+      if (!(await loadProgress())) return status($("#calendar-pdf-status"), "未能核对最新复习计划，请稍后重试。", true);
+      if (fixedPlan) return;
+      ids = ids.filter(id => selectedErrorIds.has(id));
+      if (!ids.length) return status($("#calendar-pdf-status"), "所选复习任务已变化，请重新选择。", true);
+      await ensureReviewRecommendations(ids);
+      if (!(await loadProgress())) return status($("#calendar-pdf-status"), "未能核对最新复习计划，请稍后重试。", true);
+      if (fixedPlan) return;
+      ids = ids.filter(id => selectedErrorIds.has(id));
+      if (!ids.length) return status($("#calendar-pdf-status"), "所选复习任务已变化，请重新选择。", true);
+      const result = await createDailyReviewPdf(ids);
+      showPracticePdfResult(result, $("#calendar-pdf-status"));
+      await loadProgress();
+    } catch (error) {
+      status($("#calendar-pdf-status"), authError(error), true);
+    } finally {
+      generatingPdf = false;
+      renderDayDetail();
+    }
   });
   $("#calendar-day-close").addEventListener("click", () => { selectedDate = ""; renderCalendar(); });
   $("#refresh-progress").addEventListener("click", loadProgress);
