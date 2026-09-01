@@ -63,6 +63,8 @@ class NotebookAsgiApp:
         self.harness_origins = {f"http://{host}:3080" for host in self.allowed_hosts}
         self._harness_sessions: dict[str, str] = {}
         self._harness_sessions_lock = Lock()
+        self._harness_processes: set[tuple[str, str]] = set()
+        self._harness_processes_lock = Lock()
         self._turn_cancellations: dict[tuple[str, str], Event] = {}
         self._turn_cancellations_lock = Lock()
         root = Path(__file__).resolve().parents[2]
@@ -985,6 +987,8 @@ class NotebookAsgiApp:
             await self._error(send, 403, "forbidden")
             return
         user_id: str | None = None
+        process_key: tuple[str, str] | None = None
+        process_claimed = False
         reserved_intakes: list[str] = []
         completed_intakes: set[str] = set()
         try:
@@ -1038,6 +1042,12 @@ class NotebookAsgiApp:
                     raise ValueError("invalid Harness confidence")
 
             digest = digest_match.group(1)
+            process_key = (user_id, digest)
+            with self._harness_processes_lock:
+                if process_key in self._harness_processes:
+                    raise RuntimeError("conflict")
+                self._harness_processes.add(process_key)
+                process_claimed = True
             record = await self._sync(
                 self.notebook.upload,
                 user_id=user_id,
@@ -1081,74 +1091,84 @@ class NotebookAsgiApp:
                             evidence={"source": "deepseek_harness_tool", "attachment_id": attachment_id},
                             replace_existing=True,
                         )
-                    elif len(existing) != len(requested):
+                    else:
                         raise RuntimeError("conflict")
-                    # A completed attachment is already frozen product evidence. Model
-                    # retries can phrase the same question or answer differently; keep
-                    # the frozen text and replay the grading/receipt path instead of
-                    # turning that harmless wording drift into an HTTP 409.
 
-            reserved_intakes = [intake.intake_id for intake in intakes]
-            await self._sync(self.notebook.store.reserve_grade_batch, user_id=user_id, intake_ids=reserved_intakes)
+            frozen_candidates: dict[str, GradeCandidate] = {}
+            if any(intake.status == "confirmed" for intake in intakes):
+                for candidate in await self._sync(self.notebook.store.list_latest_grade_candidates, user_id=user_id):
+                    attempt = await self._sync(self.notebook.store.get_attempt, user_id=user_id, attempt_id=candidate.attempt_id)
+                    if attempt is not None:
+                        frozen_candidates[attempt.intake_id] = candidate
+                if any(intake.status != "confirmed" or intake.intake_id not in frozen_candidates for intake in intakes):
+                    raise RuntimeError("conflict")
+
+            if not frozen_candidates:
+                reserved_intakes = [intake.intake_id for intake in intakes]
+                await self._sync(self.notebook.store.reserve_grade_batch, user_id=user_id, intake_ids=reserved_intakes)
             results = []
             for intake, item in zip(intakes, raw_items, strict=True):
-                attempt_id, _ = await self._sync(
-                    self.notebook.store.confirm_intake,
-                    user_id=user_id,
-                    intake_id=intake.intake_id,
-                    expected_version=intake.input_version,
-                    idempotency_key=f"harness-grade-{intake.intake_id}-{intake.input_version}",
-                )
                 reference = await self._sync(self.notebook.store.find_verified_question, question_text=intake.question_text)
-                final_answer = str(item["final_answer"]).strip()
-                validation = cross_validate_reference(reference, final_answer) if reference is not None and final_answer else None
-                verdict, first_error, evidence = self._grade_values(
-                    item,
-                    evidence_key="cause_evidence",
-                    cross_validation=validation,
-                )
-                context = await self._sync(self.notebook.store.practice_review_context, user_id=user_id, attempt_id=attempt_id)
-                if not context or context.get("status") == "unmatched":
-                    context = await self._sync(
-                        self.notebook.resolve_practice_review, user_id=user_id, question_text=intake.question_text,
-                        locator=item.get("review"), review_mode=bool(context) or payload.get("review_mode", False),
+                if frozen_candidates:
+                    candidate = frozen_candidates[intake.intake_id]
+                    final_answer = str(self._diagnosis(candidate.evidence).get("final_answer") or "")
+                else:
+                    attempt_id, _ = await self._sync(
+                        self.notebook.store.confirm_intake,
+                        user_id=user_id,
+                        intake_id=intake.intake_id,
+                        expected_version=intake.input_version,
+                        idempotency_key=f"harness-grade-{intake.intake_id}-{intake.input_version}",
                     )
-                if (not context or context.get("status") == "unmatched") and isinstance(validation, dict) and validation.get("status") == "consistent":
-                    question_id = str(validation["question_id"])
-                    owned = await self._sync(self.notebook.has_practice_review_identity, user_id=user_id, question_id=question_id)
-                    if owned:
+                    final_answer = str(item["final_answer"]).strip()
+                    validation = cross_validate_reference(reference, final_answer) if reference is not None and final_answer else None
+                    verdict, first_error, evidence = self._grade_values(
+                        item,
+                        evidence_key="cause_evidence",
+                        cross_validation=validation,
+                    )
+                    context = await self._sync(self.notebook.store.practice_review_context, user_id=user_id, attempt_id=attempt_id)
+                    if not context or context.get("status") == "unmatched":
                         context = await self._sync(
-                            self.notebook.resolve_practice_review, user_id=user_id, question_text=reference.stem_text,
-                            locator={"question_id": question_id, "kind": "recommendation"}, review_mode=True,
+                            self.notebook.resolve_practice_review, user_id=user_id, question_text=intake.question_text,
+                            locator=item.get("review"), review_mode=bool(context) or payload.get("review_mode", False),
                         )
-                if context:
-                    diagnosis = self._diagnosis(evidence)
-                    diagnosis["practice_review"] = context
-                    evidence = json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":"))
-                candidate = await self._sync(
-                    self.notebook.store.record_grade_candidate,
-                    user_id=user_id,
-                    attempt_id=attempt_id,
-                    input_version=intake.input_version,
-                    verdict=verdict,
-                    first_error=first_error,
-                    evidence=evidence,
-                    confidence=float(item["confidence"]),
-                )
-                await self._sync(
-                    self.notebook.store.finish_grade_usage,
-                    user_id=user_id,
-                    intake_id=intake.intake_id,
-                    counted=candidate.verdict != "unclear" and not (context and context.get("required") is False),
-                )
-                completed_intakes.add(intake.intake_id)
-                if isinstance(validation, dict) and validation.get("status") == "consistent":
-                    await self._sync(
-                        self.notebook.store.link_attempt_question,
+                    if (not context or context.get("status") == "unmatched") and isinstance(validation, dict) and validation.get("status") == "consistent":
+                        question_id = str(validation["question_id"])
+                        owned = await self._sync(self.notebook.has_practice_review_identity, user_id=user_id, question_id=question_id)
+                        if owned:
+                            context = await self._sync(
+                                self.notebook.resolve_practice_review, user_id=user_id, question_text=reference.stem_text,
+                                locator={"question_id": question_id, "kind": "recommendation"}, review_mode=True,
+                            )
+                    if context:
+                        diagnosis = self._diagnosis(evidence)
+                        diagnosis["practice_review"] = context
+                        evidence = json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":"))
+                    candidate = await self._sync(
+                        self.notebook.store.record_grade_candidate,
                         user_id=user_id,
                         attempt_id=attempt_id,
-                        question_id=str(validation["question_id"]),
+                        input_version=intake.input_version,
+                        verdict=verdict,
+                        first_error=first_error,
+                        evidence=evidence,
+                        confidence=float(item["confidence"]),
                     )
+                    await self._sync(
+                        self.notebook.store.finish_grade_usage,
+                        user_id=user_id,
+                        intake_id=intake.intake_id,
+                        counted=candidate.verdict != "unclear" and not (context and context.get("required") is False),
+                    )
+                    completed_intakes.add(intake.intake_id)
+                    if isinstance(validation, dict) and validation.get("status") == "consistent":
+                        await self._sync(
+                            self.notebook.store.link_attempt_question,
+                            user_id=user_id,
+                            attempt_id=attempt_id,
+                            question_id=str(validation["question_id"]),
+                        )
                 receipt = await self._commit_candidate_receipt(user_id, candidate)
                 candidate = await self._sync(self.notebook.store.get_grade_candidate, user_id=user_id, candidate_id=receipt["candidate_id"])
                 diagnosis = self._diagnosis(candidate.evidence)
@@ -1202,9 +1222,14 @@ class NotebookAsgiApp:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
         finally:
-            for intake_id in reserved_intakes if user_id is not None else []:
-                if intake_id not in completed_intakes:
-                    await self._sync(self.notebook.store.finish_grade_usage, user_id=user_id, intake_id=intake_id, counted=False)
+            try:
+                for intake_id in reserved_intakes if user_id is not None else []:
+                    if intake_id not in completed_intakes:
+                        await self._sync(self.notebook.store.finish_grade_usage, user_id=user_id, intake_id=intake_id, counted=False)
+            finally:
+                if process_claimed and process_key is not None:
+                    with self._harness_processes_lock:
+                        self._harness_processes.discard(process_key)
 
     async def _internal_harness_commit(
         self,

@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest import mock
 import tempfile
@@ -17,6 +19,28 @@ SPEC.loader.exec_module(router)
 
 
 class CodexTaskRouterTests(unittest.TestCase):
+    def test_documented_direct_script_route_command(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-X",
+                "utf8",
+                "-B",
+                "scripts/codex_task_router.py",
+                "route",
+                "--task",
+                "web-security-review",
+                "--json",
+            ],
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["task"], "web-security-review")
+
     def test_routes_by_difficulty_and_promotes_security_risk(self) -> None:
         self.assertEqual(router.select("web-requirements", [])["model"], "gpt-5.6-luna")
         self.assertEqual(router.select("web-implementation", [])["model"], "gpt-5.6-terra")

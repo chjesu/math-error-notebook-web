@@ -421,22 +421,47 @@ class NotebookE2ETests(unittest.TestCase):
         self.app._harness_sessions.clear()
         first = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
         replay = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
-        changed_payload = json.loads(json.dumps(payload))
-        changed_payload["items"][0]["question_text"] = "若 x + 1 = 2，求 x（模型重试时的等价整理）。"
-        changed_payload["items"][0]["answer_text"] = "学生写的是 x = 0。"
-        changed_replay = self.call(
-            "/v1/internal/harness/intakes/process", method="POST", payload=changed_payload, **internal,
+        frozen_state = (
+            dict(self.domain_store.candidates), dict(self.domain_store.errors), dict(self.domain_store.review_tasks),
+            self.domain_store.learning_usage(user_id=next(iter(self.domain_store.intakes.values())).user_id),
         )
+        changed_grade = json.loads(json.dumps(payload))
+        changed_grade["items"][1].update(
+            verdict="incorrect", first_error="圆心判断错误", cause_code="geometry",
+            cause_evidence="把圆心写成三角形顶点", knowledge_points=["圆的几何性质"],
+            correct_solution="应先确定圆心。", final_answer="半径为 99", prevention_cue="先画辅助线", confidence=0.51,
+        )
+        changed_grade_replay = self.call(
+            "/v1/internal/harness/intakes/process", method="POST", payload=changed_grade, **internal,
+        )
+        owner_id = next(iter(self.domain_store.intakes.values())).user_id
+        self.app._harness_processes.add((owner_id, digest))
+        concurrent_conflict = self.call(
+            "/v1/internal/harness/intakes/process", method="POST", payload=changed_grade, **internal,
+        )
+        self.assertIn((owner_id, digest), self.app._harness_processes)
+        self.app._harness_processes.discard((owner_id, digest))
+        changed_text = json.loads(json.dumps(payload))
+        changed_text["items"][0]["question_text"] = "若 x + 1 = 2，求 x（模型重试时的等价整理）。"
+        changed_text["items"][0]["answer_text"] = "学生写的是 x = 0。"
+        changed_text_replay = self.call("/v1/internal/harness/intakes/process", method="POST", payload=changed_text, **internal)
 
-        self.assertEqual((first[0], replay[0], changed_replay[0]), (200, 200, 200))
+        self.assertEqual((first[0], replay[0], changed_grade_replay[0]), (200, 200, 200))
+        self.assertEqual((concurrent_conflict[0], concurrent_conflict[2]["error"]["code"]), (409, "conflict"))
+        self.assertEqual((changed_text_replay[0], changed_text_replay[2]["error"]["code"]), (409, "conflict"))
         self.assertEqual([item["receipt_status"] for item in first[2]["results"]], ["saved", "not_saved_correct"])
         self.assertEqual([item["receipt_status"] for item in replay[2]["results"]], ["already_saved", "not_saved_correct"])
-        self.assertEqual([item["receipt_status"] for item in changed_replay[2]["results"]], ["already_saved", "not_saved_correct"])
+        self.assertEqual([item["receipt_status"] for item in changed_grade_replay[2]["results"]], ["already_saved", "not_saved_correct"])
+        self.assertEqual([item["verdict"] for item in changed_grade_replay[2]["results"]], ["incorrect", "correct"])
         self.assertIn("题库第 3 版参考答案确定性校验一致", first[2]["results"][0]["receipt_message"])
         self.assertEqual(first[2]["results"][0]["error_id"], replay[2]["results"][0]["error_id"])
-        self.assertEqual(first[2]["results"][0]["error_id"], changed_replay[2]["results"][0]["error_id"])
-        self.assertEqual(changed_replay[2]["results"][0]["question_text"], "若 x+1=2，求 x。")
+        self.assertEqual(first[2]["results"][0]["error_id"], changed_grade_replay[2]["results"][0]["error_id"])
         self.assertEqual(first[2]["results"][0]["knowledge_points"], ["一元一次方程", "等式性质与移项"])
+        self.assertEqual(
+            frozen_state,
+            (dict(self.domain_store.candidates), dict(self.domain_store.errors), dict(self.domain_store.review_tasks),
+             self.domain_store.learning_usage(user_id=next(iter(self.domain_store.intakes.values())).user_id)),
+        )
         self.assertEqual(len(self.domain_store.files), 1)
         self.assertEqual(len(self.domain_store.intakes), 2)
         self.assertEqual(len(self.domain_store.attempts), 2)
@@ -447,6 +472,28 @@ class NotebookE2ETests(unittest.TestCase):
         unbound = payload | {"session_id": "session-unbound"}
         denied = self.call("/v1/internal/harness/intakes/process", method="POST", payload=unbound, **internal)
         self.assertEqual((denied[0], denied[2]["error"]["code"]), (403, "forbidden"))
+
+        stream = BytesIO()
+        Image.new("RGB", (10, 10), "blue").save(stream, format="PNG")
+        cleanup_content = stream.getvalue()
+        cleanup_digest = hashlib.sha256(cleanup_content).hexdigest()
+        cleanup_payload = json.loads(json.dumps(payload))
+        cleanup_payload["attachment"].update(
+            attachment_id=f"sha256:{cleanup_digest}", name="cleanup-failure.png",
+            data=base64.b64encode(cleanup_content).decode("ascii"),
+        )
+        finish_grade_usage = self.domain_store.finish_grade_usage
+
+        def fail_usage_cleanup(**_kwargs):
+            raise RuntimeError("usage cleanup failed")
+
+        self.domain_store.finish_grade_usage = fail_usage_cleanup
+        try:
+            with self.assertRaisesRegex(RuntimeError, "usage cleanup failed"):
+                self.call("/v1/internal/harness/intakes/process", method="POST", payload=cleanup_payload, **internal)
+        finally:
+            self.domain_store.finish_grade_usage = finish_grade_usage
+        self.assertNotIn((owner_id, cleanup_digest), self.app._harness_processes)
 
     def test_harness_reference_conflict_requires_frozen_semantic_adjudication(self) -> None:
         cookie = self.login("13500135004")

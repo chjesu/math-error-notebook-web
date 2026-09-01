@@ -6,7 +6,7 @@
 
 当前目标产品基线为 v0.4.0：验证码登录与新用户注册拆成两个页面和两个服务端场景；登录使用手机号验证码，注册使用手机号、验证码、密码和协议确认，注册成功自动登录并进入个人错题本。MVP 仍不建设姓名/昵称/年级资料、身份角色、家庭、学生档案、监护同意或实名认证。个人业务数据以服务端会话解析的 `user_id` 隔离。
 
-v0.4.0 本地测试版的认证契约已落地为四个接口：`POST /v1/auth/login/otp/request`、`POST /v1/auth/login/otp/verify`、`POST /v1/auth/register/otp/request`、`POST /v1/auth/register/complete`。注册原子保存密码凭据、协议版本并创建会话；登录不得建号，注册不得覆盖已有账号。当前 44 paths OpenAPI、真实 MySQL smoke、230 项测试、独立安全复核和浏览器注册/移动视口检查已对齐；旧 v0.3.3 单入口仅作迁移起点。生产门禁仍未完成。详细标准见 `docs/13-LOGIN-REGISTER-PRD.md`。
+v0.4.0 本地测试版的认证契约已落地为四个接口：`POST /v1/auth/login/otp/request`、`POST /v1/auth/login/otp/verify`、`POST /v1/auth/register/otp/request`、`POST /v1/auth/register/complete`。注册原子保存密码凭据、协议版本并创建会话；登录不得建号，注册不得覆盖已有账号。2026-09-01 当前候选的 45 paths OpenAPI、真实 MySQL smoke、289 项测试、本地独立安全复核和桌面/移动视口检查已对齐；旧 v0.3.3 单入口仅作迁移起点。这是独立验证的本地候选，不是生产安全签署或生产完成。详细标准见 `docs/13-LOGIN-REGISTER-PRD.md`。
 
 现有代码和在建 Schema 中的 `tenant_id`、家庭、成员、学生档案及监护同意属于早期设计，不能继续作为产品入口或注册后阻断条件。架构步骤必须形成迁移与回滚方案后再调整，不得直接覆盖用户尚未提交的在建代码。
 
@@ -135,7 +135,11 @@ flowchart LR
 
 错题会话使用 `math-notebook-loop` 路由和官方 `codex app-server`：首轮通过 `thread/start` 建立持久线程，后续轮次只按 MySQL 中当前用户与 intake 绑定的不透明 thread id 调用 `thread/resume`；刷新与翻页时服务端通过 `thread/items/list` 和官方游标读取线程，只将结构化封包中的真实 `user_message` 与 `assistant_message` 转为产品消息。浏览器不能读取或提交 thread id，也不能看到内部提示；浏览器收到的产品游标同时绑定用户拥有的 intake。运行时固定只读 sandbox、拒绝审批、关闭 shell 与 MCP，最终消息必须通过 `math-loop-turn.schema.json`。真实 turn/item/delta/压缩/完成事件经 NDJSON 推送；工作台停止按钮调用 `turn/interrupt`，整理上下文调用 `thread/compact/start`。详细能力边界见 `docs/16-CODEX-APP-SERVER-HARNESS.md`。
 
-## 7. 完成门
+## 7. 两条完成线
+
+第一条“独立验证的本地候选”已达到：localhost + MySQL 8 个人学习闭环、289 项确定性测试、真实 MySQL smoke、45 条 OpenAPI 路径、桌面/移动布局和本地独立安全复核均有 2026-09-01 证据。
+
+第二条“生产/云完成”尚未达到：真实供应商与网络、生产工厂/Worker/会话存储、OSS/RDS/KMS、生产等价 E2E、压测/观测/灾备、独立生产安全签署和人工云部署批准仍是阻断项。
 
 “本地完整测试版”当前指：登录/注册→个人空工作台→上传 PNG/JPEG→Codex 批量识别候选→系统按顺序自动冻结版本并判题→正确题自动跳过、错误或部分正确自动入本→仅已验证推荐→复习→PDF；无法识别、证据冲突、模型失败或用户停止时安全结束并等待补充，不猜测、不误写。用户仍可在同一会话中修正和追问。对话历史支持官方游标继续加载，长会话可主动压缩。导出/注销的敏感 OTP 二次验证、会话撤销、下载和任务/文件失效也必须通过本地 smoke 与独立安全复核。该闭环和权威题库本地同步不等于生产完成；真实短信/CAPTCHA/KMS/OSS、生产异步 Worker、PDF/DOCX 自动解析、运行中追加/重新生成/分叉、压测/灾备/观测和生产恢复仍是门禁。
 
