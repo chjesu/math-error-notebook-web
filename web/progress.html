@@ -5,14 +5,6 @@
   <main id="main" tabindex="-1"><header class="page-header"><div><p class="eyebrow">复习方法与统计</p><h1>学习进度</h1><p class="page-intro">了解复习节奏，查看每道错题所处的记忆阶段。</p></div><button id="refresh-progress" class="ghost" type="button">刷新数据</button></header>
     <div class="page-panel progress-dashboard">
       <div class="dashboard-overview">
-        <section class="panel review-rule-panel" aria-labelledby="review-rule-heading">
-          <div class="panel-title"><div><p class="section-kicker">为什么这样复习</p><h2 id="review-rule-heading">六阶段复习规则</h2></div><span class="badge">答对才前进</span></div>
-          <p>每次先遮住答案独立重做，再核对并立即改错。连续答对时，间隔依次拉长；部分掌握停留在当前阶段，答错则回退一阶段，均在次日再次复习。</p>
-          <ol class="review-rule-stages" aria-label="六阶段复习间隔">
-            <li><strong>1</strong><span>入本当天</span></li><li><strong>2</strong><span>1 天后</span></li><li><strong>3</strong><span>3 天后</span></li><li><strong>4</strong><span>7 天后</span></li><li><strong>5</strong><span>14 天后</span></li><li><strong>6</strong><span>30 天后</span></li>
-          </ol>
-          <div class="memory-principles"><p><strong>主动提取</strong><span>不看答案重做，比重复阅读更能加固回忆路径。</span></p><p><strong>间隔效应</strong><span>在快要遗忘时再次提取，让记忆保持得更久。</span></p><p><strong>即时反馈</strong><span>立刻定位首错并改正，避免错误过程被重复强化。</span></p></div>
-        </section>
         <section class="panel review-calendar-panel" aria-labelledby="review-calendar-heading">
           <div class="panel-title">
             <div><p class="section-kicker">错题、计划与复习结果</p><h2 id="review-calendar-heading">错题与复习日历</h2></div>
@@ -34,6 +26,14 @@
         </section>
       </div>
       <p id="progress-status" class="status" role="status" aria-live="polite"></p>
+      <section class="panel review-rule-panel" aria-labelledby="review-rule-heading">
+        <div class="panel-title"><div><p class="section-kicker">为什么这样复习</p><h2 id="review-rule-heading">六阶段复习规则</h2></div><span class="badge">答对才前进</span></div>
+        <p>每次先遮住答案独立重做，再核对并立即改错。连续答对时，间隔依次拉长；部分掌握停留在当前阶段，答错则回退一阶段，均在次日再次复习。</p>
+        <ol class="review-rule-stages" aria-label="六阶段复习间隔">
+          <li><strong>1</strong><span>入本当天</span></li><li><strong>2</strong><span>1 天后</span></li><li><strong>3</strong><span>3 天后</span></li><li><strong>4</strong><span>7 天后</span></li><li><strong>5</strong><span>14 天后</span></li><li><strong>6</strong><span>30 天后</span></li>
+        </ol>
+        <div class="memory-principles"><p><strong>主动提取</strong><span>不看答案重做，比重复阅读更能加固回忆路径。</span></p><p><strong>间隔效应</strong><span>在快要遗忘时再次提取，让记忆保持得更久。</span></p><p><strong>即时反馈</strong><span>立刻定位首错并改正，避免错误过程被重复强化。</span></p></div>
+      </section>
     </div>
   </main>
   <nav class="bottom-nav" aria-label="移动端主导航"><a href="/">工作台</a><a href="/errors">错题本</a><a href="/practice">练习</a><a class="active" aria-current="page" href="/progress">进度</a><a href="/settings">更多</a></nav>

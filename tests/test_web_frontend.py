@@ -359,6 +359,7 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertIn('data-calendar-filter', html)
         self.assertIn('data-calendar-date', script)
         self.assertIn('knowledge_points', script)
+        self.assertGreater(html.index('id="review-rule-heading"'), html.index('id="progress-status"'))
         self.assertIn('.calendar-filters { display: inline-flex; gap: 2px; padding: 4px;', style)
         self.assertIn('.calendar-filters button[aria-pressed="true"] { background: var(--paper); color: var(--brand);', style)
 
