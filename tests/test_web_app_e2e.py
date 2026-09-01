@@ -445,10 +445,14 @@ class NotebookE2ETests(unittest.TestCase):
         changed_text["items"][0]["question_text"] = "若 x + 1 = 2，求 x（模型重试时的等价整理）。"
         changed_text["items"][0]["answer_text"] = "学生写的是 x = 0。"
         changed_text_replay = self.call("/v1/internal/harness/intakes/process", method="POST", payload=changed_text, **internal)
+        changed_count = json.loads(json.dumps(payload))
+        changed_count["items"] = changed_count["items"][:1]
+        changed_count_replay = self.call("/v1/internal/harness/intakes/process", method="POST", payload=changed_count, **internal)
 
-        self.assertEqual((first[0], replay[0], changed_grade_replay[0]), (200, 200, 200))
+        self.assertEqual((first[0], replay[0], changed_grade_replay[0], changed_text_replay[0], changed_count_replay[0]), (200, 200, 200, 200, 200))
         self.assertEqual((concurrent_conflict[0], concurrent_conflict[2]["error"]["code"]), (409, "conflict"))
-        self.assertEqual((changed_text_replay[0], changed_text_replay[2]["error"]["code"]), (409, "conflict"))
+        self.assertEqual(changed_text_replay[2]["results"], replay[2]["results"])
+        self.assertEqual(changed_count_replay[2]["results"], replay[2]["results"])
         self.assertEqual([item["receipt_status"] for item in first[2]["results"]], ["saved", "not_saved_correct"])
         self.assertEqual([item["receipt_status"] for item in replay[2]["results"]], ["already_saved", "not_saved_correct"])
         self.assertEqual([item["receipt_status"] for item in changed_grade_replay[2]["results"]], ["already_saved", "not_saved_correct"])

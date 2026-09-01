@@ -1100,6 +1100,8 @@ class NotebookAsgiApp:
                             evidence={"source": "deepseek_harness_tool", "attachment_id": attachment_id},
                             replace_existing=True,
                         )
+                    elif all(item.status == "confirmed" for item in intakes):
+                        pass  # Same image: the first completed extraction is authoritative.
                     else:
                         raise RuntimeError("conflict")
 
@@ -1116,12 +1118,14 @@ class NotebookAsgiApp:
                 reserved_intakes = [intake.intake_id for intake in intakes]
                 await self._sync(self.notebook.store.reserve_grade_batch, user_id=user_id, intake_ids=reserved_intakes)
             results = []
-            for intake, item in zip(intakes, raw_items, strict=True):
+            processing_items = [(intake, None) for intake in intakes] if frozen_candidates else zip(intakes, raw_items, strict=True)
+            for intake, item in processing_items:
                 reference = await self._sync(self.notebook.store.find_verified_question, question_text=intake.question_text)
                 if frozen_candidates:
                     candidate = frozen_candidates[intake.intake_id]
                     final_answer = str(self._diagnosis(candidate.evidence).get("final_answer") or "")
                 else:
+                    assert item is not None
                     attempt_id, _ = await self._sync(
                         self.notebook.store.confirm_intake,
                         user_id=user_id,
