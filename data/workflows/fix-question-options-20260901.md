@@ -1,4 +1,6 @@
-# 推荐题选择题选项缺失修复 + 2970 今日 PDF 重生成
+# 推荐题选择题选项缺失修复 + 2970 今日 PDF 异常维护记录
+
+> 审查纠正：本文保留已经发生的事故与处置证据，不是可复用的运维步骤。直接删除 `web_jobs`、在服务外重建 PDF 或手工复制对象文件均属不当操作，禁止再次执行。代码基线只保留选项入库与显示能力；安全的“重新排版、不换题、保留进度”必须通过正式领域接口实现。
 
 日期：2026-09-01。触发：用户反馈"今天生成的 pdf 中，有推荐题的选择题没有选项"。
 
@@ -22,9 +24,9 @@
 7. **API/前端** `services/web_app/asgi.py` `_recommendation` 增加 `options`；`web/app.js` 练习清单渲染选项；`web/app.css` 加 `.recommendation-options` 样式。
 8. **测试** `tests/test_practice_pdf.py` 新增 `test_recommendation_options_are_printed_in_the_pdf`（pypdf 提取文本断言 A-D 出现）；`tests/test_web_domain.py` 新增 `QuestionOptionParsingTests`；`tests/test_local_env.py` 迁移列表补 0014。
 
-## 今日 PDF 重生成（2970）
+## 已发生的一次性异常维护（2970，禁止复用）
 
-- 旧 job `2fa09ba4cef545cbbd331c41cb4f4e19`（10:32 生成，修复前，选择题无选项）→ 先备份至 `data/runtime/regenerate-pdf-2970-20260901/backup.json`（job+file 行，Git 忽略），再单事务 DELETE `web_jobs` 该行（1 行，含 file 引用保留旧文件记录与磁盘 PDF）。
+- 旧 job `2fa09ba4cef545cbbd331c41cb4f4e19`（10:32 生成，修复前，选择题无选项）曾被备份后直接删除。该操作留下孤立文件并会使旧复习码失效，现明确判定为不当维护方式，不得作为重新排版流程复用。
 - 以相同参数（error_ids 7 道、include_answers=False、plan_kind=daily_review）通过 `NotebookService.create_practice_pdf` 重新生成：新 job `9496d35ff71a4580869e7bc696780cf4`（completed）、新 file `fa4c6437e8164d54b7eb7355873de37f`（practice PDF，343240 B，5 页），question_count 7、gap 0。
 - 验证：新 PDF 用 pypdf 提取文本，含「选项」「A．」「B．」「C．」「D．」「双曲线」；今日 completed practice_pdf 仅此 1 份，为修复后计划。
 - Web 服务已重启加载新代码（原 serve 进程 63576/56108 → 新进程 64364/65692），根路径 HTTP 200。
@@ -56,9 +58,17 @@
 
 ### 验证
 - 域层：NotebookService.download_practice_pdf 以真实根 .runtime/local-mysql/quarantine 遍历 2970 全部 65 份 practice_pdf，**65/65 全部成功**（修复前仅新 job 可下载）。
-- HTTP 端到端：临时签发 2970 短时会话（HMAC-SHA256 session hash，测试后即删除）→ GET /v1/practice-pdfs/9496d35ff71a4580869e7bc696780cf4/download → **HTTP 200**、content-type pplication/pdf、343240 B、Content-Disposition: attachment; filename="practice-9496d35f.pdf"。
+- HTTP 端到端：临时签发 2970 短时会话（HMAC-SHA256 session hash，测试后即删除）→ GET /v1/practice-pdfs/9496d35ff71a4580869e7bc696780cf4/download → **HTTP 200**、content-type `application/pdf`、343240 B、Content-Disposition: attachment; filename="practice-9496d35f.pdf"。
 - 修复前用户在浏览器看到的正是该端点返回的 JSON 错误 → 表现为 download.json 下载失败。
 
 ### 修正认知（防再犯）
 - 对象存储实际根 = .runtime/local-mysql/quarantine（NOT data/runtime/quarantine）；object_key 形如 quarantine/f6e916246c8e3597/<hash>.pdf，拼接后真实路径为 .runtime/local-mysql/quarantine/quarantine/f6e916246c8e3597/<hash>.pdf。
 - 数据维护脚本涉及 PDF/文件重生成时，根目录必须以 scripts.local_env.RUNTIME / "quarantine" 为准。
+
+## 审查后的选择性回滚
+
+- 保留 `options_json` 字段、题库导入和 API/PDF 显示能力，不回退已经正确回填的数据。
+- 选项在 MySQL 读取边界统一规范化：缺少编号时补 A/B/C/D；题干已包含完整选项时不再重复输出。
+- `0014` 迁移增加未记账恢复检查；回填脚本只允许更新当前题目版本。
+- 不恢复缺少选项的旧 PDF，不改动当前可用 PDF 和判题数据；直接删除 job 的异常处置不进入正式代码路径。
+- 验证：296 项测试通过；2970 当前推荐数据经真实 MySQL 路径读取后，选项编号缺失为 0。

@@ -308,6 +308,18 @@ def _apply_migrations() -> None:
                 migration_sql = "SELECT 1;"
             elif applied_columns.strip() != "0":
                 raise RuntimeError("0008 privacy recovery schema is partially applied")
+        elif name == "0014_question_options.sql":
+            applied_columns = _run_sql(
+                "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() "
+                "AND table_name='question_versions' AND column_name='options_json';",
+                root=True,
+                database=True,
+                label="0014 question options recovery schema check",
+            )
+            if applied_columns.strip() == "1":
+                migration_sql = "SELECT 1;"
+            elif applied_columns.strip() != "0":
+                raise RuntimeError("0014 question options schema is inconsistent")
         _run_sql(migration_sql, root=True, database=True, label=f"apply {name}")
         _run_sql(
             f"INSERT INTO web_schema_migrations (name, sha256, applied_at) VALUES ('{name}', '{digest}', UTC_TIMESTAMP(6));",

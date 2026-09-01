@@ -186,6 +186,18 @@ class QuestionOptionParsingTests(unittest.TestCase):
         self.assertIsNone(MySqlDomainStore._options(None))
         self.assertIsNone(MySqlDomainStore._options(0))
 
+    def test_options_add_missing_labels_and_do_not_repeat_stem_choices(self) -> None:
+        self.assertEqual(
+            MySqlDomainStore._options('["$-2$", "$-1$", "$1$", "$2$"]', stem_text="选择正确答案（ ）"),
+            ("A．$-2$", "B．$-1$", "C．$1$", "D．$2$"),
+        )
+        self.assertIsNone(
+            MySqlDomainStore._options(
+                '["A．1", "B．2", "C．3", "D．4"]',
+                stem_text="选择正确答案（ ） A. 1 B. 2 C. 3 D. 4",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

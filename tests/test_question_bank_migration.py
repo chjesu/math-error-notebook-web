@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 import unittest
 
-from scripts import migrate_question_bank
+from scripts import backfill_question_options, migrate_question_bank
 
 
 QUESTION = {
@@ -27,6 +27,51 @@ QUESTION = {
 
 
 class QuestionBankMigrationTests(unittest.TestCase):
+    def test_option_backfill_updates_only_the_current_version(self) -> None:
+        class Cursor:
+            rowcount = 1
+
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, args=()):
+                self.calls.append((sql, args))
+
+            def fetchall(self):
+                return [("current-version-id", "f" * 64)]
+
+            def close(self):
+                pass
+
+        class Connection:
+            def __init__(self):
+                self.cursor_instance = Cursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+            def begin(self):
+                pass
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+
+        connection = Connection()
+        with mock.patch.object(backfill_question_options, "_desktop_options", return_value={"f" * 64: '["A．1"]'}), mock.patch.object(
+            backfill_question_options, "_connection", return_value=connection
+        ), mock.patch("sys.argv", ["backfill_question_options.py", "--source-root", "."]):
+            self.assertEqual(backfill_question_options.main(), 0)
+        select, update = connection.cursor_instance.calls
+        self.assertIn("v.version_no = q.current_version_no", select[0])
+        self.assertIn("WHERE id=%s", update[0])
+        self.assertEqual(update[1][1], "current-version-id")
+
     def test_current_project_skill_layout_is_supported(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

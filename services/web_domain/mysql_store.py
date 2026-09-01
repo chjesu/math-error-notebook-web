@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import re
 from typing import Any, Protocol
 import uuid
 
@@ -1120,7 +1121,7 @@ class MySqlDomainStore:
                 "AND NOT EXISTS (SELECT 1 FROM recommendations r WHERE r.user_id=%s AND r.question_id=q.id) LIMIT 200",
                 (user_id, user_id),
             )
-            candidates = [Question(str(row[0]), str(row[1]), row[2], int(row[3]) if row[3] is not None else None, float(row[4]) if row[4] is not None else None, str(row[5]), options=self._options(row[6])) for row in cursor.fetchall()]
+            candidates = [Question(str(row[0]), str(row[1]), row[2], int(row[3]) if row[3] is not None else None, float(row[4]) if row[4] is not None else None, str(row[5]), options=self._options(row[6], stem_text=str(row[1]))) for row in cursor.fetchall()]
         finally:
             cursor.close()
             connection.close()
@@ -1187,7 +1188,7 @@ class MySqlDomainStore:
                 "ORDER BY r.created_at,r.id",
                 (user_id, error_id),
             )
-            return [Recommendation(str(row[0]), user_id, error_id, Question(str(row[3]), str(row[4]), row[5], int(row[6]) if row[6] is not None else None, float(row[7]) if row[7] is not None else None, str(row[8]), options=self._options(row[9])), str(row[1]), str(row[2])) for row in cursor.fetchall()]
+            return [Recommendation(str(row[0]), user_id, error_id, Question(str(row[3]), str(row[4]), row[5], int(row[6]) if row[6] is not None else None, float(row[7]) if row[7] is not None else None, str(row[8]), options=self._options(row[9], stem_text=str(row[4]))), str(row[1]), str(row[2])) for row in cursor.fetchall()]
         finally:
             cursor.close()
             connection.close()
@@ -1806,7 +1807,7 @@ class MySqlDomainStore:
         return json.loads(str(value))
 
     @staticmethod
-    def _options(value: Any) -> tuple[str, ...] | None:
+    def _options(value: Any, *, stem_text: str = "") -> tuple[str, ...] | None:
         if value is None or value == "":
             return None
         if isinstance(value, str):
@@ -1816,4 +1817,16 @@ class MySqlDomainStore:
                 return None
         if not isinstance(value, (list, tuple)) or not value:
             return None
-        return tuple(str(option) for option in value)
+        options = tuple(str(option) for option in value)
+        if len(options) > 26:
+            return options
+        labels = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:len(options)]
+        if len(options) <= len(labels) and all(
+            re.search(rf"(?:^|\s){label}\s*[.．、:：]", stem_text, re.IGNORECASE)
+            for label in labels
+        ):
+            return None
+        return tuple(
+            option if re.match(rf"^\s*{label}(?:\s|[.．、:：])", option, re.IGNORECASE) else f"{label}．{option}"
+            for label, option in zip(labels, options)
+        )

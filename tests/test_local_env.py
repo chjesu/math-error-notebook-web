@@ -214,6 +214,31 @@ class LocalEnvironmentTests(unittest.TestCase):
             local_env._apply_migrations()
         self.assertIn("record 0008_privacy_recovery.sql", labels)
 
+    def test_unledgered_0014_is_detected_and_recorded(self) -> None:
+        migration = local_env.ROOT / "services" / "web_domain" / "migrations" / "0014_question_options.sql"
+        labels: list[str] = []
+
+        def run_sql(sql, *, label, **kwargs):
+            del kwargs
+            labels.append(label)
+            if label == "migration ledger shape check":
+                return "1"
+            if label == "migration ledger read":
+                return ""
+            if label == "0014 question options recovery schema check":
+                return "1"
+            if label == "apply 0014_question_options.sql":
+                self.assertEqual(sql, "SELECT 1;")
+            return ""
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            local_env, "MIGRATIONS", (migration,)
+        ), mock.patch.object(local_env, "_run_sql", side_effect=run_sql), mock.patch.object(
+            local_env, "READY", Path(directory) / "ready"
+        ):
+            local_env._apply_migrations()
+        self.assertIn("record 0014_question_options.sql", labels)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -68,26 +68,25 @@ def main() -> int:
     cursor = connection.cursor()
     try:
         cursor.execute(
-            "SELECT q.id, q.canonical_sha256 FROM questions q "
-            "JOIN question_versions v ON v.question_id = q.id "
-            "WHERE v.options_json IS NULL GROUP BY q.id, q.canonical_sha256"
+            "SELECT v.id, q.canonical_sha256 FROM questions q "
+            "JOIN question_versions v ON v.question_id = q.id AND v.version_no = q.current_version_no "
+            "WHERE v.options_json IS NULL"
         )
         rows = cursor.fetchall()
-        matched: list[tuple[str, str, str]] = []  # question_id, options_json, fingerprint
-        for question_id, fingerprint in rows:
+        matched: list[tuple[str, str, str]] = []  # version_id, options_json, fingerprint
+        for version_id, fingerprint in rows:
             options = desktop.get(str(fingerprint))
             if options is not None:
-                matched.append((str(question_id), options, str(fingerprint)))
+                matched.append((str(version_id), options, str(fingerprint)))
         print(f"desktop options entries: {len(desktop)}; web questions missing options: {len(rows)}; matchable: {len(matched)}")
         if args.dry_run or not matched:
             return 0
         connection.begin()
         updated = 0
-        for question_id, options, _fingerprint in matched:
+        for version_id, options, _fingerprint in matched:
             cursor.execute(
-                "UPDATE question_versions SET options_json=%s "
-                "WHERE question_id=%s AND options_json IS NULL",
-                (options, question_id),
+                "UPDATE question_versions SET options_json=%s WHERE id=%s AND options_json IS NULL",
+                (options, version_id),
             )
             updated += cursor.rowcount
         connection.commit()
