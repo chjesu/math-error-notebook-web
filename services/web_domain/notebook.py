@@ -474,6 +474,25 @@ class InMemoryNotebookStore:
         self.questions[question.question_id] = question
         self.question_rules[question.question_id] = (status, license_status, verified)
 
+    def get_verified_question(self, *, question_id: str) -> VerifiedQuestionReference | None:
+        question = self.questions.get(question_id)
+        if (
+            question is None
+            or self.question_rules.get(question_id) not in {("verified", "open", True), ("verified", "user_authorized", True)}
+            or not question.answer_text
+        ):
+            return None
+        return VerifiedQuestionReference(
+            question_id=question_id,
+            version_id=question.version_id or question_id,
+            version_no=question.version_no,
+            stem_text=question.stem_text,
+            answer_text=question.answer_text,
+            solution_text=question.solution_text,
+            source_title=question.source_title,
+            match_score=1.0,
+        )
+
     def find_verified_question(self, *, question_text: str) -> VerifiedQuestionReference | None:
         matches: list[VerifiedQuestionReference] = []
         for question_id, question in self.questions.items():

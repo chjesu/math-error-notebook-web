@@ -579,6 +579,29 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def get_verified_question(self, *, question_id: str) -> VerifiedQuestionReference | None:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT q.id,v.id,v.version_no,v.stem_text,v.answer_text,v.solution_text,s.title "
+                "FROM questions q JOIN question_sources s ON s.id=q.source_id "
+                "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
+                "WHERE q.id=%s AND q.status='verified' AND s.license_status IN ('open','user_authorized') "
+                "AND v.answer_text IS NOT NULL "
+                "AND EXISTS (SELECT 1 FROM question_verifications x WHERE x.question_version_id=v.id AND x.verdict='verified')",
+                (question_id,),
+            )
+            row = cursor.fetchone()
+            return VerifiedQuestionReference(
+                question_id=str(row[0]), version_id=str(row[1]), version_no=int(row[2]),
+                stem_text=str(row[3]), answer_text=str(row[4]), solution_text=row[5],
+                source_title=str(row[6]), match_score=1.0,
+            ) if row else None
+        finally:
+            cursor.close()
+            connection.close()
+
     def link_attempt_question(self, *, user_id: str, attempt_id: str, question_id: str) -> Any:
         connection = self._connect()
         cursor = connection.cursor()

@@ -457,6 +457,55 @@ function recheckReferenceConflictTool() {
   };
 }
 
+function lookupQuestionBankReferenceTool() {
+  const origin = process.env.LZLM_PRODUCT_ORIGIN;
+  const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
+  if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
+  return {
+    name: "lookup_question_bank_reference",
+    description: "Read the current verified and authorized question-bank answer and solution by an exact 32-character lowercase hexadecimal question_id. Use only after independently solving the problem and only when the user explicitly asks to check that question-bank identifier. Never use the reference-conflict recheck tool for a question_id.",
+    parameters: {
+      type: "object", additionalProperties: false, required: ["question_id"],
+      properties: {question_id: {type: "string", pattern: "^[0-9a-f]{32}$"}}
+    },
+    output: {
+      schema: {
+        type: "object", additionalProperties: false, required: ["result"],
+        properties: {result: {
+          type: "object", additionalProperties: false,
+          required: ["question_id", "version_no", "question_text", "reference_answer", "reference_solution", "source_title"],
+          properties: {
+            question_id: {type: "string"}, version_no: {type: "integer"},
+            question_text: {type: "string"}, reference_answer: {type: "string"},
+            reference_solution: {type: "string"}, source_title: {type: "string"}
+          }
+        }}
+      },
+      render: (_args, value) => [{type: "text", text: [
+        `题库编号：${value.result.question_id}`,
+        `当前版本：${value.result.version_no}`,
+        `题干：${value.result.question_text}`,
+        `题库参考答案：${value.result.reference_answer}`,
+        `题库参考解析：${value.result.reference_solution || "暂无解析"}`,
+        `来源：${value.result.source_title}`
+      ].join("\n")}]
+    },
+    async execute(args, exec) {
+      if (!exec.agent) throw new Error("Question reference lookup requires an owning Harness session");
+      const response = await fetch(`${origin}/v1/internal/harness/question-bank/reference`, {
+        method: "POST",
+        headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
+        body: JSON.stringify({session_id: exec.agent.id, question_id: args.question_id}),
+        signal: exec.signal
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.result) throw new Error(`Question reference lookup failed (${response.status})`);
+      return payload;
+    },
+    presentCall: () => ({card: "generic", title: "查询题库解析", kind: "other", rawInput: null})
+  };
+}
+
 /** Register the single internal workspace used by the student product. */
 export async function apply(ctx) {
   const workspacePath = process.env.LZLM_HARNESS_WORKSPACE_ROOT;
@@ -465,6 +514,7 @@ export async function apply(ctx) {
   }
   await ctx.workspaceRegistry.create(workspacePath, "错题会话");
   ctx.tools.register(processAttachmentsTool(ctx));
+  ctx.tools.register(lookupQuestionBankReferenceTool());
   ctx.tools.register(recheckReferenceConflictTool());
   ctx.tools.register(adjudicateReferenceConflictsTool());
   ctx.tools.register(removeErrorTool());

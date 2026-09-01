@@ -149,6 +149,9 @@ class NotebookAsgiApp:
         if path == "/v1/internal/harness/reference-conflicts/recheck" and method == "POST":
             await self._internal_harness_recheck(scope, receive, send, headers)
             return
+        if path == "/v1/internal/harness/question-bank/reference" and method == "POST":
+            await self._internal_harness_question_reference(scope, receive, send, headers)
+            return
         if path == "/v1/internal/harness/errors/remove" and method == "POST":
             await self._internal_harness_remove_error(scope, receive, send, headers)
             return
@@ -1529,6 +1532,47 @@ class NotebookAsgiApp:
         except RuntimeError as exc:
             code = str(exc) if str(exc) in {"input_version_changed", "reference_conflict", "conflict"} else "conflict"
             await self._error(send, 409, code)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    async def _internal_harness_question_reference(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive)
+            if set(payload) != {"session_id", "question_id"}:
+                raise ValueError("invalid question reference request")
+            session_id = self._harness_session_id(payload)
+            question_id = payload["question_id"]
+            if not isinstance(question_id, str) or re.fullmatch(r"[0-9a-f]{32}", question_id) is None:
+                raise ValueError("invalid question reference request")
+            if await self._harness_user_id(session_id) is None:
+                raise PermissionError("unbound harness session")
+            reference = await self._sync(
+                self.notebook.store.get_verified_question,
+                question_id=question_id,
+            )
+            if reference is None:
+                raise LookupError("verified question not found")
+            await self._json(send, 200, {"result": {
+                "question_id": reference.question_id,
+                "version_no": reference.version_no,
+                "question_text": reference.stem_text,
+                "reference_answer": reference.answer_text,
+                "reference_solution": reference.solution_text or "",
+                "source_title": reference.source_title,
+            }})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
 

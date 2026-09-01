@@ -746,6 +746,39 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(rechecked[2]["result"]["error_id"], next(iter(self.domain_store.errors)))
         self.assertEqual(next(iter(self.domain_store.errors.values())).question_id, question.question_id)
 
+    def test_harness_reads_verified_question_reference_by_exact_id(self) -> None:
+        cookie = self.login("13500135007")
+        harness_origin = "http://example.test:3080"
+        self.call(
+            "/v1/harness/sessions/bind", method="POST",
+            payload={"session_id": "session-question-reference"}, cookie=cookie, origin=harness_origin,
+        )
+        question = Question(
+            "0a6af0c9d4a40cdfbbd15394b247d37a", "若 x+5=10，求 x。", "x=5", 10, 2.0, "授权题库",
+            solution_text="等式两边同时减去 5，得到 x=5。", version_id="8" * 32, version_no=3,
+        )
+        self.domain_store.add_question(question, license_status="user_authorized")
+        internal = {
+            "origin": None,
+            "client": ("127.0.0.1", 3080),
+            "extra_headers": {"authorization": "Bearer test-internal-token"},
+        }
+        response = self.call(
+            "/v1/internal/harness/question-bank/reference", method="POST",
+            payload={"session_id": "session-question-reference", "question_id": question.question_id}, **internal,
+        )
+        self.assertEqual((response[0], response[2]["result"]["reference_answer"]), (200, "x=5"))
+        self.assertEqual(response[2]["result"]["reference_solution"], "等式两边同时减去 5，得到 x=5。")
+        self.assertEqual(response[2]["result"]["version_no"], 3)
+        self.domain_store.add_question(
+            Question("9" * 32, "受限题", "答案", 5, 1.0, "受限来源"), license_status="restricted",
+        )
+        forbidden_reference = self.call(
+            "/v1/internal/harness/question-bank/reference", method="POST",
+            payload={"session_id": "session-question-reference", "question_id": "9" * 32}, **internal,
+        )
+        self.assertEqual(forbidden_reference[0], 404)
+
     def test_deletion_keeps_durable_pending_state_when_domain_cleanup_fails(self) -> None:
         phone = "13400134000"
         cookie = self.login(phone)

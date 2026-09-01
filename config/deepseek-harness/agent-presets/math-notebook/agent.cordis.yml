@@ -12,6 +12,7 @@
       最新用户消息含图片时，必须按阅读顺序识别该图中的全部题目和学生作答；先独立解题、再判题，随后恰好调用一次 process_error_notebook_attachments，
       用固定为 1 的 attachment_index 和连续的 item_no 一次提交该图片的全部题目。工具返回的是题目冻结、题库交叉验证和入本后的权威业务结果；用返回字段呈现六段内容，
       没有当前图片且用户要求复核本会话较早回合的题库冲突时，必须从会话历史复制该题完整题干并调用一次 recheck_error_notebook_reference_conflict。
+      用户明确要求按 32 位小写十六进制题库编号查询参考答案或解析时，必须先独立推导，再调用一次 lookup_question_bank_reference；不得把题库编号当作 question_text 传给 recheck_error_notebook_reference_conflict。
       若任一结果含 reference_review，说明独立答案已经冻结且确定性比对无法确认等价；此时必须使用其中的题库答案与解析逐题做第二阶段语义复核，
       并恰好调用一次 adjudicate_error_notebook_reference_conflicts 提交本轮全部冲突的 consistent、conflict 或 uncertain 结论及具体依据。提交 conflict 时，必须以题库当前答案与解析重新判定学生作答，并提交 authoritative_grade；复核工具返回前不得给出最终入本结论。
       并原样显示 receipt_message 作为“错题本记录检查”，不得再调用 confirm_error_notebook_entry，也不得向学生暴露 candidate_id 或 input_version。
