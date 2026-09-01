@@ -373,6 +373,7 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         runtime_config = (ROOT / "config" / "deepseek-harness" / "cordis.yml").read_text(encoding="utf-8")
         preset = (ROOT / "config" / "deepseek-harness" / "agent-presets" / "math-notebook" / "agent.cordis.yml").read_text(encoding="utf-8")
         dependencies = package["dependencies"]
+        self.assertEqual(dependencies["@deepseek-ai/cordis-plugin-group"], "1.0.2")
         self.assertEqual(dependencies["@deepseek-ai/dsh"], "0.1.1-rc.2")
         self.assertEqual(dependencies["@deepseek-ai/dsh-web-frontend"], "0.1.1-rc.2")
         self.assertEqual(dependencies["@lizhaolin/dsh-math-notebook-ui"], "file:extensions/dsh-math-notebook-ui")
