@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ from PIL import Image
 
 from services.web_app import NotebookAsgiApp
 from services.web_auth import AuthConfig, InMemoryCaptchaVerifier, InMemoryRegistrationStore, RecordingSmsSender, RegistrationService
-from services.web_domain import GradeCandidate, InMemoryNotebookStore, NotebookService, Question, cross_validate_reference
+from services.web_domain import ErrorEntry, GradeCandidate, InMemoryNotebookStore, NotebookService, Question, Recommendation, ReviewTask, cross_validate_reference
 from services.web_domain.notebook import Attempt
 
 
@@ -750,6 +751,55 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertNotEqual(own[2]["selection_scope"], other[2]["selection_scope"])
         self.assertNotIn("user_id", own[2])
 
+    def test_pending_practice_review_link_is_user_selected_and_account_scoped(self) -> None:
+        cookie = self.login("13800138010")
+        other_cookie = self.login("13800138011")
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        assert user is not None
+        now = datetime.now(timezone.utc)
+        error = ErrorEntry("e" * 32, user.user_id, "0" * 32, "原错题", "原作答", "原错因", "open", now)
+        self.domain_store.errors[error.error_id] = error
+        task = ReviewTask("t" * 32, user.user_id, error.error_id, 1, now - timedelta(days=1), "ready")
+        self.domain_store.review_tasks[task.task_id] = task
+        self.domain_store._review_keys[(user.user_id, error.error_id, 1)] = task.task_id
+        question = Question("q" * 32, "解方程 x+2=4", "x=2", 10, 2.0, "公开验证题库")
+        self.domain_store.add_question(question)
+        self.domain_store.recommendations["r" * 32] = Recommendation(
+            "r" * 32, user.user_id, error.error_id, question, "同知识点", "assigned"
+        )
+        paper = self.notebook.create_practice_pdf(
+            user_id=user.user_id, error_ids=[error.error_id], idempotency_key="pending-link-paper"
+        )
+        recommendation = paper.checkpoint["review_manifest"][1]
+        attempt_id = "a" * 32
+        self.domain_store.attempts[attempt_id] = Attempt(
+            attempt_id, user.user_id, "i" * 32, 1, question.stem_text, question.answer_text, "grade_ready"
+        )
+        evidence = json.dumps({
+            "schema": "math-error-diagnosis/v1", "knowledge_points": ["方程"],
+            "practice_review": {"status": "unmatched", "locator": {"kind": "recommendation"}},
+        }, ensure_ascii=False)
+        candidate = self.domain_store.record_grade_candidate(
+            user_id=user.user_id, attempt_id=attempt_id, input_version=1, verdict="correct",
+            first_error=None, evidence=evidence,
+        )
+        own = self.call("/v1/practice-review-links", cookie=cookie)
+        other = self.call("/v1/practice-review-links", cookie=other_cookie)
+        self.assertEqual((own[0], own[2]["count"], other[2]["count"]), (200, 1, 0))
+        self.assertEqual(own[2]["items"][0]["options"][0]["code"], recommendation["code"])
+        denied = self.call(
+            f"/v1/practice-review-links/{candidate.candidate_id}", method="POST",
+            payload={"input_version": 1, "code": recommendation["code"]}, cookie=other_cookie,
+        )
+        self.assertEqual(denied[0], 404)
+        linked = self.call(
+            f"/v1/practice-review-links/{candidate.candidate_id}", method="POST",
+            payload={"input_version": 1, "code": recommendation["code"]}, cookie=cookie,
+        )
+        self.assertEqual((linked[0], linked[2]["receipt"]["status"]), (200, "review_waiting"))
+        self.assertEqual(self.call("/v1/practice-review-links", cookie=cookie)[2]["count"], 0)
+        self.assertEqual(len(self.domain_store.errors), 1)
+
     @staticmethod
     def multipart(filename: str, content: bytes, purpose: str = "question_image") -> tuple[str, bytes]:
         boundary = "lzlm-test-boundary"
@@ -817,7 +867,8 @@ class NotebookE2ETests(unittest.TestCase):
         progress = self.call("/v1/progress", cookie=cookie)
         self.assertEqual(progress[2]["review_stage_counts"]["2"], 1)
         self.assertEqual((progress[2]["today_completed_review_count"], progress[2]["today_needs_correction_count"]), (1, 0))
-        calendar = self.call(f"/v1/progress/calendar?month={committed[2]['created_at'][:7]}", cookie=cookie)
+        created_month = datetime.fromisoformat(committed[2]["created_at"]).astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m")
+        calendar = self.call(f"/v1/progress/calendar?month={created_month}", cookie=cookie)
         self.assertEqual((calendar[0], calendar[2]["total_error_count"]), (200, 1))
         self.assertEqual(calendar[2]["summary"]["new_error_count"], 1)
         self.assertEqual(calendar[2]["summary"]["completed_review_count"], 1)

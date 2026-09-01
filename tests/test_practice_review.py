@@ -238,8 +238,47 @@ class PracticeReviewTests(unittest.TestCase):
         candidate = self.candidate(item)
         result = self.service.commit_practice_review(user_id="other", candidate=candidate)
         self.assertEqual(result["status"], "review_unmatched")
-        result = self.service.resolve_practice_review(user_id=self.owner, question_text=self.question.stem_text, locator={"code": item["code"]})
+        wrong = item["code"][:-1] + ("0" if item["code"][-1] != "0" else "1")
+        result = self.service.resolve_practice_review(user_id=self.owner, question_text=self.question.stem_text, locator={"code": wrong})
         self.assertEqual(result["status"], "unmatched")
+
+    def test_checked_code_and_unique_question_id_do_not_depend_on_ocr_similarity(self):
+        self.job = self.paper()
+        original, recommendation = self.job.checkpoint["review_manifest"]
+        self.assertRegex(original["code"], r"^R[0-9a-f]{12}-01-[0-9A-F]{6}$")
+        by_code = self.service.resolve_practice_review(
+            user_id=self.owner, question_text="OCR 完全无法还原题干", locator={"code": original["code"]}
+        )
+        by_question = self.service.resolve_practice_review(
+            user_id=self.owner, question_text=r"错误的 LaTeX 与额外数字 2026 99",
+            locator={"question_id": self.question.question_id, "kind": "recommendation"},
+        )
+        self.assertEqual((by_code["code"], by_question["code"]), (original["code"], recommendation["code"]))
+
+    def test_pending_review_can_be_selected_once_without_creating_a_new_error(self):
+        self.job = self.paper()
+        attempt_id = "9" * 32
+        intake_id = "8" * 32
+        self.store.attempts[attempt_id] = Attempt(
+            attempt_id, self.owner, intake_id, 1, self.question.stem_text, "y=3或-3", "grade_ready"
+        )
+        evidence = json.dumps({
+            "schema": "math-error-diagnosis/v1", "knowledge_points": ["方程"],
+            "practice_review": {"status": "unmatched", "locator": {"kind": "recommendation"}},
+        }, ensure_ascii=False)
+        candidate = self.store.record_grade_candidate(
+            user_id=self.owner, attempt_id=attempt_id, input_version=1, verdict="correct",
+            first_error=None, evidence=evidence,
+        )
+        pending = self.service.list_pending_practice_review_links(user_id=self.owner)
+        self.assertEqual((len(pending), pending[0]["candidate_id"], len(pending[0]["options"])), (1, candidate.candidate_id, 1))
+        linked = self.service.link_pending_practice_review(
+            user_id=self.owner, candidate_id=candidate.candidate_id, input_version=1,
+            code=pending[0]["options"][0]["code"],
+        )
+        self.assertEqual(json.loads(linked.evidence)["practice_review"]["status"], "matched")
+        self.assertEqual(self.service.list_pending_practice_review_links(user_id=self.owner), [])
+        self.assertEqual(len(self.store.errors), 1)
 
     def test_transaction_failure_rolls_back_completion_and_submissions(self):
         self.job = self.paper()

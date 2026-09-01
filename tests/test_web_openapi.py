@@ -48,6 +48,7 @@ class WebOpenApiContractTests(unittest.TestCase):
             ("/v1/errors/{error_id}/master", "post"),
             ("/v1/errors/{error_id}", "delete"),
             ("/v1/reviews/{review_id}/complete", "post"),
+            ("/v1/practice-review-links/{candidate_id}", "post"),
             ("/v1/practice-pdfs", "post"),
             ("/v1/exports", "post"),
             ("/v1/account", "delete"),
@@ -85,6 +86,15 @@ class WebOpenApiContractTests(unittest.TestCase):
         self.assertEqual(operation["responses"]["200"]["$ref"], "#/components/responses/LearningUsage")
         schema = self.document["components"]["schemas"]["LearningUsage"]
         self.assertEqual(set(schema["required"]), {"date", "timezone", "grade", "recommendation"})
+
+    def test_pending_practice_review_link_is_account_scoped_and_version_locked(self) -> None:
+        listed = self.operation("/v1/practice-review-links", "get")
+        linked = self.operation("/v1/practice-review-links/{candidate_id}", "post")
+        self.assertEqual(listed["responses"]["200"]["$ref"], "#/components/responses/PendingPracticeReviewLinks")
+        self.assertEqual(linked["parameters"][0]["$ref"], "#/components/parameters/CandidateId")
+        request = self.document["components"]["schemas"]["PracticeReviewLinkRequest"]
+        self.assertEqual(set(request["required"]), {"input_version", "code"})
+        self.assertIn("input_version_changed", self.document["components"]["schemas"]["ErrorEnvelope"]["properties"]["error"]["properties"]["code"]["enum"])
 
     def test_model_extraction_returns_all_questions_in_one_file(self) -> None:
         operation = self.operation("/v1/intakes/{intake_id}/model-candidate", "post")

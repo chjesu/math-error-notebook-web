@@ -314,7 +314,7 @@ assert.ok(!source.includes('plan_kind: "practice"'));
     def test_error_notebook_focuses_on_today_and_error_records(self) -> None:
         html = (WEB / "errors.html").read_text(encoding="utf-8")
         script = (WEB / "app.js").read_text(encoding="utf-8")
-        for text in ("今日的复习计划", "全部错题"):
+        for text in ("今日的复习计划", "待关联判题", "全部错题"):
             self.assertIn(text, html)
         for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "各复习阶段"):
             self.assertNotIn(text, html)
@@ -322,8 +322,9 @@ assert.ok(!source.includes('plan_kind: "practice"'));
             self.assertIn(f'id="{marker}"', html)
         self.assertNotIn('id="today-review-items"', html)
         self.assertNotIn("renderDueReviews", script)
-        for contract in ('api("/v1/errors")', 'api("/v1/reviews/today")', 'api("/v1/progress")', 'api("/v1/practice-pdfs"'):
+        for contract in ('api("/v1/errors")', 'api("/v1/reviews/today")', 'api("/v1/progress")', 'api("/v1/practice-pdfs"', 'api("/v1/practice-review-links")'):
             self.assertIn(contract, script)
+        self.assertIn("data-review-link-candidate", script)
         self.assertIn('name="today-error"', script)
         self.assertIn('data-error-detail=', script)
         self.assertNotIn('id="error-detail"', html)

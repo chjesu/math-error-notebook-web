@@ -36,7 +36,7 @@ from .learning import (
 )
 from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job, normalize_extraction_items
 from .practice_pdf import build_practice_pdf
-from .practice_review import add_practice_calendar, apply_submission, build_manifest, fixed_plan_items, legacy_manifest, matching_items, practice_paper_progress, review_locator, shared_review_checkpoints, unresolved_receipt
+from .practice_review import add_practice_calendar, apply_submission, build_manifest, fixed_plan_items, identity_matching_items, legacy_manifest, matching_items, practice_paper_progress, review_locator, shared_review_checkpoints, unresolved_receipt
 
 
 @dataclass(frozen=True)
@@ -398,6 +398,16 @@ class InMemoryNotebookStore:
             if context:
                 return context
         return None
+
+    def list_latest_grade_candidates(self, *, user_id: str) -> list[GradeCandidate]:
+        latest: dict[str, GradeCandidate] = {}
+        for candidate in reversed(tuple(self.candidates.values())):
+            attempt = self.attempts.get(candidate.attempt_id)
+            if attempt and attempt.user_id == user_id and candidate.attempt_id not in latest:
+                latest[candidate.attempt_id] = candidate
+                if len(latest) == 100:
+                    break
+        return list(latest.values())
 
     def find_resolved_grade_candidate(self, *, user_id: str, candidate: GradeCandidate) -> GradeCandidate | None:
         validation = reference_validation_from_evidence(candidate.evidence)
@@ -1094,8 +1104,9 @@ class NotebookService:
             if reference.question_id in expected_ids:
                 linked = self.resolve_practice_review(user_id=user_id, question_text=reference.stem_text,
                     locator=locating | {"question_id": reference.question_id, "kind": "recommendation"}, review_mode=True)
-                if linked.get("status") == "matched":
-                    linked["reference_match"] = {key: fresh[key] for key in ("question_id", "version_id", "reference_answer_sha256")}
+        if (linked.get("status") == "matched" and reference is not None
+                and adjudication.get("status") == "reference_preferred" and locating.get("kind") != "original"):
+            linked["reference_match"] = {key: fresh[key] for key in ("question_id", "version_id", "reference_answer_sha256")}
         if context.get("status") != "unmatched":
             if any(linked.get(key) != context.get(key) for key in ("status", "job_id", "code")):
                 raise ValueError("an already linked review cannot be reassigned")
@@ -1156,6 +1167,95 @@ class NotebookService:
         # Equivalent reprints share the already-started paper where possible.
         _, job_id, item, _ = max(matches, key=lambda row: row[3])
         return {"status": "matched", "job_id": job_id, "code": item["code"], "required": item["required"]}
+
+    def has_practice_review_identity(self, *, user_id: str, question_id: str) -> bool:
+        """Bounded ownership check used before treating an ordinary bank item as a PDF review."""
+        locator = review_locator({"question_id": question_id, "kind": "recommendation"})
+        for paper in self.store.list_practice_pdfs(user_id=user_id)[:100]:
+            job = self.store.get_job(user_id=user_id, job_id=paper["task_id"])
+            manifest = (job.checkpoint or {}).get("review_manifest") if job else None
+            if identity_matching_items(manifest or [], locator, user_id):
+                return True
+        return False
+
+    def _pending_review_options(self, *, user_id: str, attempt: Attempt, context: dict, diagnosis: dict,
+                                papers: list[tuple[dict, Job]]) -> list[dict]:
+        locator = review_locator(context.get("locator"))
+        validation = diagnosis.get("cross_validation")
+        exact_id = str(validation.get("question_id")) if isinstance(validation, dict) and validation.get("status") == "consistent" and validation.get("question_id") else locator.get("question_id")
+        exact_locator = {"question_id": exact_id, "kind": "recommendation"} if exact_id else {}
+        options = []
+        for paper, job in papers:
+            checkpoint = job.checkpoint or {}
+            manifest = checkpoint.get("review_manifest") or []
+            rows = identity_matching_items(manifest, exact_locator, user_id) if exact_locator else []
+            if not rows:
+                relaxed = {key: value for key, value in locator.items() if key != "code"}
+                rows = matching_items(manifest, relaxed, attempt.question_text, user_id)
+            for item in rows:
+                options.append({
+                    "code": item["code"], "pdf_id": job.job_id, "pdf_name": paper["filename"],
+                    "kind": item["kind"], "stage": item["stage"],
+                    "generated_at": paper.get("generated_at"),
+                    "started": bool(checkpoint.get("review_submissions")),
+                })
+        unique = {option["code"]: option for option in options}
+        return sorted(unique.values(), key=lambda row: (not row["started"], row.get("generated_at") or "", row["code"]))
+
+    def list_pending_practice_review_links(self, *, user_id: str) -> list[dict]:
+        items = []
+        papers = []
+        for paper in self.store.list_practice_pdfs(user_id=user_id)[:100]:
+            job = self.store.get_job(user_id=user_id, job_id=paper["task_id"])
+            if job:
+                papers.append((paper, job))
+        for candidate in self.store.list_latest_grade_candidates(user_id=user_id):
+            try:
+                diagnosis = json.loads(candidate.evidence or "{}")
+            except (TypeError, ValueError):
+                continue
+            context = diagnosis.get("practice_review") or {}
+            if context.get("status") != "unmatched":
+                continue
+            attempt = self.store.get_attempt(user_id=user_id, attempt_id=candidate.attempt_id)
+            if not attempt or attempt.input_version != candidate.input_version:
+                continue
+            items.append({
+                "candidate_id": candidate.candidate_id, "input_version": candidate.input_version,
+                "verdict": candidate.verdict, "question_text": attempt.question_text,
+                "options": self._pending_review_options(
+                    user_id=user_id, attempt=attempt, context=context, diagnosis=diagnosis, papers=papers
+                ),
+            })
+        return items
+
+    def link_pending_practice_review(self, *, user_id: str, candidate_id: str, input_version: int, code: str) -> GradeCandidate:
+        candidate = self.store.get_grade_candidate(user_id=user_id, candidate_id=candidate_id)
+        if not candidate:
+            raise LookupError("grade candidate not found")
+        if candidate.input_version != input_version:
+            raise RuntimeError("input_version_changed")
+        pending = next((item for item in self.list_pending_practice_review_links(user_id=user_id)
+                        if item["candidate_id"] == candidate_id), None)
+        if pending is None:
+            raise RuntimeError("conflict")
+        option = next((item for item in pending["options"] if item["code"].lower() == code.lower()), None)
+        if option is None:
+            raise ValueError("invalid review selection")
+        diagnosis = json.loads(candidate.evidence or "{}")
+        job = self.store.get_job(user_id=user_id, job_id=option["pdf_id"])
+        manifest = (job.checkpoint or {}).get("review_manifest") if job else []
+        item = next((row for row in manifest or [] if row["code"].lower() == option["code"].lower()), None)
+        if item is None:
+            raise RuntimeError("conflict")
+        diagnosis["practice_review"] = {
+            "status": "matched", "job_id": job.job_id, "code": item["code"], "required": item["required"]
+        }
+        return self.store.record_grade_candidate(
+            user_id=user_id, attempt_id=candidate.attempt_id, input_version=candidate.input_version,
+            verdict=candidate.verdict, first_error=candidate.first_error,
+            evidence=json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":")),
+        )
 
     def commit_practice_review(self, *, user_id: str, candidate: GradeCandidate, now: datetime | None = None) -> dict:
         evidence = json.loads(candidate.evidence or "{}")

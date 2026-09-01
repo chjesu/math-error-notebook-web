@@ -895,6 +895,26 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
+    def list_latest_grade_candidates(self, *, user_id: str) -> list[GradeCandidate]:
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT c.id,c.attempt_id,c.input_version,c.verdict,c.first_error,c.evidence_text,c.status "
+                "FROM grade_candidates c JOIN attempts a ON a.id=c.attempt_id AND a.user_id=c.user_id "
+                "WHERE c.user_id=%s ORDER BY c.created_at DESC,c.id DESC LIMIT 1000",
+                (user_id,),
+            )
+            latest: dict[str, GradeCandidate] = {}
+            for row in cursor.fetchall():
+                latest.setdefault(str(row[1]), GradeCandidate(str(row[0]), str(row[1]), int(row[2]), str(row[3]), row[4], row[5], str(row[6])))
+                if len(latest) == 100:
+                    break
+            return list(latest.values())
+        finally:
+            cursor.close()
+            connection.close()
+
     def commit_grade(
         self, *, user_id: str, candidate_id: str, expected_version: int
     ) -> ErrorEntry:

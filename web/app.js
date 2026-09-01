@@ -1127,6 +1127,8 @@ function bindErrors() {
   let selectionInitialized = false;
   let selectionMode = "auto";
   let fixedPlan = null;
+  let pendingReviewLinks = [];
+  let pendingReviewLinksPromise = null;
   let generatingPdf = false;
   let dashboardPromise = null;
   const selectedErrorIds = new Set();
@@ -1206,6 +1208,31 @@ function bindErrors() {
     renderMath($("#all-errors"));
   }
 
+  function renderPendingReviewLinks() {
+    const panel = $("#pending-review-links-panel");
+    panel.hidden = pendingReviewLinks.length === 0;
+    if (!pendingReviewLinks.length) return;
+    $("#pending-review-links-count").textContent = `${pendingReviewLinks.length} 条`;
+    $("#pending-review-links").innerHTML = pendingReviewLinks.map(item => {
+      const verdict = {correct: "正确", partial: "部分正确", incorrect: "错误", unclear: "待核对"}[item.verdict] || "已判题";
+      const options = item.options.length ? item.options.map(option => `<button type="button" class="ghost" data-review-link-candidate="${escapeHtml(item.candidate_id)}" data-review-link-version="${item.input_version}" data-review-link-code="${escapeHtml(option.code)}">关联到 ${escapeHtml(option.pdf_name)} · 第 ${option.stage} 阶段 · ${option.kind === "recommendation" ? "推荐题" : "原题"}</button>`).join("") : '<small>当前 PDF 清单中没有可靠候选，请在会话中补充图片上的复习码。</small>';
+      return `<li><div><span class="badge">${verdict}</span><p>${escapeHtml(item.question_text)}</p></div><div class="pending-review-options">${options}</div></li>`;
+    }).join("");
+    renderMath($("#pending-review-links"));
+  }
+
+  function loadPendingReviewLinks() {
+    if (pendingReviewLinksPromise) return pendingReviewLinksPromise;
+    pendingReviewLinksPromise = api("/v1/practice-review-links").then(result => {
+      pendingReviewLinks = result.items;
+      renderPendingReviewLinks();
+    }).catch(() => {
+      pendingReviewLinks = [];
+      renderPendingReviewLinks();
+    }).finally(() => { pendingReviewLinksPromise = null; });
+    return pendingReviewLinksPromise;
+  }
+
   async function showError(id) {
     const [item, recommendations] = await Promise.all([api(`/v1/errors/${id}`), api(`/v1/errors/${id}/recommendations`)]);
     const detail = $(`[data-error-detail="${CSS.escape(id)}"]`);
@@ -1240,6 +1267,7 @@ function bindErrors() {
         selectionInitialized = true;
         renderPlan();
         renderErrors();
+        loadPendingReviewLinks();
         return true;
       } catch (error) {
         status($("#page-status"), authError(error), true);
@@ -1264,6 +1292,22 @@ function bindErrors() {
     if (!writeReviewSelection(selectionScope, selectedErrorIds, reviewMap())) status($("#page-status"), "当前浏览器无法保存选题，离开页面后需重新选择。", true);
     status($("#today-pdf-status"), "题目选择已变化，请重新生成 PDF。", false);
     renderPlan();
+  });
+  $("#pending-review-links").addEventListener("click", async event => {
+    const button = event.target.closest("[data-review-link-candidate]");
+    if (!button) return;
+    button.disabled = true;
+    try {
+      const result = await api(`/v1/practice-review-links/${button.dataset.reviewLinkCandidate}`, {
+        method: "POST",
+        body: JSON.stringify({input_version: Number(button.dataset.reviewLinkVersion), code: button.dataset.reviewLinkCode}),
+      });
+      status($("#page-status"), result.receipt?.message || "关联完成。", false);
+      await loadDashboard();
+    } catch (error) {
+      status($("#page-status"), authError(error), true);
+      button.disabled = false;
+    }
   });
   $("#all-errors").addEventListener("click", async event => {
     const trigger = event.target.closest("[data-error-id]");

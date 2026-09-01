@@ -593,6 +593,20 @@ class NotebookAsgiApp:
                     recommendations = await self._sync(self.notebook.store.list_recommendations, user_id=user.user_id, error_id=task.error_id)
                     items.append(self._review(task) | {"question_text": entry.question_text if entry else "", "first_error": entry.first_error if entry else None, "recommendations": [self._recommendation(item) for item in recommendations[:2]]})
                 await self._json(send, 200, {"items": items, "count": len(items)})
+            elif path == "/v1/practice-review-links" and method == "GET":
+                items = await self._sync(self.notebook.list_pending_practice_review_links, user_id=user.user_id)
+                await self._json(send, 200, {"items": items, "count": len(items)})
+            elif path.startswith("/v1/practice-review-links/") and method == "POST":
+                candidate_id = path.rsplit("/", 1)[1]
+                payload = await self._json_body(receive)
+                if set(payload) != {"input_version", "code"} or not isinstance(payload["code"], str) or len(payload["code"]) > 180:
+                    raise ValueError("invalid review selection")
+                candidate = await self._sync(
+                    self.notebook.link_pending_practice_review, user_id=user.user_id,
+                    candidate_id=candidate_id, input_version=int(payload["input_version"]), code=payload["code"],
+                )
+                receipt = await self._commit_candidate_receipt(user.user_id, candidate)
+                await self._json(send, 200, {"receipt": receipt})
             elif path.startswith("/v1/reviews/") and path.endswith("/complete") and method == "POST":
                 payload = await self._json_body(receive)
                 next_task = await self._sync(self.notebook.store.complete_review, user_id=user.user_id, task_id=path.split("/")[-2], result=str(payload["result"]), idempotency_key=self._key(headers))
@@ -1099,6 +1113,14 @@ class NotebookAsgiApp:
                         self.notebook.resolve_practice_review, user_id=user_id, question_text=intake.question_text,
                         locator=item.get("review"), review_mode=bool(context) or payload.get("review_mode", False),
                     )
+                if (not context or context.get("status") == "unmatched") and isinstance(validation, dict) and validation.get("status") == "consistent":
+                    question_id = str(validation["question_id"])
+                    owned = await self._sync(self.notebook.has_practice_review_identity, user_id=user_id, question_id=question_id)
+                    if owned:
+                        context = await self._sync(
+                            self.notebook.resolve_practice_review, user_id=user_id, question_text=reference.stem_text,
+                            locator={"question_id": question_id, "kind": "recommendation"}, review_mode=True,
+                        )
                 if context:
                     diagnosis = self._diagnosis(evidence)
                     diagnosis["practice_review"] = context

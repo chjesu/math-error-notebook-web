@@ -179,7 +179,11 @@ def build_manifest(job_id: str, items: list[dict], tasks: list[ReviewTask]) -> l
     manifest = []
     for index, item in enumerate(items, 1):
         task = by_error.get(item["error_id"])
-        code = f"R{job_id[:12]}-{index:02d}"
+        base = f"R{job_id[:12]}-{index:02d}"
+        checksum = hashlib.sha256(
+            f"{base}:{item['error_id']}:{item.get('question_id') or ''}:{item['kind']}".encode("utf-8")
+        ).hexdigest()[:6].upper()
+        code = f"{base}-{checksum}"
         item["review_code"] = code
         manifest.append({
             "code": code, "error_id": item["error_id"], "question_id": item.get("question_id"),
@@ -249,7 +253,11 @@ def legacy_manifest(text: str, job_id: str, errors: list, tasks: list[ReviewTask
     return build_manifest(job_id, items, usable_tasks)
 
 
-def matching_items(manifest: list[dict], locator: dict, question_text: str, user_id: str) -> list[dict]:
+def checked_review_code(value: str) -> bool:
+    return bool(re.fullmatch(r"R[0-9a-f]{12}-\d{2}-[0-9A-F]{6}", value, flags=re.IGNORECASE))
+
+
+def identity_matching_items(manifest: list[dict], locator: dict, user_id: str) -> list[dict]:
     matches = []
     for item in manifest:
         if locator.get("code") and locator["code"].lower() != item["code"].lower():
@@ -265,6 +273,19 @@ def matching_items(manifest: list[dict], locator: dict, question_text: str, user
         if ref := locator.get("question_id"):
             if item["question_id"] not in {ref, hashlib.sha256(f"question:{ref}".encode()).hexdigest()[:32]}:
                 continue
+        matches.append(item)
+    return matches
+
+
+def matching_items(manifest: list[dict], locator: dict, question_text: str, user_id: str) -> list[dict]:
+    matches = []
+    for item in identity_matching_items(manifest, locator, user_id):
+        # A checksummed code, or a question-bank identifier whose uniqueness is
+        # checked across this account's frozen papers by the caller, is a stable
+        # identity. Legacy codes still require the conservative content check.
+        if checked_review_code(str(locator.get("code") or "")) or locator.get("question_id"):
+            matches.append(item)
+            continue
         # A visible code is authoritative only after content is checked. This
         # prevents a mistyped code from grading a different paper's question.
         if question_match_score(question_text, item["stem_text"]) < 0.92:

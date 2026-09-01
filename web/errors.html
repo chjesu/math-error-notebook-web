@@ -16,6 +16,12 @@
         <p id="today-pdf-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
+      <section id="pending-review-links-panel" class="panel pending-review-links-panel" aria-labelledby="pending-review-links-heading" hidden>
+        <div class="panel-title"><div><p class="section-kicker">需要确认</p><h2 id="pending-review-links-heading">待关联判题</h2></div><span id="pending-review-links-count" class="badge"></span></div>
+        <p class="pending-review-intro">判题结果已经保留，但尚未确认来自哪份练习 PDF。选择当前账号下的对应题目即可完成关联，无需重新上传图片。</p>
+        <ul id="pending-review-links" class="pending-review-list"></ul>
+      </section>
+
       <section class="panel all-errors-panel" aria-labelledby="all-errors-heading">
         <div class="panel-title"><div><p class="section-kicker">题目档案</p><h2 id="all-errors-heading">全部错题</h2></div><span class="selection-hint">勾选后加入今日计划，最多 12 道</span></div>
         <ul id="all-errors" class="error-list"><li class="empty">正在加载…</li></ul>

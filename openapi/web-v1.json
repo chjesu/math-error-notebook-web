@@ -340,6 +340,24 @@
         "responses": {"200": {"$ref": "#/components/responses/BankStatus"}, "401": {"$ref": "#/components/responses/Error"}}
       }
     },
+    "/v1/practice-review-links": {
+      "get": {
+        "operationId": "listPendingPracticeReviewLinks",
+        "description": "列出当前账号中已判题但尚未关联冻结 PDF 清单的结果，以及可由用户确认的本人 PDF 候选。",
+        "security": [{"sessionCookie": []}],
+        "responses": {"200": {"$ref": "#/components/responses/PendingPracticeReviewLinks"}, "401": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/practice-review-links/{candidate_id}": {
+      "post": {
+        "operationId": "linkPendingPracticeReview",
+        "description": "把冻结判题结果关联到当前账号拥有的一个 PDF 题目；不重新判题、不新建错题。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/CandidateId"}],
+        "requestBody": {"$ref": "#/components/requestBodies/PracticeReviewLink"},
+        "responses": {"200": {"$ref": "#/components/responses/PracticeReviewLinkReceipt"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+      }
+    },
     "/v1/practice-pdfs": {
       "get": {
         "operationId": "listPracticePdfs",
@@ -414,6 +432,7 @@
       "IntakeId": {"name": "intake_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
       "AttemptId": {"name": "attempt_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
       "ResultId": {"name": "result_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
+      "CandidateId": {"name": "candidate_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
       "ErrorId": {"name": "error_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
       "JobId": {"name": "job_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}}
     },
@@ -432,7 +451,8 @@
       "ChatTurn": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChatTurnRequest"}}}},
       "Version": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Version"}}}},
       "ReviewResult": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewResult"}}}},
-      "PracticePdf": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PracticePdfRequest"}}}}
+      "PracticePdf": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PracticePdfRequest"}}}},
+      "PracticeReviewLink": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PracticeReviewLinkRequest"}}}}
     },
     "responses": {
       "OtpAccepted": {"description": "统一受理响应", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OtpAccepted"}}}},
@@ -458,6 +478,8 @@
       "BankStatus": {"description": "本地题库同步状态", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BankStatus"}}}},
       "PracticeJob": {"description": "练习 PDF 任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PracticeJob"}}}},
       "PracticePdfList": {"description": "当前账号已生成的练习 PDF 及今日冻结计划", "content": {"application/json": {"schema": {"type": "object", "required": ["items", "count", "today_plan"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/PracticePdfItem"}}, "count": {"type": "integer", "minimum": 0}, "today_plan": {"oneOf": [{"$ref": "#/components/schemas/FixedPracticePlan"}, {"type": "null"}]}}}}}},
+      "PendingPracticeReviewLinks": {"description": "当前账号的待关联判题", "content": {"application/json": {"schema": {"type": "object", "required": ["items", "count"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/PendingPracticeReviewLink"}}, "count": {"type": "integer", "minimum": 0}}}}}},
+      "PracticeReviewLinkReceipt": {"description": "关联及复习写入回执", "content": {"application/json": {"schema": {"type": "object", "required": ["receipt"], "properties": {"receipt": {"type": "object"}}}}}},
       "ExportJob": {"description": "当前用户的短时导出任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExportJob"}}}},
       "ExportCreated": {"description": "已创建并可立即下载的个人数据导出", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExportCreated"}}}},
       "RetryLater": {"description": "请求被限流；按 Retry-After 后重试", "headers": {"Retry-After": {"required": true, "schema": {"type": "integer", "minimum": 1}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}},
@@ -508,6 +530,10 @@
       "ReviewCalendar": {"type":"object","additionalProperties":false,"required":["month","total_error_count","summary","days","backlog_items"],"properties":{"month":{"type":"string","pattern":"^[0-9]{4}-(0[1-9]|1[0-2])$"},"total_error_count":{"type":"integer","minimum":0},"summary":{"type":"object","required":["new_error_count","due_review_count","due_completed_count","completed_review_count","correct_review_count","needs_correction_count","overdue_review_count","planned_completion_percent","review_accuracy_percent"],"additionalProperties":{"type":"integer","minimum":0}},"days":{"type":"array","items":{"type":"object","required":["date","new_error_count","due_review_count","completed_review_count","needs_correction_count","overdue_review_count","stage_counts","items","backlog_indices","history_complete"],"properties":{"date":{"type":"string","format":"date"},"new_error_count":{"type":"integer","minimum":0},"due_review_count":{"type":"integer","minimum":0},"completed_review_count":{"type":"integer","minimum":0},"needs_correction_count":{"type":"integer","minimum":0},"overdue_review_count":{"type":"integer","minimum":0},"stage_counts":{"type":"object","additionalProperties":{"type":"integer","minimum":0}},"items":{"type":"array","items":{"$ref":"#/components/schemas/CalendarEvent"}},"backlog_indices":{"type":"array","items":{"type":"integer","minimum":0},"description":"过去日期当天结束未完成的周期在 backlog_items 中的索引；今天和未来为空，今天的逾期由当前活动任务汇总"},"history_complete":{"type":"boolean","description":"false 表示旧到期日期被覆盖或取消时间缺失，只能显示可核实记录，不是准确的零"}}}},"backlog_items":{"type":"array","description":"已记录的待复习周期明细池，按天引用，避免重复传输题干","items":{"$ref":"#/components/schemas/CalendarEvent"}}}},
       "BankStatus": {"type": "object", "required": ["question_count", "recommendable_count", "candidate_count"], "properties": {"question_count": {"type": "integer", "minimum": 0}, "recommendable_count": {"type": "integer", "minimum": 0}, "candidate_count": {"type": "integer", "minimum": 0}}},
       "PracticePdfRequest": {"type": "object", "additionalProperties": false, "required": ["error_ids"], "properties": {"error_ids": {"type": "array", "minItems": 1, "maxItems": 12, "uniqueItems": true, "items": {"$ref": "#/components/schemas/Id"}}, "include_answers": {"type": "boolean", "default": false}, "plan_kind": {"enum": ["daily_review", "practice"], "default": "daily_review"}}},
+      "ReviewCode": {"type": "string", "pattern": "^R[0-9a-fA-F]{12}-[0-9]{2}(?:-[0-9A-Fa-f]{6})?$"},
+      "PracticeReviewLinkRequest": {"type": "object", "additionalProperties": false, "required": ["input_version", "code"], "properties": {"input_version": {"type": "integer", "minimum": 1}, "code": {"$ref": "#/components/schemas/ReviewCode"}}},
+      "PracticeReviewOption": {"type": "object", "additionalProperties": false, "required": ["code", "pdf_id", "pdf_name", "kind", "stage", "generated_at", "started"], "properties": {"code": {"type": "string"}, "pdf_id": {"$ref": "#/components/schemas/Id"}, "pdf_name": {"type": "string"}, "kind": {"enum": ["original", "recommendation"]}, "stage": {"type": "integer", "minimum": 0, "maximum": 6}, "generated_at": {"type": ["string", "null"], "format": "date-time"}, "started": {"type": "boolean"}}},
+      "PendingPracticeReviewLink": {"type": "object", "additionalProperties": false, "required": ["candidate_id", "input_version", "verdict", "question_text", "options"], "properties": {"candidate_id": {"$ref": "#/components/schemas/Id"}, "input_version": {"type": "integer", "minimum": 1}, "verdict": {"enum": ["correct", "partial", "incorrect", "unclear"]}, "question_text": {"type": "string"}, "options": {"type": "array", "items": {"$ref": "#/components/schemas/PracticeReviewOption"}}}},
       "PracticePdfItem": {"type": "object", "additionalProperties": false, "required": ["task_id", "filename", "byte_size", "generated_at", "question_count", "include_answers", "source", "plan_kind", "download_url"], "properties": {"task_id": {"$ref": "#/components/schemas/Id"}, "filename": {"type": "string"}, "byte_size": {"type": "integer", "minimum": 0}, "generated_at": {"type": ["string", "null"], "format": "date-time"}, "question_count": {"type": "integer", "minimum": 0}, "include_answers": {"type": "boolean"}, "source": {"type": "string"}, "plan_kind": {"enum": ["daily_review", "practice"]}, "download_url": {"type": "string"}}},
       "FixedPracticePlanItem": {"type": "object", "additionalProperties": false, "required": ["error_id", "stage", "status", "result", "completed_at"], "properties": {"error_id": {"$ref": "#/components/schemas/Id"}, "stage": {"type": "integer", "minimum": 0, "maximum": 6}, "status": {"enum": ["pending", "completed", "needs_correction", "unavailable"]}, "result": {"type": ["string", "null"], "enum": ["correct", "partial", "wrong", null]}, "completed_at": {"type": ["string", "null"], "format": "date-time"}}},
       "FixedPracticePlan": {"type": "object", "additionalProperties": false, "required": ["task_id", "available", "items", "download_url"], "properties": {"task_id": {"$ref": "#/components/schemas/Id"}, "available": {"type": "boolean"}, "items": {"type": "array", "maxItems": 12, "items": {"$ref": "#/components/schemas/FixedPracticePlanItem"}}, "download_url": {"type": "string"}}},

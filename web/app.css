@@ -292,6 +292,11 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .learning-usage-strip small { color: var(--muted); }
 .learning-usage-strip.is-limit { border-color: #f2c94c; background: #fffbeb; }
 .error-dashboard { display: grid; max-width: 1120px; gap: 18px; }
+.pending-review-intro { margin: 8px 0 0; color: var(--muted); line-height: 1.65; }
+.pending-review-list { display: grid; gap: 12px; margin: 18px 0 0; padding: 0; list-style: none; }
+.pending-review-list > li { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--brand-soft); }
+.pending-review-list p { margin: 8px 0 0; line-height: 1.6; white-space: pre-wrap; }
+.pending-review-options { display: flex; flex-wrap: wrap; gap: 8px; }
 .dashboard-overview { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(340px, .9fr); gap: 18px; }
 .progress-dashboard .dashboard-overview { grid-template-columns: minmax(0, 1fr); }
 .section-kicker { margin: 0 0 2px; color: var(--muted); font-size: 12px; }
