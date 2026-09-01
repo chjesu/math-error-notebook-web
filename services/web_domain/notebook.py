@@ -1234,7 +1234,16 @@ class NotebookService:
             return {"status": "unmatched", "locator": locator}
         # Equivalent reprints share the already-started paper where possible.
         _, job_id, item, _ = max(matches, key=lambda row: row[3])
-        return {"status": "matched", "job_id": job_id, "code": item["code"], "required": item["required"]}
+        return {
+            "status": "matched",
+            "job_id": job_id,
+            "code": item["code"],
+            "required": item["required"],
+            "error_id": item["error_id"],
+            "question_id": item.get("question_id"),
+            "kind": item["kind"],
+            "stem_text": item["stem_text"],
+        }
 
     def has_practice_review_identity(self, *, user_id: str, question_id: str) -> bool:
         """Bounded ownership check used before treating an ordinary bank item as a PDF review."""

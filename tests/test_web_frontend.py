@@ -488,6 +488,8 @@ assert.ok(!source.includes('plan_kind: "practice"'));
             self.assertIn('adjudicate_error_notebook_reference_conflicts', prompt)
             self.assertIn('以该题库答案与解析为准', prompt)
             self.assertIn('authoritative_grade', prompt)
+            self.assertIn('印刷题干与手写作答必须分区识别', prompt)
+            self.assertIn('要求“一个取值”', prompt)
             self.assertIn('receipt_message', prompt)
             self.assertNotIn('未收到判题流程返回', prompt)
             self.assertIn('最终答案', prompt)

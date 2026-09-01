@@ -254,6 +254,10 @@ class PracticeReviewTests(unittest.TestCase):
             locator={"question_id": self.question.question_id, "kind": "recommendation"},
         )
         self.assertEqual((by_code["code"], by_question["code"]), (original["code"], recommendation["code"]))
+        self.assertEqual(
+            (by_question["question_id"], by_question["stem_text"], by_question["error_id"], by_question["kind"]),
+            (self.question.question_id, recommendation["stem_text"], self.error.error_id, "recommendation"),
+        )
 
     def test_pending_review_can_be_selected_once_without_creating_a_new_error(self):
         self.job = self.paper()
@@ -361,12 +365,12 @@ class PracticeReviewApiTests(unittest.TestCase):
         self.fixture.store.bind_model_session(user_id=self.fixture.owner, session_id="review-test")
         self.job = self.fixture.paper()
 
-    def process(self, index=0, *, code=True, conflict=False, color="white"):
+    def process(self, index=0, *, code=True, conflict=False, color="white", question_text=None):
         item = self.job.checkpoint["review_manifest"][index]
         buffer = BytesIO()
         Image.new("RGB", (12, 12), color).save(buffer, format="PNG")
         content = buffer.getvalue()
-        row = {"item_no": 1, "question_text": item["stem_text"], "answer_text": "x=5", "verdict": "incorrect" if conflict else "correct",
+        row = {"item_no": 1, "question_text": question_text or item["stem_text"], "answer_text": "x=5", "verdict": "incorrect" if conflict else "correct",
             "first_error": "计算错误" if conflict else "", "cause_code": "calculation" if conflict else "", "cause_evidence": "计算时漏掉一步" if conflict else "",
             "knowledge_points": ["方程"], "correct_solution": "移项并求解得到正确答案", "final_answer": "y=100" if conflict else "y=3或-3", "prevention_cue": "检查计算", "confidence": 0.98,
             "review": {"code": item["code"] if code else "invalid-code"}}
@@ -375,6 +379,14 @@ class PracticeReviewApiTests(unittest.TestCase):
         result = self.call("/v1/internal/harness/intakes/process", payload)
         self.assertEqual(result[0], 200, result)
         return result[2]["results"][0]
+
+    def test_checked_review_code_uses_frozen_stem_and_exact_question_reference(self):
+        item = self.job.checkpoint["review_manifest"][1]
+        result = self.process(1, color="green", question_text=r"已知 y^2/3=9，求 y。")
+        self.assertEqual(result["question_text"], item["stem_text"])
+        candidate = self.fixture.store.get_grade_candidate(user_id=self.fixture.owner, candidate_id=result["candidate_id"])
+        attempt = self.fixture.store.get_attempt(user_id=self.fixture.owner, attempt_id=candidate.attempt_id)
+        self.assertEqual((attempt.question_text, attempt.question_id), (item["stem_text"], self.fixture.question.question_id))
 
     def call(self, path, payload):
         return self.client.call(path, method="POST", payload=payload, origin=None,

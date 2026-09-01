@@ -1065,6 +1065,19 @@ class NotebookAsgiApp:
                 content=content,
                 idempotency_key=f"harness-file-{digest[:51]}",
             )
+            exact_review_contexts = []
+            for item in raw_items:
+                locator = review_locator(item.get("review"))
+                context = None
+                if locator.get("code") or locator.get("question_id"):
+                    context = await self._sync(
+                        self.notebook.resolve_practice_review,
+                        user_id=user_id,
+                        question_text=str(item["question_text"]).strip(),
+                        locator=locator,
+                        review_mode=True,
+                    )
+                exact_review_contexts.append(context if context and context.get("status") == "matched" else None)
             intakes = await self._sync(self.notebook.store.get_file_intakes, user_id=user_id, file_id=record.file_id)
             if intakes:
                 primary = intakes[0]
@@ -1076,7 +1089,11 @@ class NotebookAsgiApp:
                     idempotency_key=f"harness-intake-{digest[:49]}",
                 )
             extracted = [
-                {"item_no": index, "question_text": str(item["question_text"]).strip(), "answer_text": str(item["answer_text"]).strip()}
+                {
+                    "item_no": index,
+                    "question_text": str((exact_review_contexts[index - 1] or {}).get("stem_text") or item["question_text"]).strip(),
+                    "answer_text": str(item["answer_text"]).strip(),
+                }
                 for index, item in enumerate(raw_items, 1)
             ]
             if primary.status == "extracting":
@@ -1118,9 +1135,14 @@ class NotebookAsgiApp:
                 reserved_intakes = [intake.intake_id for intake in intakes]
                 await self._sync(self.notebook.store.reserve_grade_batch, user_id=user_id, intake_ids=reserved_intakes)
             results = []
-            processing_items = [(intake, None) for intake in intakes] if frozen_candidates else zip(intakes, raw_items, strict=True)
-            for intake, item in processing_items:
-                reference = await self._sync(self.notebook.store.find_verified_question, question_text=intake.question_text)
+            processing_items = [(intake, None, None) for intake in intakes] if frozen_candidates else zip(intakes, raw_items, exact_review_contexts, strict=True)
+            for intake, item, exact_context in processing_items:
+                exact_question_id = str((exact_context or {}).get("question_id") or "")
+                reference = (
+                    await self._sync(self.notebook.store.get_verified_question, question_id=exact_question_id)
+                    if exact_question_id else
+                    await self._sync(self.notebook.store.find_verified_question, question_text=intake.question_text)
+                )
                 if frozen_candidates:
                     candidate = frozen_candidates[intake.intake_id]
                     final_answer = str(self._diagnosis(candidate.evidence).get("final_answer") or "")
@@ -1140,7 +1162,7 @@ class NotebookAsgiApp:
                         evidence_key="cause_evidence",
                         cross_validation=validation,
                     )
-                    context = await self._sync(self.notebook.store.practice_review_context, user_id=user_id, attempt_id=attempt_id)
+                    context = exact_context or await self._sync(self.notebook.store.practice_review_context, user_id=user_id, attempt_id=attempt_id)
                     if not context or context.get("status") == "unmatched":
                         context = await self._sync(
                             self.notebook.resolve_practice_review, user_id=user_id, question_text=intake.question_text,
@@ -1175,12 +1197,15 @@ class NotebookAsgiApp:
                         counted=candidate.verdict != "unclear" and not (context and context.get("required") is False),
                     )
                     completed_intakes.add(intake.intake_id)
-                    if isinstance(validation, dict) and validation.get("status") == "consistent":
+                    linked_question_id = exact_question_id if reference is not None else ""
+                    if not linked_question_id and isinstance(validation, dict) and validation.get("status") == "consistent":
+                        linked_question_id = str(validation["question_id"])
+                    if linked_question_id:
                         await self._sync(
                             self.notebook.store.link_attempt_question,
                             user_id=user_id,
                             attempt_id=attempt_id,
-                            question_id=str(validation["question_id"]),
+                            question_id=linked_question_id,
                         )
                 receipt = await self._commit_candidate_receipt(user_id, candidate)
                 candidate = await self._sync(self.notebook.store.get_grade_candidate, user_id=user_id, candidate_id=receipt["candidate_id"])
