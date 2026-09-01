@@ -171,5 +171,21 @@ class DomainContractTests(unittest.TestCase):
             self.assertFalse(any(path.is_file() for path in Path(temporary).rglob("*")))
 
 
+class QuestionOptionParsingTests(unittest.TestCase):
+    def test_options_json_is_parsed_into_a_tuple(self) -> None:
+        self.assertEqual(
+            MySqlDomainStore._options('["A．$-3$", "B．3"]'),
+            ("A．$-3$", "B．3"),
+        )
+
+    def test_options_rejects_none_empty_and_malformed_values(self) -> None:
+        self.assertIsNone(MySqlDomainStore._options(None))
+        self.assertIsNone(MySqlDomainStore._options(""))
+        self.assertIsNone(MySqlDomainStore._options("not-json"))
+        self.assertIsNone(MySqlDomainStore._options("[]"))
+        self.assertIsNone(MySqlDomainStore._options(None))
+        self.assertIsNone(MySqlDomainStore._options(0))
+
+
 if __name__ == "__main__":
     unittest.main()

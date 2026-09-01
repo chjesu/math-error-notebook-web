@@ -1111,7 +1111,7 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             cursor.execute(
-                "SELECT q.id,v.stem_text,v.answer_text,q.grade,q.difficulty,s.title "
+                "SELECT q.id,v.stem_text,v.answer_text,q.grade,q.difficulty,s.title,v.options_json "
                 "FROM questions q JOIN question_sources s ON s.id=q.source_id "
                 "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
                 "WHERE q.status='verified' AND s.license_status IN ('open','user_authorized') "
@@ -1120,7 +1120,7 @@ class MySqlDomainStore:
                 "AND NOT EXISTS (SELECT 1 FROM recommendations r WHERE r.user_id=%s AND r.question_id=q.id) LIMIT 200",
                 (user_id, user_id),
             )
-            candidates = [Question(str(row[0]), str(row[1]), row[2], int(row[3]) if row[3] is not None else None, float(row[4]) if row[4] is not None else None, str(row[5])) for row in cursor.fetchall()]
+            candidates = [Question(str(row[0]), str(row[1]), row[2], int(row[3]) if row[3] is not None else None, float(row[4]) if row[4] is not None else None, str(row[5]), options=self._options(row[6])) for row in cursor.fetchall()]
         finally:
             cursor.close()
             connection.close()
@@ -1173,7 +1173,7 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             cursor.execute(
-                "SELECT r.id,r.reason,r.status,q.id,v.stem_text,v.answer_text,q.grade,q.difficulty,s.title "
+                "SELECT r.id,r.reason,r.status,q.id,v.stem_text,v.answer_text,q.grade,q.difficulty,s.title,v.options_json "
                 "FROM recommendations r JOIN questions q ON q.id=r.question_id "
                 "JOIN question_sources s ON s.id=q.source_id "
                 "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
@@ -1187,7 +1187,7 @@ class MySqlDomainStore:
                 "ORDER BY r.created_at,r.id",
                 (user_id, error_id),
             )
-            return [Recommendation(str(row[0]), user_id, error_id, Question(str(row[3]), str(row[4]), row[5], int(row[6]) if row[6] is not None else None, float(row[7]) if row[7] is not None else None, str(row[8])), str(row[1]), str(row[2])) for row in cursor.fetchall()]
+            return [Recommendation(str(row[0]), user_id, error_id, Question(str(row[3]), str(row[4]), row[5], int(row[6]) if row[6] is not None else None, float(row[7]) if row[7] is not None else None, str(row[8]), options=self._options(row[9])), str(row[1]), str(row[2])) for row in cursor.fetchall()]
         finally:
             cursor.close()
             connection.close()
@@ -1455,7 +1455,7 @@ class MySqlDomainStore:
                 if question.question_id in seen_questions:
                     continue
                 seen_questions.add(question.question_id)
-                items.append({"kind": "recommendation", "error_id": error_id, "question_id": question.question_id, "stem_text": question.stem_text, "answer_text": question.answer_text, "difficulty": question.difficulty, "source_title": question.source_title, "reason": recommendation.reason})
+                items.append({"kind": "recommendation", "error_id": error_id, "question_id": question.question_id, "stem_text": question.stem_text, "answer_text": question.answer_text, "difficulty": question.difficulty, "source_title": question.source_title, "options": question.options, "reason": recommendation.reason})
         return items, gaps
 
     def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool, plan_kind: str = "daily_review") -> Job:
@@ -1804,3 +1804,16 @@ class MySqlDomainStore:
         if isinstance(value, dict):
             return value
         return json.loads(str(value))
+
+    @staticmethod
+    def _options(value: Any) -> tuple[str, ...] | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                return None
+        if not isinstance(value, (list, tuple)) or not value:
+            return None
+        return tuple(str(option) for option in value)

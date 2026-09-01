@@ -22,6 +22,7 @@ class Question:
     solution_text: str | None = None
     version_id: str | None = None
     version_no: int = 1
+    options: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)

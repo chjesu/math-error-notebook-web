@@ -1780,7 +1780,7 @@ class NotebookAsgiApp:
 
     @staticmethod
     def _recommendation(value: Recommendation) -> dict[str, Any]:
-        return {"recommendation_id": value.recommendation_id, "question_id": value.question.question_id, "stem_text": value.question.stem_text, "grade": value.question.grade, "difficulty": value.question.difficulty, "source": value.question.source_title, "reason": value.reason, "status": value.status}
+        return {"recommendation_id": value.recommendation_id, "question_id": value.question.question_id, "stem_text": value.question.stem_text, "grade": value.question.grade, "difficulty": value.question.difficulty, "source": value.question.source_title, "reason": value.reason, "status": value.status, "options": list(value.question.options) if value.question.options else None}
 
     @staticmethod
     def _review(value: ReviewTask) -> dict[str, Any]:

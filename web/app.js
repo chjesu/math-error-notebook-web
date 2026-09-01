@@ -1240,7 +1240,11 @@ function bindErrors() {
     document.querySelectorAll('[data-error-detail]').forEach(panel => { panel.hidden = true; });
     document.querySelectorAll('.error-detail-trigger').forEach(button => { button.textContent = "查看完整解析与操作"; button.setAttribute("aria-expanded", "false"); });
     const diagnosis = item.diagnosis || {};
-    const recommendationHtml = recommendations.items.length ? recommendations.items.map((recommendation, index) => `<li><strong>练习 ${index + 1}</strong><p>${escapeHtml(recommendation.stem_text)}</p><small>${escapeHtml(recommendation.source)} · ${escapeHtml(recommendation.reason)}</small></li>`).join("") : '<li class="empty">还没有匹配练习。</li>';
+    const recommendationHtml = recommendations.items.length ? recommendations.items.map((recommendation, index) => {
+      const optionsHtml = Array.isArray(recommendation.options) && recommendation.options.length
+        ? `<p class="recommendation-options">${recommendation.options.map(escapeHtml).join("　　")}</p>` : "";
+      return `<li><strong>练习 ${index + 1}</strong><p>${escapeHtml(recommendation.stem_text)}</p>${optionsHtml}<small>${escapeHtml(recommendation.source)} · ${escapeHtml(recommendation.reason)}</small></li>`;
+    }).join("") : '<li class="empty">还没有匹配练习。</li>';
     detail.hidden = false;
     detail.innerHTML = `<h2>错题详情</h2><dl class="diagnosis-list"><dt>原题</dt><dd>${escapeHtml(item.question_text)}</dd><dt>你的作答</dt><dd>${escapeHtml(item.answer_text || "未填写")}</dd><dt>第一处实质错误</dt><dd>${escapeHtml(item.first_error || "待整理")}</dd><dt>主要错因</dt><dd>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</dd><dt>判断依据</dt><dd>${escapeHtml(diagnosis.cause_evidence || "待整理")}</dd><dt>知识点梳理</dt><dd>${escapeHtml(diagnosis.knowledge_points?.join("\n") || "待整理")}</dd><dt>完整正确过程</dt><dd>${escapeHtml(diagnosis.correct_solution || "待整理")}</dd><dt>最终答案</dt><dd>${escapeHtml(diagnosis.final_answer || "待整理")}</dd><dt>防错提示</dt><dd>${escapeHtml(diagnosis.prevention_cue || "待整理")}</dd></dl><h3>已验证练习</h3><ol class="recommendation-list">${recommendationHtml}</ol><div class="actions"><button type="button" data-error-action="recommend" class="ghost">匹配练习</button><button type="button" data-error-action="master" class="ghost">标记已掌握</button><button type="button" data-error-action="remove" class="danger">移除错题</button></div>`;
     renderMath(detail);

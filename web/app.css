@@ -532,6 +532,7 @@ textarea:focus-visible { outline: 3px solid rgba(0, 32, 96, .25); outline-offset
 .recommendation-list { display: grid; gap: 10px; padding-left: 22px; white-space: normal; }
 .recommendation-list li { padding: 10px 12px; border-radius: 10px; background: var(--paper); }
 .recommendation-list p { margin: 5px 0; white-space: pre-wrap; }
+.recommendation-list .recommendation-options { color: var(--muted); font-size: 13px; }
 .review-content { line-height: 1.7; }
 .review-stem { padding: 16px; border-radius: 12px; background: var(--brand-soft); white-space: pre-wrap; }
 .review-content details { margin: 12px 0; }

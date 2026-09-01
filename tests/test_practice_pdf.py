@@ -4,6 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+import io
+import pypdf
 from PIL import Image
 
 from services.web_domain.practice_pdf import _formatted_text, _normalize_math_text, _replace_math_args, _render_math_image, build_practice_pdf
@@ -170,6 +172,22 @@ class PracticePdfMathTests(unittest.TestCase):
         content = build_practice_pdf(items, include_answers=False)
 
         self.assertTrue(content.startswith(b"%PDF-"))
+
+    def test_recommendation_options_are_printed_in_the_pdf(self) -> None:
+        items = [
+            {"kind": "original", "error_id": "options-original", "question_id": None, "stem_text": "原题", "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "第 1 阶段", "review_stage": 1, "requires_original": True},
+            {"kind": "recommendation", "error_id": "options-original", "question_id": "opt-q", "stem_text": "若双曲线 $x^2+\\frac{y^2}{k}=1$ 的离心率是 2，则实数 $k$ 的值是（ ）", "answer_text": "A", "difficulty": 2, "source_title": "授权题库", "reason": "同类变式", "options": ("A．$-3$", "B．$-\\frac{1}{3}$", "C．3", "D．$\\frac{1}{3}$")},
+        ]
+
+        content = build_practice_pdf(items, include_answers=True)
+
+        self.assertTrue(content.startswith(b"%PDF-"))
+        text = pypdf.PdfReader(io.BytesIO(content)).pages[0].extract_text()
+        self.assertIn("选项", text)
+        self.assertIn("A．", text)
+        self.assertIn("B．", text)
+        self.assertIn("C．", text)
+        self.assertIn("D．", text)
 
 
 if __name__ == "__main__":

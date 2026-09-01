@@ -121,6 +121,7 @@ def map_question(question: dict[str, Any], source: dict[str, Any]) -> dict[str, 
         "stem_text": payload["stem"],
         "answer_text": payload["answer"],
         "solution_text": payload["solution"],
+        "options_json": json.dumps(question.get("options"), ensure_ascii=False) if question.get("options") else None,
         "grade": question.get("grade"),
         "difficulty": question.get("difficulty"),
         "status": "verified" if verified else "candidate",
@@ -162,7 +163,7 @@ def commit(plan: dict[str, Any]) -> None:
         for item in plan["questions"]:
             cursor.execute("INSERT INTO question_sources (id,title,source_uri,license_status,content_sha256,created_at) VALUES (%s,%s,%s,%s,%s,UTC_TIMESTAMP(6)) ON DUPLICATE KEY UPDATE title=VALUES(title),source_uri=VALUES(source_uri),license_status=VALUES(license_status),content_sha256=VALUES(content_sha256)", (item["source_id"], item["source_title"], item["source_uri"], item["license_status"], item["source_sha256"]))
             cursor.execute("INSERT INTO questions (id,source_id,canonical_sha256,grade,difficulty,status,current_version_no,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,1,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)) ON DUPLICATE KEY UPDATE source_id=VALUES(source_id),canonical_sha256=VALUES(canonical_sha256),grade=VALUES(grade),difficulty=VALUES(difficulty),status=VALUES(status),current_version_no=1,updated_at=UTC_TIMESTAMP(6)", (item["question_id"], item["source_id"], item["canonical_sha256"], item["grade"], item["difficulty"], item["status"]))
-            cursor.execute("INSERT INTO question_versions (id,question_id,version_no,stem_text,answer_text,solution_text,content_sha256,created_at) VALUES (%s,%s,1,%s,%s,%s,%s,UTC_TIMESTAMP(6)) ON DUPLICATE KEY UPDATE stem_text=VALUES(stem_text),answer_text=VALUES(answer_text),solution_text=VALUES(solution_text),content_sha256=VALUES(content_sha256)", (item["version_id"], item["question_id"], item["stem_text"], item["answer_text"], item["solution_text"], item["content_sha256"]))
+            cursor.execute("INSERT INTO question_versions (id,question_id,version_no,stem_text,answer_text,solution_text,options_json,content_sha256,created_at) VALUES (%s,%s,1,%s,%s,%s,%s,%s,UTC_TIMESTAMP(6)) ON DUPLICATE KEY UPDATE stem_text=VALUES(stem_text),answer_text=VALUES(answer_text),solution_text=VALUES(solution_text),options_json=VALUES(options_json),content_sha256=VALUES(content_sha256)", (item["version_id"], item["question_id"], item["stem_text"], item["answer_text"], item["solution_text"], item["options_json"], item["content_sha256"]))
             cursor.execute("SELECT id FROM question_versions WHERE question_id=%s AND version_no=1", (item["question_id"],))
             version_id = cursor.fetchone()[0]
             if item["verification_sha256"]:

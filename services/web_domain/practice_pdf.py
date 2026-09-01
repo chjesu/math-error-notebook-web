@@ -360,6 +360,10 @@ def build_practice_pdf(
             if item.get("review_code"):
                 story.append(Paragraph(f"复习码 {escape(item['review_code'])} · 拍照时请保留复习码与完整题目", meta))
             story.extend(question_content(item["stem_text"]))
+            options = item.get("options")
+            if options:
+                option_line = "　　".join(str(option) for option in options)
+                story.append(Paragraph("<b>选项：</b>" + _formatted_text(option_line, body.fontSize), body))
             story.extend([
                 Paragraph(f"推荐理由：{escape(str(item['reason']))}<br/>来源：{escape(str(item['source_title']))}", meta),
                 Paragraph("推荐题作答区", meta),
