@@ -40,3 +40,25 @@
 
 - Web 前端错题详情页 `/v1/errors/{id}/recommendations` 已含 options 字段并渲染（同根因一并修复）。
 - 桌面题库中 57 道答案字母但无 options_json 的题目（如部分判断题），PDF 仍不显示选项，属源数据缺失。
+
+## 追加修复（2026-09-01 晚）：新 PDF 下载报「无法从网站上提取文件」/ download.json 失败
+
+### 根因
+- 重生成脚本（tmp/regenerate_pdf.py）把新 PDF 写入了**错误的对象存储根** data/runtime/quarantine。
+- 服务端真实文件根是 scripts/local_env.py 中 NotebookService(MySqlDomainStore(_connection_factory()), RUNTIME / "quarantine")，即 **.runtime/local-mysql/quarantine**（RUNTIME = ROOT / ".runtime" / "local-mysql"）。
+- 因此浏览器点「下载今日复习推荐题 PDF」（job 9496d35f）时，download_practice_pdf 在真实根下找不到对象文件 → 抛 LookupError → ASGI 返回 JSON 错误（URL 以 /download 结尾 + application/json）→ Chrome 显示文件名 download.json 且报「无法从网站上提取文件」，连点 3 次均失败。
+- 历史 64 份 PDF 的对象文件一直完好存放在 .runtime/local-mysql/quarantine/quarantine/f6e916246c8e3597/（共 132 个对象文件，含图片），此前并未丢失；唯一缺的是重生成的新文件。
+
+### 修正动作
+1. 核对 DB web_files 记录（file fa4c6437）的 content_sha256 = e1b472d6...，与 data/runtime/quarantine 下错误根副本一致。
+2. 将新 PDF 复制到正确根 .runtime/local-mysql/quarantine/quarantine/f6e916246c8e3597/ce4c2ad45efcfcf5f42f9f4d2fd23204.pdf（343240 B，sha256 与 DB 一致）。
+3. 服务进程已停止（8000 无监听）→ 用相同参数重启 local_env.py serve --host 127.0.0.1 --port 8000 --enable-harness-model --enable-harness-ui，根路径 HTTP 200。
+
+### 验证
+- 域层：NotebookService.download_practice_pdf 以真实根 .runtime/local-mysql/quarantine 遍历 2970 全部 65 份 practice_pdf，**65/65 全部成功**（修复前仅新 job 可下载）。
+- HTTP 端到端：临时签发 2970 短时会话（HMAC-SHA256 session hash，测试后即删除）→ GET /v1/practice-pdfs/9496d35ff71a4580869e7bc696780cf4/download → **HTTP 200**、content-type pplication/pdf、343240 B、Content-Disposition: attachment; filename="practice-9496d35f.pdf"。
+- 修复前用户在浏览器看到的正是该端点返回的 JSON 错误 → 表现为 download.json 下载失败。
+
+### 修正认知（防再犯）
+- 对象存储实际根 = .runtime/local-mysql/quarantine（NOT data/runtime/quarantine）；object_key 形如 quarantine/f6e916246c8e3597/<hash>.pdf，拼接后真实路径为 .runtime/local-mysql/quarantine/quarantine/f6e916246c8e3597/<hash>.pdf。
+- 数据维护脚本涉及 PDF/文件重生成时，根目录必须以 scripts.local_env.RUNTIME / "quarantine" 为准。
