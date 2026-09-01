@@ -1044,6 +1044,12 @@ def serve(
 ) -> None:
     if host not in {"127.0.0.1", "localhost"}:
         raise RuntimeError("local simulation may only bind to localhost")
+    try:
+        import matplotlib  # noqa: F401
+        import PIL  # noqa: F401
+        import reportlab  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError("local PDF dependencies are missing; run scripts/bootstrap_local.ps1") from exc
     start()
     from services.web_app import CodexNotebookModel, HarnessRuntimeAdapter, NotebookAsgiApp
     from services.web_auth import (
@@ -1108,7 +1114,10 @@ def doctor() -> dict[str, Any]:
         "running": _is_running(),
     }
     try:
+        import matplotlib  # noqa: F401
+        import PIL  # noqa: F401
         import pymysql  # noqa: F401
+        import reportlab  # noqa: F401
         import uvicorn  # noqa: F401
         checks["python_dependencies"] = True
     except ImportError:

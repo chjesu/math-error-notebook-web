@@ -21,6 +21,12 @@ class LocalEnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "localhost"):
             local_env.serve("0.0.0.0", 8000)
 
+    def test_local_server_fails_closed_without_pdf_rendering_dependencies(self) -> None:
+        source = inspect.getsource(local_env.serve)
+        for dependency in ("matplotlib", "PIL", "reportlab"):
+            self.assertIn(f"import {dependency}", source)
+        self.assertIn("scripts/bootstrap_local.ps1", source)
+
     def test_harness_web_command_uses_fixed_local_surface(self) -> None:
         command = local_env._harness_web_command()
         self.assertTrue(command[0].lower().endswith(("node", "node.exe")))
