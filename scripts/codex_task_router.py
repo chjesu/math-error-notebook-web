@@ -16,6 +16,10 @@ from threading import Lock
 import time
 import uuid
 
+ROOT = Path(__file__).resolve().parents[1]
+if __package__ in (None, ""):
+    sys.path.insert(0, str(ROOT))
+
 from scripts.codex_app_server import (
     AppServerError,
     compact_thread as compact_app_server_thread,
@@ -24,7 +28,6 @@ from scripts.codex_app_server import (
 )
 
 
-ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config" / "model-routing.json"
 TEAM_CONFIG = ROOT / "config" / "team-roles.json"
 SCHEMA = ROOT / "schemas" / "engineering-review-result.schema.json"

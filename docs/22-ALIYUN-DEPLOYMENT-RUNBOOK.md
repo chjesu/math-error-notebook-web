@@ -184,7 +184,11 @@ VPC                 10.20.0.0/16
 0009_file_upload_idempotency.sql
 0010_codex_harness.sql
 0011_daily_learning_usage.sql
+0012_operations_admin.sql
+0013_model_usage_sessions.sql
 ```
+
+`0012_operations_admin.sql` 是已经执行并必须保留哈希的历史前向迁移，不表示当前提供运营后台；当前 `/admin` 与 `/v1/admin/*` 均为 404。`0013_model_usage_sessions.sql` 是当前 Harness 会话用量迁移。两者都必须进入生产迁移账本，不能跳号、重写或倒序执行。
 
 不得在生产运行 `scripts/local_env.py migrate`，不得执行破坏性 down SQL。回滚使用部署前备份恢复或新的前向修复迁移。
 

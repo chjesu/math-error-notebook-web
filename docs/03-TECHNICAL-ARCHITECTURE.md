@@ -44,7 +44,7 @@ v0.4.0 目标 API 拆为 `POST /v1/auth/login/otp/request`、`POST /v1/auth/logi
 
 产品要求对登录未注册号码和注册已存在号码给出明确跳转反馈，因此不再承诺公开响应完全不可枚举。该风险必须通过多维限流、CAPTCHA、最小响应、审计告警、批量枚举测试和独立安全批准控制；普通日志和运营检索仍不得提供手机号状态查询。
 
-当前 `openapi/web-v1.json` 与代码已升级为 v0.4.0 四接口：登录/注册验证码申请与验证分场景，注册原子保存密码、协议并创建会话；旧 v0.3.3 单入口仅作为迁移起点。真实 MySQL smoke、230 项测试、官方 Codex app-server 连续会话与数学候选实测和浏览器验收已通过；生产门禁仍未完成。
+当前 `openapi/web-v1.json` 与代码已升级为 v0.4.0 四接口：登录/注册验证码申请与验证分场景，注册原子保存密码、协议并创建会话；旧 v0.3.3 单入口仅作为迁移起点。2026-09-01 的真实 MySQL smoke、289 项测试、官方 Codex app-server 连续会话与数学候选实测和浏览器验收已通过；这是本地候选证据，生产门禁仍未完成。
 
 每个受保护请求先解析会话，再把 `user_id` 传给 Store。资源查询必须同时匹配 `id` 与 `user_id`；未匹配统一返回 `not_found`，不暴露其他用户资源是否存在。退出当前设备撤销当前会话，全端退出撤销该用户所有会话。
 
@@ -76,18 +76,13 @@ stateDiagram-v2
 
 ## 6. 迁移顺序
 
-1. 已应用的 `0001_phone_registration.sql` 永不改写。
-2. 尚未共享应用的 `0002_web_domain.sql` 直接重构为 `user_id` 模型。
-3. `0003_account_simplification.sql` 前向移除资料和监护字段/表，并收敛账号状态。
-4. 已应用的领域迁移继续保持只读；新增认证迁移必须使用下一个未占用编号，建立密码凭据和协议确认表，并为验证码挑战用途建立可验证约束。
-5. 密码凭据迁移必须支持灰度：旧账号没有密码仍可验证码登录；不得为旧账号生成伪密码或阻断登录。
-6. 迁移账本以名称和 SHA-256 记录；同名异哈希立即失败。
+当前空库顺序为 `0001_phone_registration.sql` → `0002_web_domain.sql` → `0003_account_simplification.sql` → `0004_learning_loop.sql` → `0005_auth_v040.sql` → `0006_privacy.sql` → `0007_auth_security.sql` → `0008_privacy_recovery.sql` → `0009_file_upload_idempotency.sql` → `0010_codex_harness.sql` → `0011_daily_learning_usage.sql` → `0012_operations_admin.sql` → `0013_model_usage_sessions.sql`。`0012` 只保留为已执行的历史/前向迁移证据，不表示仍有运营后台页面或 API；当前运行时无 `/admin` 或 `/v1/admin/*` 路径。`0013` 是当前会话用量迁移。
 
-空库执行 0001→0002→0003。已有本地库先登记已存在且哈希一致的 0001，再执行剩余迁移。DDL 失败不得记成功账；修复后从未记账迁移恢复。回滚通过恢复执行前备份或补充新的前向迁移完成，不逆向修改已经发布的迁移。
+已有本地库先登记已存在且哈希一致的迁移，再执行剩余迁移。迁移账本以名称和 SHA-256 记录，同名异哈希立即失败；DDL 失败不得记成功账。回滚通过恢复执行前备份或新的前向迁移完成，不逆向修改已经发布的迁移。
 
 ## 7. API 与错误
 
-当前机器可校验契约见 `openapi/web-v1.json`（44 paths）；认证细则见 `docs/13-LOGIN-REGISTER-PRD.md`。错误统一为 `{error:{code,message,retryable,request_id}}`；页面只依赖稳定 `code`，不解析文案。生产切换前仍需完成真实供应商、观测、压测、灾备和安全复核。
+当前机器可校验契约见 `openapi/web-v1.json`（45 paths，零条 `/v1/admin*` 路径）；认证细则见 `docs/13-LOGIN-REGISTER-PRD.md`。错误统一为 `{error:{code,message,retryable,request_id}}`；页面只依赖稳定 `code`，不解析文案。生产切换前仍需完成真实供应商、观测、压测、灾备和独立生产安全复核。
 
 ## 8. 安全和部署门
 

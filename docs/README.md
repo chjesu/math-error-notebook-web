@@ -13,7 +13,7 @@
 5. 一个账号对应一个私有错题本，所有数据以服务端 user_id 隔离。
 6. 上传、判题、错因和推荐先作为候选，确认和质量门后才成为正式记录。
 7. 推荐只使用已验证且授权允许的题。
-8. 本地官方 Codex app-server 连续会话、数学候选与手工回退闭环已验收；云部署继续后置，必须完成独立安全复核和全部生产门禁。
+8. 本地官方 Codex app-server 连续会话、数学候选与手工回退闭环已验收；云部署继续后置，必须完成独立生产安全复核和全部生产门禁。
 
 ## 文档导航
 
@@ -30,7 +30,7 @@
 | [09-PRODUCT-FUNCTION-DESIGN.md](./09-PRODUCT-FUNCTION-DESIGN.md) | 页面、流程、异常恢复和产品事件 | v0.4.0 | 已确认 |
 | [10-UX-UI-INTERACTION-DESIGN.md](./10-UX-UI-INTERACTION-DESIGN.md) | 信息架构、线框、视觉规范、交互状态和前端顺序 | v0.4.0 | 核心流程可评审 |
 | [11-REMAINING-FUNCTION-WBS.md](./11-REMAINING-FUNCTION-WBS.md) | 剩余功能任务、依赖、并行线、验收证据和完成定义 | v0.4.0 | 可执行基线 |
-| [12-ARCHITECTURE-DATA-API-CONTRACT.md](./12-ARCHITECTURE-DATA-API-CONTRACT.md) | 权限矩阵、user_id Schema、候选/正式记录、API 错误与迁移契约 | v0.4.0 | 已与 44 paths OpenAPI 同步 |
+| [12-ARCHITECTURE-DATA-API-CONTRACT.md](./12-ARCHITECTURE-DATA-API-CONTRACT.md) | 权限矩阵、user_id Schema、候选/正式记录、API 错误与迁移契约 | v0.4.0 | 当前机器契约为 45 paths；本历史文档待单独复核 |
 | [13-LOGIN-REGISTER-PRD.md](./13-LOGIN-REGISTER-PRD.md) | 登录/注册页面、字段、状态、风控、目标 API 与验收标准 | v0.4.0 | 本地实现已验收；生产安全门禁未完成 |
 | [14-CODEX-MULTI-AGENT-TEAM.md](./14-CODEX-MULTI-AGENT-TEAM.md) | 多角色子智能体、岗位能力、并行工作流、模型路由和治理边界 | v1.0 | 已建立 |
 | [16-CODEX-APP-SERVER-HARNESS.md](./16-CODEX-APP-SERVER-HARNESS.md) | 官方 app-server 会话运行时、事件流、持久线程和能力边界 | v0.4.0 | 核心运行时已接入 |
@@ -39,7 +39,8 @@
 | [22-ALIYUN-DEPLOYMENT-RUNBOOK.md](./22-ALIYUN-DEPLOYMENT-RUNBOOK.md) | 阿里云资源采购、生产化门禁、部署、灰度、回滚与恢复手册 | v0.1 | 可执行准备基线；当前版本仍禁止直接公网部署 |
 | [23-PRICING-STRATEGY.md](./23-PRICING-STRATEGY.md) | 首发套餐、成本假设、计费口径和试运营验证指标 | v0.1 | 讨论记录；待试运营数据验证 |
 | [24-OPERATIONS-ADMIN-PRD.md](./24-OPERATIONS-ADMIN-PRD.md) | 已移除后台的历史设计留档 | v0.1 | 2026-08-31 已移除运行代码，不再提供此功能 |
-| [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前完整本地候选机器可校验 API 契约 | v0.4.0 | 44 paths；生产部署前仍需契约复核 |
+| [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前完整本地候选机器可校验 API 契约 | v0.4.0 | 45 paths，零条 `/v1/admin*`；生产部署前仍需契约复核 |
+| [`../data/workflows/local-candidate-20260901.md`](../data/workflows/local-candidate-20260901.md) | 2026-09-01 本地候选完成证据、命令与生产阻断项 | — | 待集成授权；不代表生产完成 |
 
 ## 活跃需求
 
@@ -53,7 +54,6 @@
 | REVIEW-001、PDF-001 | 分阶段复习和练习 PDF | 是 |
 | JOB-001、WORKBENCH-001 | 可恢复任务和工作台 | 是 |
 | PRIV-001、PRIV-002、PRIV-003 | 敏感数据、导出和注销 | 是 |
-| OPS-001 | 最小运营和人工复核 | 是 |
 
 ## 暂缓需求
 

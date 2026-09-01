@@ -8,10 +8,12 @@
 
 ```powershell
 python -X utf8 -B scripts/project_workflow.py doctor --json
-python -X utf8 -B scripts/project_workflow.py status WEB-PRD-003 --json
 python -X utf8 -B -m unittest discover -s tests -p "test_*.py"
 python -X utf8 -B scripts/codex_task_router.py route --task web-security-review --json
+Get-Content -Raw -Encoding UTF8 data/workflows/local-candidate-20260901.md
 ```
+
+当前可审计结果见 [`data/workflows/local-candidate-20260901.md`](data/workflows/local-candidate-20260901.md)；旧 `WEB-PRD-003` 工作流证据已过时，不作为当前候选完成证据。
 
 ## 本地模拟环境
 
@@ -45,9 +47,9 @@ powershell -ExecutionPolicy Bypass -File scripts\bootstrap_local.ps1
 
 ## 后续生产部署（当前不执行）
 
-当前 localhost + MySQL 8 的个人错题本支持：上传→可配置 Harness 批量识别候选→系统自动逐题冻结版本→独立解题与判题复核→正确题跳过、错误或部分正确自动入本→仅已验证推荐→复习→PDF；同一 Harness 会话支持自然语言修正和追问。每个账号按中国标准时间显示今日学习负荷：判题建议 24 道、上限 40 道，推荐题建议 12 道、上限 24 道，可完整覆盖一套 21 道试卷并保留订正余量；失败、无法识别、重试和重复提交不重复计数，同一批图片不会处理到一半被截断。工作台接收真实运行时事件，线程映射可跨 Web 服务重启恢复，刷新后会恢复最近一次会话的产品消息，无法识别、证据冲突或模型不可用时安全停止。导出为业务 JSON+文件元数据（不含上传原始二进制，最多下载 3 次并审计），注销执行停用、业务失效和对象文件删除，认证/协议/审计按策略留存。独立运营入口已提供按角色过滤的脱敏概览、失败任务、内容质量、短信风控、隐私工单和访问审计。运行中追加/分叉控制、生产异步 Worker、PDF/DOCX 自动解析、真实短信/CAPTCHA/KMS/OSS、PWA、人工复核提交、敏感访问审批、危险批量操作、压测/灾备/观测、正式部署和生产恢复均延期，不得写成完成。
+当前 localhost + MySQL 8 的个人错题本支持：上传→可配置 Harness 批量识别候选→系统自动逐题冻结版本→独立解题与判题复核→正确题跳过、错误或部分正确自动入本→仅已验证推荐→复习→PDF；同一 Harness 会话支持自然语言修正和追问。每个账号按中国标准时间显示今日学习负荷：判题建议 24 道、上限 40 道，推荐题建议 12 道、上限 24 道，可完整覆盖一套 21 道试卷并保留订正余量；失败、无法识别、重试和重复提交不重复计数，同一批图片不会处理到一半被截断。工作台接收真实运行时事件，线程映射可跨 Web 服务重启恢复，刷新后会恢复最近一次会话的产品消息，无法识别、证据冲突或模型不可用时安全停止。导出为业务 JSON+文件元数据（不含上传原始二进制，最多下载 3 次并审计），注销执行停用、业务失效和对象文件删除，认证/协议/审计按策略留存。独立运营后台已于 2026-08-31 删除，旧 `/admin` 与 `/v1/admin/*` 返回 404。运行中追加/分叉控制、生产异步 Worker、PDF/DOCX 自动解析、真实短信/CAPTCHA/KMS/OSS、PWA、人工复核提交、敏感访问审批、危险批量操作、压测/灾备/观测、正式部署和生产恢复均延期，不得写成完成。
 
-1. 在 MySQL 8 执行 `services/web_auth/migrations/0001_phone_registration.sql`。
+1. 按 [`docs/22-ALIYUN-DEPLOYMENT-RUNBOOK.md`](docs/22-ALIYUN-DEPLOYMENT-RUNBOOK.md) 的 0001→0013 顺序执行完整迁移并校验 SHA-256 账本；不能只执行 0001。
 2. 从密钥管理服务注入 `services/web_auth/README.md` 列出的环境变量。
 3. 安装锁定并审查后的生产依赖。
 4. 冻结完整 `NotebookAsgiApp` 的生产装配、可信代理和 Worker 启动入口；当前 `local_env.py serve` 与认证子应用启动器都不得直接用于生产。
