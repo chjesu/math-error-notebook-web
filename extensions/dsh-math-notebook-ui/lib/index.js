@@ -11,6 +11,11 @@ const reviewLocatorSchema = {
   description: "Copy only visible review code, PDF name/id, printed error/question id, stage and original/recommendation kind. Unknown strings are empty and stage is 0. Never guess. Ordinary new questions use all empty values."
 };
 
+function toolRequestError(label, response, payload) {
+  const code = payload?.error?.code;
+  return new Error(`${label} (${response.status}${code ? `: ${code}` : ""})`);
+}
+
 function nextStepText(results) {
   const statuses = results.map((item) => item.receipt_status || item.status);
   if (statuses.includes("review_retryable")) return "下一步：直接在会话重试确认复习记录，无需重新上传图片。";
@@ -101,7 +106,7 @@ function receiptTool() {
         signal: exec.signal
       });
       const payload = await response.json();
-      if (!response.ok || !payload.receipt) throw new Error(`Notebook receipt failed (${response.status})`);
+      if (!response.ok || !payload.receipt) throw toolRequestError("Notebook receipt failed", response, payload);
       exec.concludeTurn();
       return payload.receipt;
     },
@@ -169,7 +174,7 @@ function removeErrorTool() {
         signal: exec.signal
       });
       const payload = await response.json();
-      if (!response.ok || !payload.receipt) throw new Error(`Notebook removal failed (${response.status})`);
+      if (!response.ok || !payload.receipt) throw toolRequestError("Notebook removal failed", response, payload);
       exec.concludeTurn();
       return payload.receipt;
     },
@@ -313,7 +318,7 @@ function processAttachmentsTool(ctx) {
         if (!response.ok || !Array.isArray(payload.results)) {
           const code = payload.error?.code;
           if (code === "daily_grade_limit") throw new Error("今天已完成 40 道判题，请先复习和订正；新图片可明日继续处理。");
-          throw new Error(`Notebook processing failed (${response.status})`);
+          throw toolRequestError("Notebook processing failed", response, payload);
         }
         usage = payload.usage || usage;
         results.push(...payload.results.map((item) => ({...item, attachment_index: attachmentIndex})));
@@ -389,7 +394,7 @@ function adjudicateReferenceConflictsTool() {
         signal: exec.signal
       });
       const payload = await response.json();
-      if (!response.ok || !Array.isArray(payload.results)) throw new Error(`Reference adjudication failed (${response.status})`);
+      if (!response.ok || !Array.isArray(payload.results)) throw toolRequestError("Reference adjudication failed", response, payload);
       return payload;
     },
     presentCall: () => ({card: "generic", title: "复核题库答案", kind: "other", rawInput: null})
@@ -450,7 +455,7 @@ function recheckReferenceConflictTool() {
         signal: exec.signal
       });
       const payload = await response.json();
-      if (!response.ok || !payload.result) throw new Error(`Reference recheck failed (${response.status})`);
+      if (!response.ok || !payload.result) throw toolRequestError("Reference recheck failed", response, payload);
       return payload;
     },
     presentCall: () => ({card: "generic", title: "重新核对题库答案", kind: "other", rawInput: null})
@@ -499,10 +504,85 @@ function lookupQuestionBankReferenceTool() {
         signal: exec.signal
       });
       const payload = await response.json();
-      if (!response.ok || !payload.result) throw new Error(`Question reference lookup failed (${response.status})`);
+      if (!response.ok || !payload.result) throw toolRequestError("Question reference lookup failed", response, payload);
       return payload;
     },
     presentCall: () => ({card: "generic", title: "查询题库解析", kind: "other", rawInput: null})
+  };
+}
+
+function inspectNotebookTool() {
+  const origin = process.env.LZLM_PRODUCT_ORIGIN;
+  const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
+  if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
+  return {
+    name: "inspect_math_notebook",
+    description: "Read authoritative current-account notebook context. Use before answering questions about existing error_id records, due reviews, today's plan, learning progress, generated PDFs, or pending PDF-review links. Pass error_id only for one exact 32-character notebook id. This is read-only and cannot inspect another account.",
+    parameters: {
+      type: "object", additionalProperties: false,
+      properties: {error_id: {type: "string", pattern: "^[0-9a-f]{32}$"}}
+    },
+    output: {
+      schema: {
+        type: "object", additionalProperties: false, required: ["context_json"],
+        properties: {context_json: {type: "string"}}
+      },
+      render: (_args, value) => [{type: "text", text: `当前账号业务上下文（只读）\n${JSON.stringify(JSON.parse(value.context_json), null, 2)}`}]
+    },
+    async execute(args, exec) {
+      if (!exec.agent) throw new Error("Notebook inspection requires an owning Harness session");
+      const response = await fetch(`${origin}/v1/internal/harness/context`, {
+        method: "POST",
+        headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
+        body: JSON.stringify({session_id: exec.agent.id, ...(args.error_id ? {error_id: args.error_id} : {})}),
+        signal: exec.signal
+      });
+      const payload = await response.json();
+      if (!response.ok || typeof payload.context_json !== "string") throw toolRequestError("Notebook inspection failed", response, payload);
+      return payload;
+    },
+    presentCall: () => ({card: "generic", title: "读取学习记录", kind: "other", rawInput: null})
+  };
+}
+
+function reflowPracticePdfTool() {
+  const origin = process.env.LZLM_PRODUCT_ORIGIN;
+  const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
+  if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
+  return {
+    name: "reflow_practice_pdf",
+    description: "Re-render one owned generated practice PDF from its frozen print snapshot. Use only when the student explicitly asks to regenerate or fix the layout of the same PDF without changing questions. It preserves the original question set, recommendations, review codes, judgment progress, generation date, and recommendation quota. Never use it to choose or replace questions.",
+    parameters: {
+      type: "object", additionalProperties: false, required: ["pdf_id"],
+      properties: {pdf_id: {type: "string", pattern: "^[0-9a-f]{32}$"}}
+    },
+    output: {
+      schema: {
+        type: "object", additionalProperties: false, required: ["result"],
+        properties: {result: {
+          type: "object", additionalProperties: false,
+          required: ["task_id", "filename", "byte_size", "generated_at", "download_url", "message"],
+          properties: {
+            task_id: {type: "string"}, filename: {type: "string"}, byte_size: {type: "integer"},
+            generated_at: {type: "string"}, download_url: {type: "string"}, message: {type: "string"}
+          }
+        }}
+      },
+      render: (_args, value) => [{type: "text", text: `${value.result.message}\nPDF：${value.result.filename}\n下载：${value.result.download_url}`}]
+    },
+    async execute(args, exec) {
+      if (!exec.agent) throw new Error("PDF reflow requires an owning Harness session");
+      const response = await fetch(`${origin}/v1/internal/harness/practice-pdfs/${args.pdf_id}/reflow`, {
+        method: "POST",
+        headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
+        body: JSON.stringify({session_id: exec.agent.id}),
+        signal: exec.signal
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.result) throw toolRequestError("PDF reflow failed", response, payload);
+      return payload;
+    },
+    presentCall: () => ({card: "generic", title: "重新排版 PDF", kind: "other", rawInput: null})
   };
 }
 
@@ -514,6 +594,8 @@ export async function apply(ctx) {
   }
   await ctx.workspaceRegistry.create(workspacePath, "错题会话");
   ctx.tools.register(processAttachmentsTool(ctx));
+  ctx.tools.register(inspectNotebookTool());
+  ctx.tools.register(reflowPracticePdfTool());
   ctx.tools.register(lookupQuestionBankReferenceTool());
   ctx.tools.register(recheckReferenceConflictTool());
   ctx.tools.register(adjudicateReferenceConflictsTool());

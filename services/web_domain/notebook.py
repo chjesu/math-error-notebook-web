@@ -737,7 +737,7 @@ class InMemoryNotebookStore:
                 if question.question_id in seen_questions:
                     continue
                 seen_questions.add(question.question_id)
-                items.append({"kind": "recommendation", "error_id": error_id, "question_id": question.question_id, "stem_text": question.stem_text, "answer_text": question.answer_text, "difficulty": question.difficulty, "source_title": question.source_title, "reason": recommendation.reason})
+                items.append({"kind": "recommendation", "error_id": error_id, "question_id": question.question_id, "stem_text": question.stem_text, "answer_text": question.answer_text, "difficulty": question.difficulty, "source_title": question.source_title, "options": question.options, "reason": recommendation.reason})
         return items, gaps
 
     def create_practice_job(self, *, user_id: str, error_ids: list[str], idempotency_key: str, include_answers: bool, plan_kind: str = "daily_review") -> Job:
@@ -759,13 +759,15 @@ class InMemoryNotebookStore:
         self._practice_inputs[key] = digest
         return job
 
-    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool, review_manifest: list[dict] | None = None, plan_kind: str = "daily_review") -> Job:
+    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool, review_manifest: list[dict] | None = None, print_items: list[dict] | None = None, plan_kind: str = "daily_review") -> Job:
         job = self.get_job(user_id=user_id, job_id=job_id)
         if not job or job.job_type != "practice_pdf":
             raise LookupError("job not found")
         checkpoint = dict(job.checkpoint or {}) | {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers, "plan_kind": plan_kind, "generated_at": _now().isoformat()}
         if review_manifest is not None:
             checkpoint.update(review_manifest=review_manifest, review_job_id=job_id)
+        if print_items is not None:
+            checkpoint["print_items"] = deepcopy(print_items)
         completed = Job(job.job_id, user_id, job.job_type, job.resource_id, "completed", checkpoint, None)
         self.jobs[job_id] = completed
         return completed
@@ -1069,6 +1071,7 @@ class NotebookService:
                 for item in items if item["kind"] == "original"
             )
             manifest = build_manifest(job.job_id, items, self.store.list_active_reviews(user_id=user_id))
+            print_items = [{key: deepcopy(value) for key, value in item.items() if key != "image_object_key"} for item in items]
             content = build_practice_pdf(
                 items,
                 include_answers=include_answers,
@@ -1084,8 +1087,54 @@ class NotebookService:
                 recommendation_gap_count=gaps,
                 include_answers=include_answers,
                 review_manifest=manifest,
+                print_items=print_items,
                 plan_kind=plan_kind,
             )
+
+    def reflow_practice_pdf(self, *, user_id: str, job_id: str) -> Job:
+        """Re-render one owned frozen paper without changing questions or review state."""
+        with self._practice_pdf_lock:
+            job = self.store.get_job(user_id=user_id, job_id=job_id)
+            if not job or job.job_type != "practice_pdf" or job.status != "completed" or not job.checkpoint:
+                raise LookupError("practice PDF not found")
+            checkpoint = deepcopy(job.checkpoint)
+            if checkpoint.get("source", "generated") != "generated":
+                raise RuntimeError("reflow_snapshot_unavailable")
+            print_items = deepcopy(checkpoint.get("print_items") or [])
+            if not print_items:
+                manifest = checkpoint.get("review_manifest") or []
+                error_ids = list(dict.fromkeys(filter(None, checkpoint.get("error_ids") or [row.get("error_id") for row in manifest])))
+                current_items, _ = self.store.practice_items(user_id=user_id, error_ids=error_ids)
+                print_items = []
+                for row in manifest:
+                    matched = next((item for item in current_items if item.get("kind") == row.get("kind")
+                                    and item.get("error_id") == row.get("error_id")
+                                    and item.get("question_id") == row.get("question_id")
+                                    and item.get("stem_text") == row.get("stem_text")), None)
+                    if matched is None:
+                        raise RuntimeError("reflow_snapshot_unavailable")
+                    frozen = {key: deepcopy(value) for key, value in matched.items() if key != "image_object_key"}
+                    frozen.update(review_code=row.get("code"), review_stage=row.get("stage", 0), requires_original=bool(row.get("required")) if row.get("kind") == "original" else False)
+                    print_items.append(frozen)
+            content = build_practice_pdf(
+                print_items,
+                include_answers=bool(checkpoint.get("include_answers", False)),
+                asset_root=self.files.root,
+                logo_path=Path(__file__).resolve().parents[2] / "assets" / "branding" / "logo-symbol-color-128-v1.png",
+            )
+            record = self.upload(user_id=user_id, purpose="practice_pdf", original_name=f"practice-{job.job_id[:8]}.pdf", content=content)
+
+            def replace(saved, _get, _complete):
+                saved["file_id"] = record.file_id
+                saved["print_items"] = deepcopy(print_items)
+                saved["reflowed_at"] = _now().isoformat()
+                return saved
+
+            self.store.mutate_practice_checkpoint(user_id=user_id, job_id=job_id, operation=replace)
+            updated = self.store.get_job(user_id=user_id, job_id=job_id)
+            if not updated:
+                raise LookupError("practice PDF not found")
+            return updated
 
     def prepare_review_candidate(self, *, user_id: str, candidate: GradeCandidate, locator: dict | None = None) -> GradeCandidate:
         """Carry the frozen adjudication forward without rewriting the OCR input."""
@@ -1214,6 +1263,7 @@ class NotebookService:
             for item in rows:
                 options.append({
                     "code": item["code"], "pdf_id": job.job_id, "pdf_name": paper["filename"],
+                    "error_id": item["error_id"], "question_id": item.get("question_id") or "",
                     "kind": item["kind"], "stage": item["stage"],
                     "generated_at": paper.get("generated_at"),
                     "started": bool(checkpoint.get("review_submissions")),

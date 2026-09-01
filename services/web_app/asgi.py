@@ -152,6 +152,12 @@ class NotebookAsgiApp:
         if path == "/v1/internal/harness/question-bank/reference" and method == "POST":
             await self._internal_harness_question_reference(scope, receive, send, headers)
             return
+        if path == "/v1/internal/harness/context" and method == "POST":
+            await self._internal_harness_context(scope, receive, send, headers)
+            return
+        if path.startswith("/v1/internal/harness/practice-pdfs/") and path.endswith("/reflow") and method == "POST":
+            await self._internal_harness_reflow_practice_pdf(scope, receive, send, headers)
+            return
         if path == "/v1/internal/harness/errors/remove" and method == "POST":
             await self._internal_harness_remove_error(scope, receive, send, headers)
             return
@@ -1573,6 +1579,108 @@ class NotebookAsgiApp:
             await self._error(send, 404, "not_found")
         except PermissionError:
             await self._error(send, 403, "forbidden")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    async def _internal_harness_context(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive)
+            if "session_id" not in payload or set(payload) - {"session_id", "error_id"}:
+                raise ValueError("invalid context request")
+            session_id = self._harness_session_id(payload)
+            error_id = payload.get("error_id")
+            if error_id is not None and (not isinstance(error_id, str) or re.fullmatch(r"[0-9a-f]{32}", error_id) is None):
+                raise ValueError("invalid context request")
+            user_id = await self._harness_user_id(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            errors = await self._sync(self.notebook.store.list_errors, user_id=user_id)
+            exact_error = None
+            if error_id is not None:
+                entry = await self._sync(self.notebook.store.get_error, user_id=user_id, error_id=error_id)
+                if entry is None:
+                    raise LookupError("error not found")
+                exact_error = self._error_entry(entry)
+            due_tasks = await self._sync(self.notebook.store.list_due_reviews, user_id=user_id)
+            due_reviews = []
+            for task in due_tasks[:20]:
+                entry = await self._sync(self.notebook.store.get_error, user_id=user_id, error_id=task.error_id)
+                due_reviews.append(self._review(task) | {
+                    "question_text": entry.question_text if entry else "",
+                    "first_error": entry.first_error if entry else None,
+                })
+            papers = await self._sync(self.notebook.list_practice_pdfs, user_id=user_id)
+            plan = await self._sync(self.notebook.today_practice_plan, user_id=user_id, papers=papers)
+            pending = await self._sync(self.notebook.list_pending_practice_review_links, user_id=user_id)
+            context = {
+                "scope": "current_bound_account",
+                "progress": await self._sync(self.notebook.store.progress, user_id=user_id),
+                "errors": [self._error_entry(item) for item in errors[:20]],
+                "due_reviews": due_reviews,
+                "practice_pdfs": [item | {"download_url": f"/v1/practice-pdfs/{item['task_id']}/download"} for item in papers[:20]],
+                "today_plan": plan,
+                "pending_review_links": pending[:20],
+                "error": exact_error,
+            }
+            await self._json(send, 200, {"context_json": json.dumps(context, ensure_ascii=False, separators=(",", ":"))})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    async def _internal_harness_reflow_practice_pdf(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive)
+            if set(payload) != {"session_id"}:
+                raise ValueError("invalid PDF reflow request")
+            session_id = self._harness_session_id(payload)
+            user_id = await self._harness_user_id(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            job_id = scope.get("path", "").split("/")[-2]
+            if re.fullmatch(r"[0-9a-f]{32}", str(job_id)) is None:
+                raise ValueError("invalid PDF reflow request")
+            job = await self._sync(self.notebook.reflow_practice_pdf, user_id=user_id, job_id=job_id)
+            record = await self._sync(self.notebook.store.get_file, user_id=user_id, file_id=str((job.checkpoint or {}).get("file_id", "")))
+            if record is None:
+                raise LookupError("practice PDF not found")
+            await self._json(send, 200, {"result": {
+                "task_id": job.job_id,
+                "filename": record.original_name,
+                "byte_size": record.byte_size,
+                "generated_at": str((job.checkpoint or {}).get("generated_at", "")),
+                "download_url": f"/v1/practice-pdfs/{job.job_id}/download",
+                "message": "PDF 已按冻结题单重新排版；题目、推荐额度和判题进度均未改变。",
+            }})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except RuntimeError as exc:
+            code = str(exc) if str(exc) == "reflow_snapshot_unavailable" else "conflict"
+            await self._error(send, 409, code)
+        except OSError:
+            await self._error(send, 503, "failed_retryable")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
 

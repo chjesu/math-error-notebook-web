@@ -880,6 +880,90 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(self.call("/v1/practice-review-links", cookie=cookie)[2]["count"], 0)
         self.assertEqual(len(self.domain_store.errors), 1)
 
+    def test_harness_context_and_pdf_reflow_are_account_scoped_and_preserve_frozen_state(self) -> None:
+        cookie = self.login("13800138012")
+        other_cookie = self.login("13800138013")
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        assert user is not None
+        harness_origin = "http://example.test:3080"
+        for session_id, owner_cookie in (("session-context", cookie), ("session-context-other", other_cookie)):
+            bound = self.call(
+                "/v1/harness/sessions/bind", method="POST", payload={"session_id": session_id},
+                cookie=owner_cookie, origin=harness_origin,
+            )
+            self.assertEqual(bound[0], 200)
+        now = datetime.now(timezone.utc)
+        error = ErrorEntry("e" * 32, user.user_id, "0" * 32, "若 x+2=4，求 x。", "x=1", "移项错误", "open", now)
+        self.domain_store.errors[error.error_id] = error
+        task = ReviewTask("a" * 32, user.user_id, error.error_id, 1, now - timedelta(days=1), "ready")
+        self.domain_store.review_tasks[task.task_id] = task
+        self.domain_store._review_keys[(user.user_id, error.error_id, 1)] = task.task_id
+        question = Question("1" * 32, "若 x+2=4，求 x。", "x=2", 10, 2.0, "公开验证题库", options=("A. 1", "B. 2"))
+        self.domain_store.add_question(question)
+        self.domain_store.recommendations["b" * 32] = Recommendation(
+            "b" * 32, user.user_id, error.error_id, question, "同知识点", "assigned"
+        )
+        paper = self.notebook.create_practice_pdf(
+            user_id=user.user_id, error_ids=[error.error_id], idempotency_key="context-reflow-paper"
+        )
+
+        def seed_progress(checkpoint, _get, _complete):
+            checkpoint["review_submissions"] = {"frozen": {"verdict": "correct"}}
+            checkpoint["review_receipts"] = {"frozen": {"status": "review_waiting"}}
+
+        self.domain_store.mutate_practice_checkpoint(user_id=user.user_id, job_id=paper.job_id, operation=seed_progress)
+        before = self.domain_store.get_job(user_id=user.user_id, job_id=paper.job_id)
+        assert before is not None and before.checkpoint is not None
+        old_file_id = before.checkpoint["file_id"]
+        frozen_manifest = json.loads(json.dumps(before.checkpoint["review_manifest"]))
+        frozen_submissions = json.loads(json.dumps(before.checkpoint["review_submissions"]))
+        frozen_receipts = json.loads(json.dumps(before.checkpoint["review_receipts"]))
+        generated_at = before.checkpoint["generated_at"]
+        usage_before = self.domain_store.learning_usage(user_id=user.user_id)
+        internal = {
+            "origin": None,
+            "client": ("127.0.0.1", 3080),
+            "extra_headers": {"authorization": "Bearer test-internal-token"},
+        }
+        context_response = self.call(
+            "/v1/internal/harness/context", method="POST",
+            payload={"session_id": "session-context", "error_id": error.error_id}, **internal,
+        )
+        self.assertEqual(context_response[0], 200)
+        context = json.loads(context_response[2]["context_json"])
+        self.assertEqual(context["scope"], "current_bound_account")
+        self.assertEqual(context["error"]["error_id"], error.error_id)
+        self.assertEqual(context["progress"]["due_review_count"], 1)
+        self.assertEqual(context["practice_pdfs"][0]["task_id"], paper.job_id)
+        denied_context = self.call(
+            "/v1/internal/harness/context", method="POST",
+            payload={"session_id": "session-context-other", "error_id": error.error_id}, **internal,
+        )
+        self.assertEqual((denied_context[0], denied_context[2]["error"]["code"]), (404, "not_found"))
+
+        reflowed = self.call(
+            f"/v1/internal/harness/practice-pdfs/{paper.job_id}/reflow", method="POST",
+            payload={"session_id": "session-context"}, **internal,
+        )
+        self.assertEqual(reflowed[0], 200)
+        self.assertEqual(reflowed[2]["result"]["task_id"], paper.job_id)
+        after = self.domain_store.get_job(user_id=user.user_id, job_id=paper.job_id)
+        assert after is not None and after.checkpoint is not None
+        self.assertNotEqual(after.checkpoint["file_id"], old_file_id)
+        self.assertIn(old_file_id, self.domain_store.files)
+        self.assertEqual(after.checkpoint["generated_at"], generated_at)
+        self.assertEqual(after.checkpoint["review_manifest"], frozen_manifest)
+        self.assertEqual(after.checkpoint["review_submissions"], frozen_submissions)
+        self.assertEqual(after.checkpoint["review_receipts"], frozen_receipts)
+        self.assertTrue(after.checkpoint["print_items"])
+        self.assertTrue(all("image_object_key" not in item for item in after.checkpoint["print_items"]))
+        self.assertEqual(self.domain_store.learning_usage(user_id=user.user_id), usage_before)
+        denied_reflow = self.call(
+            f"/v1/internal/harness/practice-pdfs/{paper.job_id}/reflow", method="POST",
+            payload={"session_id": "session-context-other"}, **internal,
+        )
+        self.assertEqual((denied_reflow[0], denied_reflow[2]["error"]["code"]), (404, "not_found"))
+
     @staticmethod
     def multipart(filename: str, content: bytes, purpose: str = "question_image") -> tuple[str, bytes]:
         boundary = "lzlm-test-boundary"

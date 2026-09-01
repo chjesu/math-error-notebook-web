@@ -1515,7 +1515,7 @@ class MySqlDomainStore:
             cursor.close()
             connection.close()
 
-    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool, review_manifest: list[dict] | None = None, plan_kind: str = "daily_review") -> Job:
+    def complete_practice_job(self, *, user_id: str, job_id: str, file_id: str, question_count: int, recommendation_gap_count: int, include_answers: bool, review_manifest: list[dict] | None = None, print_items: list[dict] | None = None, plan_kind: str = "daily_review") -> Job:
         now = _utcnow()
         connection = self._connect()
         cursor = connection.cursor()
@@ -1528,6 +1528,8 @@ class MySqlDomainStore:
             checkpoint = (self._json(row[0]) or {}) | {"file_id": file_id, "question_count": question_count, "recommendation_gap_count": recommendation_gap_count, "include_answers": include_answers, "plan_kind": plan_kind, "generated_at": now.replace(tzinfo=timezone.utc).isoformat()}
             if review_manifest is not None:
                 checkpoint.update(review_manifest=review_manifest, review_job_id=job_id)
+            if print_items is not None:
+                checkpoint["print_items"] = print_items
             changed = cursor.execute("UPDATE web_jobs SET status='completed',checkpoint_json=%s,result_json=%s,updated_at=%s WHERE id=%s AND user_id=%s AND job_type='practice_pdf'", (json.dumps(checkpoint), json.dumps(checkpoint), now, job_id, user_id))
             if changed != 1:
                 raise LookupError("job not found")
