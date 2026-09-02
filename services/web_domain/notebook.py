@@ -1255,6 +1255,8 @@ class NotebookService:
                         return saved["review_manifest"]
                     manifest = self.store.mutate_practice_checkpoint(user_id=user_id, job_id=job.job_id, operation=freeze)
             for item in matching_items(manifest or [], locator, question_text, user_id):
+                if "stage" in locator and locator["stage"] != item["stage"]:
+                    continue
                 group = [row for row in manifest if row["task_id"] == item["task_id"] and row["required"]]
                 signature = (item["task_id"], item["due_at"], item["kind"], item["question_id"], tuple(sorted((row["kind"], row["question_id"] or "") for row in group)))
                 matches.append((signature, job.job_id, item, bool(checkpoint.get("review_submissions"))))
@@ -1289,26 +1291,55 @@ class NotebookService:
                                 papers: list[tuple[dict, Job]]) -> list[dict]:
         locator = review_locator(context.get("locator"))
         validation = diagnosis.get("cross_validation")
-        exact_id = str(validation.get("question_id")) if isinstance(validation, dict) and validation.get("status") == "consistent" and validation.get("question_id") else locator.get("question_id")
-        exact_locator = {"question_id": exact_id, "kind": "recommendation"} if exact_id else {}
+        verified_id = str(validation.get("question_id")) if isinstance(validation, dict) and validation.get("status") == "consistent" and validation.get("question_id") else ""
+        verified_locator = {"question_id": verified_id, "kind": "recommendation"} if verified_id else {}
         options = []
         for paper, job in papers:
+            pdf_ref = locator.get("pdf_id")
+            if pdf_ref and pdf_ref not in {job.job_id, job.job_id[:8], paper["filename"]}:
+                continue
             checkpoint = job.checkpoint or {}
             manifest = checkpoint.get("review_manifest") or []
-            rows = identity_matching_items(manifest, exact_locator, user_id) if exact_locator else []
+            identity_locator = {key: value for key, value in locator.items() if key != "pdf_id"}
+            rows = identity_matching_items(manifest, identity_locator, user_id) if identity_locator else []
+            if "stage" in identity_locator:
+                rows = [row for row in rows if row["stage"] == identity_locator["stage"]]
+            source = "visible_identity" if rows else ""
+            if not rows and identity_locator:
+                continue
+            if rows and verified_locator:
+                rows = identity_matching_items(rows, verified_locator, user_id)
+                if not rows:
+                    continue
+            if not rows and verified_locator:
+                rows = identity_matching_items(manifest, verified_locator, user_id)
+                source = "verified_question" if rows else ""
+            if not rows and verified_id:
+                continue
             if not rows:
-                relaxed = {key: value for key, value in locator.items() if key != "code"}
-                rows = matching_items(manifest, relaxed, attempt.question_text, user_id)
+                constraints = {key: value for key, value in locator.items() if key in {"error_id", "stage", "kind"}}
+                rows = identity_matching_items(manifest, constraints, user_id)
+                if "stage" in constraints:
+                    rows = [row for row in rows if row["stage"] == constraints["stage"]]
+                source = "semantic_candidate"
             for item in rows:
                 options.append({
                     "code": item["code"], "pdf_id": job.job_id, "pdf_name": paper["filename"],
                     "error_id": item["error_id"], "question_id": item.get("question_id") or "",
                     "kind": item["kind"], "stage": item["stage"],
+                    "stem_text": item["stem_text"],
+                    "match_score": round(question_match_score(attempt.question_text, item["stem_text"]), 4),
+                    "candidate_source": source,
                     "generated_at": paper.get("generated_at"),
                     "started": bool(checkpoint.get("review_submissions")),
                 })
         unique = {option["code"]: option for option in options}
-        return sorted(unique.values(), key=lambda row: (not row["started"], row.get("generated_at") or "", row["code"]))
+        priority = {"visible_identity": 0, "verified_question": 1, "semantic_candidate": 2}
+        ranked = sorted(unique.values(), key=lambda row: (
+            priority[row["candidate_source"]], -row["match_score"], not row["started"],
+            str(row.get("generated_at") or ""), row["code"],
+        ))
+        return ranked[:8]
 
     def list_pending_practice_review_links(self, *, user_id: str) -> list[dict]:
         items = []
@@ -1318,6 +1349,8 @@ class NotebookService:
             if job:
                 papers.append((paper, job))
         for candidate in self.store.list_latest_grade_candidates(user_id=user_id):
+            if candidate.status != "candidate":
+                continue
             try:
                 diagnosis = json.loads(candidate.evidence or "{}")
             except (TypeError, ValueError):

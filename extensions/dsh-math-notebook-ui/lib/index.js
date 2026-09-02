@@ -12,11 +12,62 @@ const reviewLocatorSchema = {
 };
 const transcriptionByAgent = new WeakMap();
 const pendingAdjudicationByAgent = new WeakMap();
+const pendingReviewAssociationByAgent = new WeakMap();
 
 function rememberPendingAdjudication(agent, results) {
   const items = results.filter((item) => item.reference_review).map((item) => ({candidate_id: item.candidate_id, input_version: item.input_version}));
   if (items.length) pendingAdjudicationByAgent.set(agent, items);
   else pendingAdjudicationByAgent.delete(agent);
+  return items.length > 0;
+}
+
+function rememberPendingReviewAssociations(agent, results) {
+  const items = results
+    .filter((item) => item.receipt_status === "review_unmatched" && Array.isArray(item.review_match_candidates) && item.review_match_candidates.length)
+    .map((item) => ({
+      candidate_id: item.candidate_id,
+      input_version: item.input_version,
+      codes: item.review_match_candidates.map((candidate) => candidate.code)
+    }));
+  if (items.length) pendingReviewAssociationByAgent.set(agent, items);
+  else pendingReviewAssociationByAgent.delete(agent);
+  return items.length > 0;
+}
+
+function refreshPendingReviewAssociations(agent, adjudicated, results) {
+  const replaced = new Set(adjudicated.map((item) => `${item.candidate_id}:${item.input_version}`));
+  const refreshed = new Map(
+    (pendingReviewAssociationByAgent.get(agent) || [])
+      .filter((item) => !replaced.has(`${item.candidate_id}:${item.input_version}`))
+      .map((item) => [`${item.candidate_id}:${item.input_version}`, item])
+  );
+  for (const item of results) {
+    const key = `${item.candidate_id}:${item.input_version}`;
+    refreshed.delete(key);
+    if (item.status === "review_unmatched" && Array.isArray(item.review_match_candidates) && item.review_match_candidates.length) {
+      refreshed.set(key, {
+        candidate_id: item.candidate_id,
+        input_version: item.input_version,
+        codes: item.review_match_candidates.map((candidate) => candidate.code)
+      });
+    }
+  }
+  const items = [...refreshed.values()];
+  if (items.length) pendingReviewAssociationByAgent.set(agent, items);
+  else pendingReviewAssociationByAgent.delete(agent);
+  return items.length > 0;
+}
+
+function rememberInspectedPendingReviewAssociations(agent, context) {
+  const items = (Array.isArray(context?.pending_review_links) ? context.pending_review_links : [])
+    .filter((item) => typeof item?.candidate_id === "string" && Number.isInteger(item.input_version) && Array.isArray(item.options) && item.options.length)
+    .map((item) => ({
+      candidate_id: item.candidate_id,
+      input_version: item.input_version,
+      codes: item.options.map((candidate) => candidate.code)
+    }));
+  if (items.length) pendingReviewAssociationByAgent.set(agent, items);
+  else pendingReviewAssociationByAgent.delete(agent);
   return items.length > 0;
 }
 
@@ -32,6 +83,9 @@ function nextStepText(results) {
     return "下一步：系统将继续核对已验证题库解析，请等待本轮复核完成。";
   }
   if (results.some((item) => item.reference_status === "conflict")) return "下一步：继续核对已保存的题库复核结果，无需重新上传图片或反复确认题干。";
+  if (results.some((item) => item.receipt_status === "review_unmatched" && item.review_match_candidates?.length)) {
+    return "下一步：系统将继续核对当前账号下的 PDF 候选；请等待本轮语义关联完成。";
+  }
   if (statuses.includes("review_unmatched")) return "下一步：请补充 PDF 名称、错题编号与阶段或复习码；直接在会话补充即可，无需再次上传图片。";
   if (statuses.includes("review_waiting")) return "下一步：按复习回执补齐该组尚未上传的必做题；若提示尚未到期，则到期后再确认。";
   if (statuses.includes("review_needs_correction")) return "下一步：先依据错因与解析订正本组题目，再按回执中的日期复习。";
@@ -232,7 +286,21 @@ function processResultText(value) {
     if (item.reference_review) {
       lines.push(...referenceReviewText(item), "");
     }
-    if (item.receipt_status === "review_unmatched") {
+    if (item.receipt_status === "review_unmatched" && item.review_match_candidates?.length) {
+      lines.push(
+        "以下字段仅供复习关联工具调用，不得向用户展示：",
+        `candidate_id=${item.candidate_id}`,
+        `input_version=${item.input_version}`,
+        `待关联题干：${item.question_text}`,
+        ...item.review_match_candidates.map((candidate, index) => [
+          `候选 ${index + 1}：code=${candidate.code}`,
+          `PDF=${candidate.pdf_name}（${candidate.pdf_id}）` ,
+          `错题=${candidate.error_id}，题库=${candidate.question_id || "无"}，阶段=${candidate.stage}，类型=${candidate.kind}`,
+          `冻结题干：${candidate.stem_text}`
+        ].join("\n")),
+        ""
+      );
+    } else if (item.receipt_status === "review_unmatched") {
       lines.push(`仅供补充关联使用：candidate_id=${item.candidate_id}, input_version=${item.input_version}。学生补充 PDF 定位后调用 confirm_error_notebook_entry 并附 review，不要要求重传。`, "");
     } else if (item.receipt_status === "review_retryable") {
       lines.push(`仅供重试确认使用：candidate_id=${item.candidate_id}, input_version=${item.input_version}。调用 confirm_error_notebook_entry 时不要附 review，也不要要求重传。`, "");
@@ -240,7 +308,9 @@ function processResultText(value) {
   }
   lines.push(value.results.some((item) => item.reference_review)
     ? "Agent 下一动作：只调用 adjudicate_error_notebook_reference_conflicts，一次提交上述全部待复核候选。"
-    : "Agent 下一动作：直接生成最终回复；禁止再调用 confirm_error_notebook_entry。", "");
+    : value.results.some((item) => item.receipt_status === "review_unmatched" && item.review_match_candidates?.length)
+      ? "Agent 下一动作：只调用 adjudicate_practice_review_associations，一次提交上述全部待关联候选。"
+      : "Agent 下一动作：直接生成最终回复；禁止再调用 confirm_error_notebook_entry。", "");
   if (value.usage) {
     lines.push(`今日学习负荷：已判题 ${value.usage.grade.count}/${value.usage.grade.limit}（建议 ${value.usage.grade.target}）；已生成推荐题 ${value.usage.recommendation.count}/${value.usage.recommendation.limit}（建议 ${value.usage.recommendation.target}）。`, "");
   }
@@ -353,6 +423,20 @@ function processAttachmentsTool(ctx) {
         stage: {type: "integer", enum: [0, 1, 2, 3, 4, 5, 6]}, kind: {type: "string", enum: ["", "original", "recommendation"]}
       }
     },
+    review_match_candidates: {
+      type: "array",
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["code", "pdf_id", "pdf_name", "error_id", "question_id", "kind", "stage", "stem_text", "match_score", "candidate_source", "generated_at", "started"],
+        properties: {
+          code: {type: "string"}, pdf_id: {type: "string"}, pdf_name: {type: "string"}, error_id: {type: "string"},
+          question_id: {type: "string"}, kind: {type: "string", enum: ["original", "recommendation"]}, stage: {type: "integer"},
+          stem_text: {type: "string"}, match_score: {type: "number"},
+          candidate_source: {type: "string", enum: ["visible_identity", "verified_question", "semantic_candidate"]},
+          generated_at: {oneOf: [{type: "string"}, {type: "null"}]}, started: {type: "boolean"}
+        }
+      }
+    },
     reference_review: {
       oneOf: [
         {type: "null"},
@@ -435,6 +519,7 @@ function processAttachmentsTool(ctx) {
       }
       transcriptionByAgent.delete(exec.agent);
       rememberPendingAdjudication(exec.agent, results);
+      rememberPendingReviewAssociations(exec.agent, results);
       return {schema: "math-notebook-process-result/v1", results, ...(usage ? {usage} : {})};
     },
     presentCall: () => ({card: "generic", title: "整理并记录错题", kind: "other", rawInput: null})
@@ -479,8 +564,9 @@ function adjudicateReferenceConflictsTool() {
     },
     output: {
       schema: {
-        type: "object", additionalProperties: false, required: ["results"],
+        type: "object", additionalProperties: false, required: ["results", "review_pending"],
         properties: {
+          review_pending: {type: "boolean"},
           results: {
             type: "array",
             items: {
@@ -489,13 +575,47 @@ function adjudicateReferenceConflictsTool() {
               properties: {
                 candidate_id: {type: "string"}, input_version: {type: "integer"},
                 status: {type: "string", enum: receiptStatuses},
-                receipt_message: {type: "string"}, error_id: {type: "string"}
+                receipt_message: {type: "string"}, error_id: {type: "string"}, question_text: {type: "string"},
+                review_match_candidates: {
+                  type: "array",
+                  items: {
+                    type: "object", additionalProperties: false,
+                    required: ["code", "pdf_id", "pdf_name", "error_id", "question_id", "kind", "stage", "stem_text", "match_score", "candidate_source", "generated_at", "started"],
+                    properties: {
+                      code: {type: "string"}, pdf_id: {type: "string"}, pdf_name: {type: "string"}, error_id: {type: "string"},
+                      question_id: {type: "string"}, kind: {type: "string", enum: ["original", "recommendation"]}, stage: {type: "integer"},
+                      stem_text: {type: "string"}, match_score: {type: "number"},
+                      candidate_source: {type: "string", enum: ["visible_identity", "verified_question", "semantic_candidate"]},
+                      generated_at: {oneOf: [{type: "string"}, {type: "null"}]}, started: {type: "boolean"}
+                    }
+                  }
+                }
               }
             }
           }
         }
       },
-      render: (_args, value) => [{type: "text", text: [...value.results.map((item) => `${errorIdText(item)}\n${item.receipt_message}`), "", "Agent 下一动作：直接生成最终回复；禁止调用 confirm_error_notebook_entry。", nextStepText(value.results)].join("\n")}]
+      render: (_args, value) => [{type: "text", text: [
+        ...value.results.map((item) => `${errorIdText(item)}\n${item.receipt_message}`), "",
+        ...value.results
+          .filter((item) => item.status === "review_unmatched" && item.review_match_candidates?.length)
+          .map((item) => [
+            "以下字段仅供复习关联工具调用，不得向用户展示：",
+            `candidate_id=${item.candidate_id}`,
+            `input_version=${item.input_version}`,
+            `待关联题干：${item.question_text}`,
+            ...item.review_match_candidates.map((candidate, index) => [
+              `候选 ${index + 1}：code=${candidate.code}`,
+              `PDF=${candidate.pdf_name}（${candidate.pdf_id}）`,
+              `错题=${candidate.error_id}，题库=${candidate.question_id || "无"}，阶段=${candidate.stage}，类型=${candidate.kind}`,
+              `冻结题干：${candidate.stem_text}`
+            ].join("\n")), ""
+          ].join("\n")),
+        value.review_pending
+          ? "Agent 下一动作：只调用 adjudicate_practice_review_associations，一次提交本轮剩余的全部待关联候选。"
+          : "Agent 下一动作：直接生成最终回复；禁止调用 confirm_error_notebook_entry。",
+        nextStepText(value.results)
+      ].join("\n")}]
     },
     async execute(args, exec) {
       if (!exec.agent) throw new Error("Reference adjudication requires an owning Harness session");
@@ -512,9 +632,91 @@ function adjudicateReferenceConflictsTool() {
       const payload = await response.json();
       if (!response.ok || !Array.isArray(payload.results)) throw toolRequestError("Reference adjudication failed", response, payload);
       pendingAdjudicationByAgent.delete(exec.agent);
-      return payload;
+      return {...payload, review_pending: refreshPendingReviewAssociations(exec.agent, args.items, payload.results)};
     },
     presentCall: () => ({card: "generic", title: "复核题库答案", kind: "other", rawInput: null})
+  };
+}
+
+function adjudicatePracticeReviewAssociationsTool() {
+  const origin = process.env.LZLM_PRODUCT_ORIGIN;
+  const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
+  if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
+  return {
+    name: "adjudicate_practice_review_associations",
+    description: "Required exactly once after process_error_notebook_attachments returns review_unmatched with review_match_candidates, and only after adjudicate_error_notebook_reference_conflicts when reference_review is also pending. Compare the frozen OCR question with every server-owned candidate by mathematical structure, every condition, all numbers and options, requested value, and visible review locator evidence. Use matched only when exactly one candidate is the same problem and copy its server code exactly, including letter case. Use uncertain with an empty code when zero or multiple candidates remain plausible. Submit every pending candidate in one call. Candidate metadata is internal tool evidence and must never be repeated to the student. The server rechecks ownership, input version and exact code before committing; the final reply must use only its returned receipt, never the model's claim.",
+    parameters: {
+      type: "object", additionalProperties: false, required: ["items"],
+      properties: {
+        items: {
+          type: "array", minItems: 1, maxItems: 20,
+          items: {
+            type: "object", additionalProperties: false,
+            required: ["candidate_id", "input_version", "status", "code", "rationale"],
+            properties: {
+              candidate_id: {type: "string"}, input_version: {type: "integer"},
+              status: {type: "string", enum: ["matched", "uncertain"]},
+              code: {type: "string", description: "Exact candidate code for matched; empty for uncertain."},
+              rationale: {type: "string", minLength: 20, maxLength: 4000}
+            }
+          }
+        }
+      }
+    },
+    output: {
+      schema: {
+        type: "object", additionalProperties: false, required: ["results", "reference_pending"],
+        properties: {
+          reference_pending: {type: "boolean"},
+          results: {
+            type: "array",
+            items: {
+              type: "object", additionalProperties: false,
+              required: ["candidate_id", "input_version", "status", "receipt_message", "error_id"],
+              properties: {
+                candidate_id: {type: "string"}, input_version: {type: "integer"}, status: {type: "string", enum: receiptStatuses},
+                receipt_message: {type: "string"}, error_id: {type: "string"}
+              }
+            }
+          }
+        }
+      },
+      render: (_args, value) => [{type: "text", text: [
+        ...value.results.map((item) => `${errorIdText(item)}\n${item.receipt_message}`), "",
+        value.reference_pending
+          ? "Agent 下一动作：只调用 adjudicate_error_notebook_reference_conflicts，一次提交本轮剩余的全部待复核候选。"
+          : "Agent 下一动作：直接生成最终回复；禁止调用 confirm_error_notebook_entry。",
+        nextStepText(value.results)
+      ].join("\n")}],
+    },
+    async execute(args, exec) {
+      if (!exec.agent) throw new Error("Practice review adjudication requires an owning Harness session");
+      if (pendingAdjudicationByAgent.has(exec.agent)) {
+        throw new Error("本轮仍有题库答案待复核；必须先调用 adjudicate_error_notebook_reference_conflicts，再处理 PDF 复习关联");
+      }
+      const pending = pendingReviewAssociationByAgent.get(exec.agent);
+      if (!pending || pending.length !== args.items.length || pending.some((expected) => !args.items.some((item) => item.candidate_id === expected.candidate_id && item.input_version === expected.input_version))) {
+        throw new Error("必须一次提交本轮 process 返回的全部待关联 candidate_id 和 input_version，不得遗漏或串题");
+      }
+      for (const item of args.items) {
+        const expected = pending.find((candidate) => candidate.candidate_id === item.candidate_id && candidate.input_version === item.input_version);
+        const exactMatches = expected?.codes.filter((code) => code === item.code).length || 0;
+        if ((item.status === "matched" && exactMatches !== 1) || (item.status === "uncertain" && item.code !== "")) {
+          throw new Error("matched 必须原样提交唯一候选的服务端 code；无法唯一确认时必须提交 uncertain 和空 code");
+        }
+      }
+      const response = await fetch(`${origin}/v1/internal/harness/practice-reviews/adjudicate`, {
+        method: "POST",
+        headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
+        body: JSON.stringify({session_id: exec.agent.id, items: args.items}),
+        signal: exec.signal
+      });
+      const payload = await response.json();
+      if (!response.ok || !Array.isArray(payload.results)) throw toolRequestError("Practice review adjudication failed", response, payload);
+      pendingReviewAssociationByAgent.delete(exec.agent);
+      return {...payload, reference_pending: pendingAdjudicationByAgent.has(exec.agent)};
+    },
+    presentCall: () => ({card: "generic", title: "核对复习题关联", kind: "other", rawInput: null})
   };
 }
 
@@ -648,7 +850,17 @@ function inspectNotebookTool() {
         type: "object", additionalProperties: false, required: ["context_json"],
         properties: {context_json: {type: "string"}}
       },
-      render: (_args, value) => [{type: "text", text: `当前账号业务上下文（只读）\n${JSON.stringify(JSON.parse(value.context_json), null, 2)}`}]
+      render: (_args, value) => {
+        const context = JSON.parse(value.context_json);
+        const pending = Array.isArray(context.pending_review_links) && context.pending_review_links.some((item) => item.options?.length);
+        return [{type: "text", text: [
+          `当前账号业务上下文（只读）\n${JSON.stringify(context, null, 2)}`,
+          ...(pending ? [
+            "", "pending_review_links 的候选元数据仅供内部复习关联工具调用，不得向学生复述。",
+            "Agent 下一动作：比较每个待关联题干与其 options，并只调用一次 adjudicate_practice_review_associations 提交全部待关联项。"
+          ] : [])
+        ].join("\n")}];
+      }
     },
     async execute(args, exec) {
       if (!exec.agent) throw new Error("Notebook inspection requires an owning Harness session");
@@ -660,6 +872,8 @@ function inspectNotebookTool() {
       });
       const payload = await response.json();
       if (!response.ok || typeof payload.context_json !== "string") throw toolRequestError("Notebook inspection failed", response, payload);
+      const context = JSON.parse(payload.context_json);
+      rememberInspectedPendingReviewAssociations(exec.agent, context);
       return payload;
     },
     presentCall: () => ({card: "generic", title: "读取学习记录", kind: "other", rawInput: null})
@@ -756,6 +970,7 @@ export async function apply(ctx) {
   ctx.tools.register(lookupQuestionBankReferenceTool());
   ctx.tools.register(recheckReferenceConflictTool());
   ctx.tools.register(adjudicateReferenceConflictsTool());
+  ctx.tools.register(adjudicatePracticeReviewAssociationsTool());
   ctx.tools.register(removeErrorTool());
   ctx.tools.register(receiptTool());
 }

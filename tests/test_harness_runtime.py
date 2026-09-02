@@ -49,6 +49,173 @@ for (const status of ['review_waiting', 'review_completed', 'review_needs_correc
         result = subprocess.run([node, "--input-type=module", "-e", script], cwd=root, env=environment, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_hybrid_review_tools_refresh_pending_batch_and_return_server_receipts(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is required by the Harness runtime")
+        root = Path(__file__).parents[1]
+        module_uri = (root / "extensions" / "dsh-math-notebook-ui" / "lib" / "index.js").as_uri()
+        script = """
+const extension = await import(__MODULE__);
+const ids = {old:'a'.repeat(32), other:'b'.repeat(32), fresh:'c'.repeat(32)};
+const codes = {
+  old:'R111111111111-01-ABCDEF', other:'R222222222222-02-ABCDEF', fresh:'R333333333333-03-ABCDEF'
+};
+const option = (code, stem) => ({code, pdf_id:'d'.repeat(32), pdf_name:'practice.pdf', error_id:'e'.repeat(32),
+  question_id:'f'.repeat(32), kind:'recommendation', stage:1, stem_text:stem, match_score:0.98,
+  candidate_source:'semantic_candidate', generated_at:null, started:false});
+const result = (candidate_id, question_text, code, reference_review=null) => ({
+  item_no: candidate_id === ids.old ? 1 : 2, candidate_id, input_version:1, verdict:'correct', question_text,
+  answer_text:'x=1', first_error:'', cause_code:'', cause_evidence:'', knowledge_points:['方程'],
+  correct_solution:'解答', final_answer:'x=1', prevention_cue:'检查', receipt_status:'review_unmatched',
+  receipt_message:'待关联', error_id:'', review_association:{status:'unmatched',pdf_id:'',review_code:'',
+    error_id:'',question_id:'',stage:0,kind:''}, review_match_candidates:[option(code, question_text)], reference_review
+});
+let practiceCalls = 0;
+globalThis.fetch = async (url, options) => {
+  const body = JSON.parse(options.body);
+  if (url.endsWith('/v1/internal/harness/intakes/process')) return {ok:true,status:200,json:async()=>({results:[
+    result(ids.old, 'q-old', codes.old, {source_title:'题库',version_no:1,independent_answer:'1',reference_answer:'1',reference_solution:'解'}),
+    result(ids.other, 'q-other', codes.other)
+  ]})};
+  if (url.endsWith('/v1/internal/harness/reference-conflicts/adjudicate')) {
+    if (body.items.length !== 1 || body.items[0].candidate_id !== ids.old) throw new Error('wrong reference batch');
+    return {ok:true,status:200,json:async()=>({results:[{candidate_id:ids.fresh,input_version:1,
+      question_text:'q-old',status:'review_unmatched',receipt_message:'题库复核完成，仍待关联',error_id:'',
+      review_match_candidates:[option(codes.fresh,'q-old')]}]})};
+  }
+  if (url.endsWith('/v1/internal/harness/practice-reviews/adjudicate')) {
+    practiceCalls += 1;
+    const submitted = new Map(body.items.map(item => [item.candidate_id, item.code]));
+    if (submitted.get(ids.other) !== codes.other || submitted.get(ids.fresh) !== codes.fresh) throw new Error('wrong refreshed batch');
+    return {ok:true,status:200,json:async()=>({results:[
+      {candidate_id:ids.other,input_version:1,status:'review_waiting',receipt_message:'服务端已保存第一题',error_id:'e'.repeat(32)},
+      {candidate_id:ids.fresh,input_version:1,status:'review_completed',receipt_message:'服务端已完成本组',error_id:'e'.repeat(32)}
+    ]})};
+  }
+  throw new Error('wrong endpoint');
+};
+const tools = [];
+await extension.apply({workspaceRegistry:{create:async()=>undefined},tools:{register:value=>tools.push(value)},
+  attachments:{readImage:async()=>({ref:{attachmentId:'sha256:'+'1'.repeat(64),mediaType:'image/png',name:'q.png'},data:new Uint8Array([1])})}});
+const agent = {id:'session-hybrid',session:{events:[{type:'turn/start',data:{turn:1}}],deriveMessages:()=>[
+  {role:'user',content:[{type:'text',text:'复习 PDF'},{type:'image',attachment:'image-ref'}]}
+]}};
+const exec = {agent,signal:new AbortController().signal};
+const review = {code:'',pdf_id:'',error_id:'',question_id:'',stage:0,kind:''};
+await tools.find(tool=>tool.name==='transcribe_error_notebook_attachments').execute({items:[
+  {attachment_index:1,item_no:1,question_text:'q-old',answer_text:'x=1',review},
+  {attachment_index:1,item_no:2,question_text:'q-other',answer_text:'x=1',review}
+]},exec);
+const processTool = tools.find(tool=>tool.name==='process_error_notebook_attachments');
+const grade = (attachment_index,item_no,question_text) => ({attachment_index,item_no,question_text,answer_text:'x=1',
+  verdict:'correct',first_error:'',cause_code:'',cause_evidence:'',knowledge_points:['方程'],correct_solution:'解答',
+  final_answer:'x=1',prevention_cue:'检查',confidence:0.99,review});
+const processed = await processTool.execute({items:[grade(1,1,'q-old'),grade(1,2,'q-other')]},exec);
+if (processed.results[0].review_match_candidates[0].stem_text !== 'q-old') throw new Error('candidate evidence lost');
+const referenceTool = tools.find(tool=>tool.name==='adjudicate_error_notebook_reference_conflicts');
+const reference = await referenceTool.execute({items:[{candidate_id:ids.old,input_version:1,status:'consistent',
+  rationale:'独立答案与题库答案在数学上完全一致，可以继续复习关联。'}]},exec);
+if (!reference.review_pending || reference.results[0].candidate_id !== ids.fresh ||
+    reference.results[0].review_match_candidates[0].code !== codes.fresh) throw new Error('fresh pending evidence lost');
+const practiceTool = tools.find(tool=>tool.name==='adjudicate_practice_review_associations');
+const item = (candidate_id,code) => ({candidate_id,input_version:1,status:'matched',code,
+  rationale:'题干的全部条件、数值、选项与所求量均一致，可以唯一确认。'});
+for (const invalid of [
+  [item(ids.old,codes.old),item(ids.other,codes.other)],
+  [item(ids.fresh,codes.fresh)],
+  [item(ids.fresh,codes.fresh.toLowerCase()),item(ids.other,codes.other)]
+]) {
+  let blocked = false;
+  try { await practiceTool.execute({items:invalid},exec); } catch (error) { blocked = true; }
+  if (!blocked) throw new Error('invalid pending batch was accepted');
+}
+if (practiceCalls !== 0) throw new Error('invalid batch reached server');
+const committed = await practiceTool.execute({items:[item(ids.other,codes.other),item(ids.fresh,codes.fresh)]},exec);
+if (practiceCalls !== 1 || committed.results[0].receipt_message !== '服务端已保存第一题' ||
+    committed.results[1].status !== 'review_completed') throw new Error('server receipts were not returned');
+const rendered = practiceTool.output.render({},committed)[0].text;
+if (!rendered.includes('服务端已完成本组')) throw new Error('server receipt was not rendered');
+""".replace("__MODULE__", json.dumps(module_uri))
+        environment = dict(os.environ, LZLM_PRODUCT_ORIGIN="http://127.0.0.1:8000",
+                           LZLM_HARNESS_INTERNAL_TOKEN="synthetic-test-token",
+                           LZLM_HARNESS_WORKSPACE_ROOT=str(root))
+        completed = subprocess.run([node, "--input-type=module", "-e", script], cwd=root,
+                                   env=environment, capture_output=True, text=True, timeout=15, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_inspect_restores_pending_review_batch_and_empty_context_clears_it(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is required by the Harness runtime")
+        root = Path(__file__).parents[1]
+        module_uri = (root / "extensions" / "dsh-math-notebook-ui" / "lib" / "index.js").as_uri()
+        script = """
+const extension = await import(__MODULE__);
+const ids = ['a'.repeat(32), 'b'.repeat(32)];
+const codes = ['R111111111111-01-ABCDEF', 'R222222222222-02-ABCDEF'];
+const pending = {pending_review_links: ids.map((candidate_id, index) => ({
+  candidate_id, input_version:index + 1, question_text:`private-question-${index + 1}`,
+  options:[{code:codes[index],pdf_id:'c'.repeat(32),pdf_name:'private.pdf',error_id:'d'.repeat(32),
+    question_id:'e'.repeat(32),kind:'recommendation',stage:index + 1,stem_text:`private-stem-${index + 1}`,
+    match_score:0.99,candidate_source:'semantic_candidate',generated_at:null,started:false}]
+}))};
+let contextCalls = 0;
+let practiceCalls = 0;
+globalThis.fetch = async (url, options) => {
+  const body = JSON.parse(options.body);
+  if (url.endsWith('/v1/internal/harness/context')) {
+    contextCalls += 1;
+    const context = contextCalls === 3 ? {pending_review_links:[]} : pending;
+    return {ok:true,status:200,json:async()=>({context_json:JSON.stringify(context)})};
+  }
+  if (url.endsWith('/v1/internal/harness/practice-reviews/adjudicate')) {
+    practiceCalls += 1;
+    if (body.session_id !== 'session-inspect' || body.items.length !== 2 ||
+        body.items.some((item, index) => item.candidate_id !== ids[index] || item.input_version !== index + 1 || item.code !== codes[index])) {
+      throw new Error('inspect-restored batch was not submitted exactly');
+    }
+    return {ok:true,status:200,json:async()=>({results:ids.map((candidate_id, index) => ({
+      candidate_id,input_version:index + 1,status:'review_completed',receipt_message:`saved-${index + 1}`,error_id:'d'.repeat(32)
+    }))})};
+  }
+  throw new Error('unexpected endpoint (re-upload/process must not be needed)');
+};
+const tools = [];
+await extension.apply({workspaceRegistry:{create:async()=>undefined},tools:{register:value=>tools.push(value)},attachments:{}});
+const inspectTool = tools.find(tool=>tool.name==='inspect_math_notebook');
+const practiceTool = tools.find(tool=>tool.name==='adjudicate_practice_review_associations');
+const agent = {id:'session-inspect'};
+const exec = {agent,signal:new AbortController().signal};
+const item = (candidate_id,input_version,code) => ({candidate_id,input_version,status:'matched',code,
+  rationale:'题干的全部条件、数值、选项与所求量均一致，可以唯一确认。'});
+const batch = ids.map((candidate_id, index) => item(candidate_id,index + 1,codes[index]));
+const inspected = await inspectTool.execute({},exec);
+const inspectText = inspectTool.output.render({},inspected)[0].text;
+if (!inspectText.includes(codes[0]) || !inspectText.includes('候选元数据仅供内部复习关联工具调用，不得向学生复述')) {
+  throw new Error('inspect did not retain internal candidate evidence and disclosure guard');
+}
+const committed = await practiceTool.execute({items:batch},exec);
+if (practiceCalls !== 1 || committed.results.length !== 2) throw new Error('restored exact batch was not committed');
+const publicReceipt = JSON.stringify(committed) + practiceTool.output.render({},committed)[0].text;
+if (codes.some(code => publicReceipt.includes(code)) || publicReceipt.includes('private.pdf') || publicReceipt.includes('private-stem')) {
+  throw new Error('candidate evidence leaked into the adjudication receipt');
+}
+await inspectTool.execute({},exec);
+await inspectTool.execute({},exec);
+let cleared = false;
+try { await practiceTool.execute({items:batch},exec); } catch (error) {
+  cleared = String(error.message).includes('全部待关联 candidate_id');
+}
+if (!cleared || practiceCalls !== 1) throw new Error('empty inspect context did not clear stale pending state');
+""".replace("__MODULE__", json.dumps(module_uri))
+        environment = dict(os.environ, LZLM_PRODUCT_ORIGIN="http://127.0.0.1:8000",
+                           LZLM_HARNESS_INTERNAL_TOKEN="synthetic-test-token",
+                           LZLM_HARNESS_WORKSPACE_ROOT=str(root))
+        completed = subprocess.run([node, "--input-type=module", "-e", script], cwd=root,
+                                   env=environment, capture_output=True, text=True, timeout=15, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def config(self, root: Path) -> HarnessRuntimeConfig:
         return HarnessRuntimeConfig(
             project_root=root,

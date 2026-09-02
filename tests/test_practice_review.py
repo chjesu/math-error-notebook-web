@@ -291,6 +291,36 @@ class PracticeReviewTests(unittest.TestCase):
             (self.question.question_id, recommendation["stem_text"], self.error.error_id, "recommendation"),
         )
 
+    def test_pending_options_keep_exact_code_and_bound_semantic_fallback(self):
+        papers = [self.paper(key=f"paper-{index}", plan_kind="practice") for index in range(10)]
+        exact = papers[4].checkpoint["review_manifest"][0]
+
+        def pending(locator, suffix):
+            attempt_id = suffix * 32
+            self.store.attempts[attempt_id] = Attempt(
+                attempt_id, self.owner, (suffix.upper() * 32)[:32], 1,
+                "OCR 严重损坏：完全不同的短文本 987654321", "x=5", "grade_ready",
+            )
+            return self.store.record_grade_candidate(
+                user_id=self.owner, attempt_id=attempt_id, input_version=1, verdict="correct",
+                first_error=None, evidence=json.dumps({
+                    "schema": "math-error-diagnosis/v1",
+                    "practice_review": {"status": "unmatched", "locator": locator},
+                }, ensure_ascii=False),
+            )
+
+        exact_candidate = pending({"code": exact["code"]}, "1")
+        exact_options = next(item["options"] for item in self.service.list_pending_practice_review_links(
+            user_id=self.owner) if item["candidate_id"] == exact_candidate.candidate_id)
+        self.assertEqual([item["code"] for item in exact_options], [exact["code"]])
+        self.assertEqual(exact_options[0]["candidate_source"], "visible_identity")
+
+        fallback = pending({}, "2")
+        fallback_options = next(item["options"] for item in self.service.list_pending_practice_review_links(
+            user_id=self.owner) if item["candidate_id"] == fallback.candidate_id)
+        self.assertEqual(len(fallback_options), 8)
+        self.assertTrue(all(item["candidate_source"] == "semantic_candidate" for item in fallback_options))
+
     def test_pending_review_can_be_selected_once_without_creating_a_new_error(self):
         self.job = self.paper()
         attempt_id = "9" * 32
@@ -482,6 +512,72 @@ class PracticeReviewApiTests(unittest.TestCase):
         self.assertEqual((linked[0], linked[2]["receipt"]["status"]), (200, "review_waiting"))
         self.assertEqual(len(self.fixture.store.files), 2)  # PDF + original photo
 
+    def test_practice_adjudication_rejects_forgery_staleness_and_prevalidates_batch(self):
+        recommendation = self.job.checkpoint["review_manifest"][1]
+
+        def pending(owner, suffix):
+            attempt_id = suffix * 32
+            self.fixture.store.attempts[attempt_id] = Attempt(
+                attempt_id, owner, (suffix.upper() * 32)[:32], 1,
+                recommendation["stem_text"], "y=3或-3", "grade_ready",
+            )
+            return self.fixture.store.record_grade_candidate(
+                user_id=owner, attempt_id=attempt_id, input_version=1, verdict="correct", first_error=None,
+                evidence=json.dumps({"schema": "math-error-diagnosis/v1", "practice_review": {
+                    "status": "unmatched", "locator": {"kind": "recommendation"},
+                }}, ensure_ascii=False),
+            )
+
+        first, second = pending(self.fixture.owner, "1"), pending(self.fixture.owner, "2")
+        foreign = pending("other", "3")
+        self.fixture.store.bind_model_session(user_id="other", session_id="review-other")
+        code = recommendation["code"]
+        rationale = "题干条件、全部数值、所求量与唯一候选逐项一致，因此可以确定是同一道题。"
+
+        denied = self.call("/v1/internal/harness/practice-reviews/adjudicate", {
+            "session_id": "review-test", "items": [{"candidate_id": foreign.candidate_id,
+                "input_version": 1, "status": "matched", "code": code, "rationale": rationale}],
+        })
+        self.assertEqual((denied[0], denied[2]["error"]["code"]), (404, "not_found"))
+        stale = self.call("/v1/internal/harness/practice-reviews/adjudicate", {
+            "session_id": "review-test", "items": [{"candidate_id": first.candidate_id,
+                "input_version": 2, "status": "matched", "code": code, "rationale": rationale}],
+        })
+        self.assertEqual((stale[0], stale[2]["error"]["code"]), (409, "input_version_changed"))
+        forged = self.call("/v1/internal/harness/practice-reviews/adjudicate", {
+            "session_id": "review-test", "items": [{"candidate_id": first.candidate_id,
+                "input_version": 1, "status": "matched", "code": "R" + "f" * 12 + "-99-ABCDEF",
+                "rationale": rationale}],
+        })
+        self.assertEqual((forged[0], forged[2]["error"]["code"]), (400, "invalid_request"))
+
+        before_candidates = deepcopy(self.fixture.store.candidates)
+        before_checkpoint = deepcopy(self.fixture.store.jobs[self.job.job_id].checkpoint)
+        batch = self.call("/v1/internal/harness/practice-reviews/adjudicate", {
+            "session_id": "review-test", "items": [
+                {"candidate_id": first.candidate_id, "input_version": 1, "status": "matched",
+                 "code": code, "rationale": rationale},
+                {"candidate_id": second.candidate_id, "input_version": 1, "status": "matched",
+                 "code": "R" + "e" * 12 + "-98-ABCDEF", "rationale": rationale},
+            ],
+        })
+        self.assertEqual((batch[0], batch[2]["error"]["code"]), (400, "invalid_request"))
+        self.assertEqual(self.fixture.store.candidates, before_candidates)
+        self.assertEqual(self.fixture.store.jobs[self.job.job_id].checkpoint, before_checkpoint)
+
+        uncertain = self.call("/v1/internal/harness/practice-reviews/adjudicate", {
+            "session_id": "review-test", "items": [
+                {"candidate_id": first.candidate_id, "input_version": 1, "status": "uncertain",
+                 "code": "", "rationale": "现有图片证据不足，两个候选仍然都可能对应这道题，无法唯一确认。"},
+                {"candidate_id": second.candidate_id, "input_version": 1, "status": "uncertain",
+                 "code": "", "rationale": "现有图片证据不足，两个候选仍然都可能对应这道题，无法唯一确认。"},
+            ],
+        })
+        self.assertEqual([item["status"] for item in uncertain[2]["results"]],
+                         ["review_unmatched", "review_unmatched"])
+        self.assertEqual(self.fixture.store.candidates, before_candidates)
+        self.assertEqual(self.fixture.store.jobs[self.job.job_id].checkpoint, before_checkpoint)
+
     def test_legacy_review_code_links_latex_stem_to_ocr_text_without_image(self):
         checkpoint = deepcopy(self.job.checkpoint)
         item = checkpoint["review_manifest"][0]
@@ -619,7 +715,7 @@ class PracticeReviewApiTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "review_needs_correction")
         self.assertEqual(len(self.fixture.store.errors), 1)
 
-    def numeric_conflict(self, *, code=False):
+    def numeric_conflict(self, *, code=False, semantic=False):
         question = replace(self.fixture.question,
             stem_text=r"已知函数 f(x) 的值域为 [-1,1]，函数 g(x)=[f(x)]^2+f(x)+\frac{5}{4}，由 g(x)=1 求 f(x) 的值。",
             answer_text="f(x)=-1/2")
@@ -629,6 +725,8 @@ class PracticeReviewApiTests(unittest.TestCase):
         with patch.object(self.client, "call", return_value=(200, {}, {"results": [{}]})):
             self.process(1, code=code, conflict=True, color="red")
         self.last_payload["items"][0]["question_text"] = question.stem_text.replace(r"\frac{5}{4}", r"\frac{3}{4}")
+        if semantic:
+            self.last_payload["items"][0]["review"] = {}
         response = self.call("/v1/internal/harness/intakes/process", self.last_payload)
         self.assertEqual(response[0], 200, response)
         result = response[2]["results"][0]
@@ -672,6 +770,16 @@ class PracticeReviewApiTests(unittest.TestCase):
         # A typo after linking must not move the saved result to another item.
         payload["review"]["code"] = self.job.checkpoint["review_manifest"][0]["code"]
         self.assertEqual(self.call(path, payload)[0], 400)
+
+    def test_reference_adjudication_refreshes_pending_candidate_evidence(self):
+        original = self.numeric_conflict(semantic=True)
+        self.assertTrue(original["review_match_candidates"])
+        self.assertIn("stem_text", original["review_match_candidates"][0])
+        revised = self.adjudicate(original)
+        self.assertNotEqual(revised["candidate_id"], original["candidate_id"])
+        self.assertEqual(revised["status"], "review_unmatched")
+        self.assertTrue(revised["review_match_candidates"])
+        self.assertEqual(revised["question_text"], original["question_text"])
 
     def test_adjudication_automatically_links_numeric_ocr_difference(self):
         original = self.numeric_conflict(code=True)

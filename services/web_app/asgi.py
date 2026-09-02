@@ -146,6 +146,9 @@ class NotebookAsgiApp:
         if path == "/v1/internal/harness/reference-conflicts/adjudicate" and method == "POST":
             await self._internal_harness_adjudicate(scope, receive, send, headers)
             return
+        if path == "/v1/internal/harness/practice-reviews/adjudicate" and method == "POST":
+            await self._internal_harness_adjudicate_practice_review(scope, receive, send, headers)
+            return
         if path == "/v1/internal/harness/reference-conflicts/recheck" and method == "POST":
             await self._internal_harness_recheck(scope, receive, send, headers)
             return
@@ -1278,6 +1281,12 @@ class NotebookAsgiApp:
                 candidate = await self._sync(self.notebook.store.get_grade_candidate, user_id=user_id, candidate_id=result_item["candidate_id"])
                 receipt = await self._commit_candidate_receipt(user_id, candidate)
                 result_item.update(receipt_status=receipt["status"], receipt_message=receipt["message"], error_id=str(receipt.get("error_id") or ""))
+            pending = {
+                item["candidate_id"]: item["options"]
+                for item in await self._sync(self.notebook.list_pending_practice_review_links, user_id=user_id)
+            }
+            for result_item in results:
+                result_item["review_match_candidates"] = pending.get(result_item["candidate_id"], [])
             usage = await self._sync(self.notebook.store.learning_usage, user_id=user_id)
             await self._json(send, 200, {"results": results, "usage": usage})
         except LookupError:
@@ -1494,14 +1503,31 @@ class NotebookAsgiApp:
                     attempt_id=candidate.attempt_id,
                     question_id=str(validation["question_id"]),
                 )
-                receipt = await self._commit_candidate_receipt(user_id, revised)
+                review_context = revised_evidence.get("practice_review")
+                if isinstance(review_context, dict) and review_context.get("status") == "unmatched":
+                    receipt = self._grade_receipt(revised) | {
+                        "candidate_id": revised.candidate_id,
+                        "input_version": revised.input_version,
+                        "status": "review_unmatched",
+                        "review_status": "waiting_match",
+                        "message": "题库答案语义复核已完成；对应 PDF 仍需从服务端候选中确认，尚未推进复习阶段，未重复入本。",
+                    }
+                else:
+                    receipt = await self._commit_candidate_receipt(user_id, revised)
                 results.append({
                     "candidate_id": receipt["candidate_id"],
                     "input_version": input_version,
+                    "question_text": attempt.question_text,
                     "status": receipt["status"],
                     "receipt_message": receipt["message"],
                     "error_id": str(receipt.get("error_id") or ""),
                 })
+            pending = {
+                item["candidate_id"]: item["options"]
+                for item in await self._sync(self.notebook.list_pending_practice_review_links, user_id=user_id)
+            }
+            for result in results:
+                result["review_match_candidates"] = pending.get(result["candidate_id"], [])
             await self._json(send, 200, {"results": results})
         except LookupError:
             await self._error(send, 404, "not_found")
@@ -1598,6 +1624,108 @@ class NotebookAsgiApp:
             await self._error(send, 403, "forbidden")
         except RuntimeError as exc:
             code = str(exc) if str(exc) in {"input_version_changed", "reference_conflict", "conflict"} else "conflict"
+            await self._error(send, 409, code)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    async def _internal_harness_adjudicate_practice_review(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive)
+            if set(payload) != {"session_id", "items"}:
+                raise ValueError("invalid practice review adjudication request")
+            session_id = self._harness_session_id(payload)
+            user_id = await self._harness_user_id(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            items = payload["items"]
+            if not isinstance(items, list) or not 1 <= len(items) <= 20:
+                raise ValueError("invalid practice review adjudication items")
+            if len({item.get("candidate_id") for item in items if isinstance(item, dict)}) != len(items):
+                raise ValueError("duplicate practice review adjudication item")
+            pending = {
+                item["candidate_id"]: item
+                for item in await self._sync(self.notebook.list_pending_practice_review_links, user_id=user_id)
+            }
+            validated = []
+            for item in items:
+                if not isinstance(item, dict) or set(item) != {"candidate_id", "input_version", "status", "code", "rationale"}:
+                    raise ValueError("invalid practice review adjudication item")
+                candidate_id = item["candidate_id"]
+                input_version = item["input_version"]
+                status = item["status"]
+                code = item["code"]
+                rationale = item["rationale"]
+                if (
+                    not isinstance(candidate_id, str)
+                    or re.fullmatch(r"[0-9a-f]{32}", candidate_id) is None
+                    or not isinstance(input_version, int)
+                    or isinstance(input_version, bool)
+                    or input_version < 1
+                    or status not in {"matched", "uncertain"}
+                    or not isinstance(code, str)
+                    or len(code) > 180
+                    or not isinstance(rationale, str)
+                    or not 20 <= len(rationale.strip()) <= 4000
+                    or (status == "matched" and re.fullmatch(r"R[0-9a-f]{12}-\d{2}(?:-[0-9A-F]{6})?", code, re.IGNORECASE) is None)
+                    or (status == "uncertain" and code != "")
+                ):
+                    raise ValueError("invalid practice review adjudication item")
+                candidate = await self._sync(
+                    self.notebook.store.get_grade_candidate, user_id=user_id, candidate_id=candidate_id,
+                )
+                if candidate is None:
+                    raise LookupError("grade candidate not found")
+                if candidate.input_version != input_version:
+                    raise RuntimeError("input_version_changed")
+                current = pending.get(candidate_id)
+                if current is None:
+                    raise RuntimeError("conflict")
+                if status == "matched" and not any(option["code"].lower() == code.lower() for option in current["options"]):
+                    raise ValueError("invalid practice review selection")
+                validated.append((candidate_id, input_version, status, code))
+
+            results = []
+            for candidate_id, input_version, status, code in validated:
+                if status == "uncertain":
+                    results.append({
+                        "candidate_id": candidate_id,
+                        "input_version": input_version,
+                        "status": "review_unmatched",
+                        "receipt_message": "语义核对后仍无法唯一确认对应 PDF；判题结果已保留，未重复入本或推进阶段。",
+                        "error_id": "",
+                    })
+                    continue
+                linked = await self._sync(
+                    self.notebook.link_pending_practice_review,
+                    user_id=user_id,
+                    candidate_id=candidate_id,
+                    input_version=input_version,
+                    code=code,
+                )
+                receipt = await self._commit_candidate_receipt(user_id, linked)
+                results.append({
+                    "candidate_id": receipt["candidate_id"],
+                    "input_version": input_version,
+                    "status": receipt["status"],
+                    "receipt_message": receipt["message"],
+                    "error_id": str(receipt.get("error_id") or ""),
+                })
+            await self._json(send, 200, {"results": results})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except RuntimeError as exc:
+            code = str(exc) if str(exc) in {"input_version_changed", "conflict"} else "conflict"
             await self._error(send, 409, code)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
