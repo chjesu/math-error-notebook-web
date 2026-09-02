@@ -118,7 +118,23 @@ def main():
             assert "should_not_persist" not in store.get_job(user_id=owner, job_id=second.job_id).checkpoint
             assert store.list_active_reviews(user_id=owner)[0] == task
             assert store.progress(user_id=owner)["completed_review_count"] == 1
-            print(json.dumps({"mysql_transaction": "passed", "cross_day": "passed", "reprints": "passed", "activity_dedup": "passed", "replay": "passed", "rollback": "passed", "synthetic_rows": "rolled_back"}))
+            second_item = second.checkpoint["review_manifest"][0]
+            second_context = service.resolve_practice_review(user_id=owner, question_text=second_item["stem_text"],
+                                                            locator={"code": second_item["code"]})
+            wrong = grade("yellow", {"practice_review": second_context}, "incorrect")
+            submitted = current + timedelta(days=1)
+            wrong_receipt = service.commit_practice_review(user_id=owner, candidate=wrong, now=submitted)
+            assert wrong_receipt["status"] == "review_needs_correction"
+            before_tasks = store.list_active_reviews(user_id=owner)
+            corrected = grade("red", {"practice_review": second_context | {"correction": True}}, "correct")
+            corrected_receipt = service.commit_practice_review(user_id=owner, candidate=corrected, now=submitted + timedelta(hours=1))
+            assert corrected_receipt["status"] == "review_corrected"
+            assert service.commit_practice_review(user_id=owner, candidate=corrected, now=submitted + timedelta(hours=2))["replayed"]
+            assert store.list_active_reviews(user_id=owner) == before_tasks
+            assert store.progress(user_id=owner)["completed_review_count"] == 2
+            assert store.get_job(user_id=owner, job_id=second.job_id).checkpoint["review_receipts"][second_item["task_id"]] == wrong_receipt
+            assert service.progress(user_id=owner, now=submitted)["today_needs_correction_count"] == 0
+            print(json.dumps({"mysql_transaction": "passed", "cross_day": "passed", "reprints": "passed", "activity_dedup": "passed", "replay": "passed", "rollback": "passed", "settled_correction": "passed", "synthetic_rows": "rolled_back"}))
     finally:
         connection.rollback()
         connection.close()

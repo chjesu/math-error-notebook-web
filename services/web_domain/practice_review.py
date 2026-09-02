@@ -99,6 +99,7 @@ def practice_paper_progress(papers: list[dict], *, active_error_ids: set[str] | 
                          "question_text": item["stem_text"], "kind": item["kind"], "stage": item["stage"],
                          "required": bool(item.get("required")), "status": "reference_only" if not item.get("required") else "correct" if verdict == "correct" else "needs_correction" if verdict in {"partial", "incorrect"} else "pending",
                          "verdict": verdict, "submitted_at": saved.get("submitted_at") if saved else None,
+                         "corrected_at": saved.get("corrected_at") if saved else None,
                          "inherited_from_code": saved.get("source_code") if saved and saved.get("source_code") != item["code"] else None})
         required = [row for row in rows if row["required"]]
         answered = [row for row in required if row["submitted_at"]]
@@ -112,6 +113,8 @@ def practice_paper_progress(papers: list[dict], *, active_error_ids: set[str] | 
             receipt = (checkpoint.get("review_receipts") or {}).get(task_id, {})
             groups.append({"task_id": task_id, "error_id": group_items[0]["error_id"], "stage": group_items[0]["stage"],
                            "answered_count": sum(bool(row["submitted_at"]) for row in group_rows), "required_count": len(keys),
+                           "completed_at": receipt.get("completed_at"),
+                           "needs_correction": any(row["status"] == "needs_correction" for row in group_rows),
                            "completed": receipt.get("status") in {"review_completed", "review_needs_correction"}})
         progress = {"available": bool(manifest) and len(seen) == len(manifest), "required_count": len(required),
                     "answered_count": len(answered), "pending_count": len(required) - len(answered),
@@ -165,7 +168,11 @@ def add_practice_calendar(calendar: dict, papers: list[dict]) -> dict:
         day.update(practice_plans=[], practice_activity=[], submitted_question_count=0,
                    paper_answered_count=0, paper_required_count=0)
     seen_plans, seen_activity, planned_items = set(), set(), {}
+    paper_completions = set()
     for paper in papers:
+        for group in paper["progress"]["groups"]:
+            if group.get("completed_at"):
+                paper_completions.add((group["task_id"], datetime.fromisoformat(group["completed_at"]).astimezone(timezone.utc).isoformat()))
         if paper.get("generated_at"):
             date = learning_day(datetime.fromisoformat(paper["generated_at"]))
             key = (date, paper["plan_id"])
@@ -185,6 +192,16 @@ def add_practice_calendar(calendar: dict, papers: list[dict]) -> dict:
     for date, items in planned_items.items():
         days[date]["paper_answered_count"] = sum(bool(row["submitted_at"]) for row in items.values())
         days[date]["paper_required_count"] = len(items)
+    for day in days.values():
+        for event in day["items"]:
+            # A completed PDF group is represented by its individual exercises,
+            # not again by the original (immutable) aggregate grade.
+            if (event.get("task_id"), event.get("completed_at")) in paper_completions:
+                event["needs_correction"] = False
+        day["needs_correction_count"] = sum(bool(event.get("needs_correction")) for event in day["items"]) + sum(
+            row["status"] == "needs_correction" for row in day["practice_activity"]
+        )
+    calendar["summary"]["needs_correction_count"] = sum(day["needs_correction_count"] for day in days.values())
     calendar["summary"]["submitted_question_count"] = sum(day["submitted_question_count"] for day in days.values())
     return calendar
 
@@ -231,7 +248,7 @@ def build_manifest(job_id: str, items: list[dict], tasks: list[ReviewTask]) -> l
     return manifest
 
 
-def fixed_plan_items(manifest: list[dict], completions: list[dict], tasks: list[ReviewTask]) -> list[dict]:
+def fixed_plan_items(manifest: list[dict], completions: list[dict], tasks: list[ReviewTask], progress_groups: list[dict] = ()) -> list[dict]:
     """Read-only status of the frozen rounds, including completion on another PDF."""
     by_task = {task.task_id: task for task in tasks}
     groups = {row["error_id"]: row for row in reversed(manifest)}
@@ -246,6 +263,10 @@ def fixed_plan_items(manifest: list[dict], completions: list[dict], tasks: list[
             result = finished[0]["result"]
             completed_at = finished[0]["completed_at"].isoformat()
             state = "completed" if result == "correct" else "needs_correction"
+            group = next((group for group in progress_groups if group["task_id"] == row.get("task_id")
+                          and group.get("completed_at") == completed_at), None)
+            if group and group.get("completed"):
+                state = "needs_correction" if group["needs_correction"] else "completed"
         elif current and current.error_id == error_id and current.stage == row["stage"] and current.due_at == due:
             state = "pending"
         items.append({"error_id": error_id, "stage": row["stage"], "status": state, "result": result, "completed_at": completed_at})
@@ -343,24 +364,23 @@ def apply_submission(checkpoint: dict, *, code: str, candidate_id: str, verdict:
         return unresolved_receipt("复习定位未确认，判题结果已保留；请提供 PDF 名称和图片中的错题编号、阶段或复习码。")
     task_id = item["task_id"]
     receipts = checkpoint.setdefault("review_receipts", {})
-    # Replay the original receipt before consulting a possibly recycled task.
-    if task_id in receipts:
-        return receipts[task_id] | {"replayed": True}
+    receipt = receipts.get(task_id)
     if not item["required"]:
         return {"status": "review_reference_only", "message": "本题仅作推荐依据，不要求重做，不推进复习阶段，也不重复入本。", "error_id": item["error_id"]}
-    task = get_task(task_id) if task_id else None
-    if (not task or task.status not in {"pending", "ready"} or task.stage != item["stage"]
-            or task.due_at != datetime.fromisoformat(item["due_at"])):
+    task = get_task(task_id) if task_id and (not receipt or allow_correction) else None
+    if ((not receipt or allow_correction) and (not task or task.error_id != item["error_id"])) or (not receipt and (
+            task.status not in {"pending", "ready"} or task.stage != item["stage"]
+            or task.due_at != datetime.fromisoformat(item["due_at"]))):
         return {"status": "review_stale", "message": "判题结果已保留；这份 PDF 对应的复习任务已变更或结束，未改变当前阶段。请使用当前复习计划。", "error_id": item["error_id"]}
     if verdict not in {"correct", "partial", "incorrect"}:
         return {"status": "needs_review", "message": "复习题证据不足，判题结果已保留，尚未推进阶段。请补充清晰的作答。"}
     submissions = checkpoint.setdefault("review_submissions", {})
-    # Ordinary retries are idempotent. An explicit correction may replace an
-    # unfinished-stage result while preserving its audit trail.
+    # Corrections change item state, never the first grade or settled schedule.
     saved = submissions.get(code)
-    if saved is None:
+    if saved is None and not receipt:
         submissions[code] = {"candidate_id": candidate_id, "verdict": verdict, "submitted_at": now.isoformat(), "revision": 0}
-    elif allow_correction and saved.get("candidate_id") != candidate_id:
+    elif saved and allow_correction and saved.get("candidate_id") != candidate_id and not any(
+            entry.get("candidate_id") == candidate_id for entry in saved.get("history", [])):
         history = list(saved.get("history") or [])
         history.append({
             "candidate_id": saved.get("candidate_id"), "verdict": saved.get("verdict"),
@@ -370,10 +390,22 @@ def apply_submission(checkpoint: dict, *, code: str, candidate_id: str, verdict:
             "candidate_id": candidate_id, "verdict": verdict, "submitted_at": saved["submitted_at"],
             "corrected_at": now.isoformat(), "previous_candidate_id": saved.get("candidate_id"),
             "previous_verdict": saved.get("verdict"), "revision": int(saved.get("revision", 0)) + 1,
-            "history": history,
+            "history": history, "post_completion_correction": bool(receipt),
+            "source_code": saved.get("source_code") or code,
         }
     required = [row for row in manifest if row["task_id"] == task_id and row["required"]]
     received = [submissions[row["code"]] for row in required if row["code"] in submissions]
+    if receipt:
+        if any(row.get("post_completion_correction") for row in received):
+            outstanding = len(received) != len(required) or any(row["verdict"] != "correct" for row in received)
+            return receipt | {
+                "status": "review_needs_correction" if outstanding else "review_corrected",
+                "correction_status": "outstanding" if outstanding else "corrected",
+                "message": ("订正已保存，本组仍有题目需改错。" if outstanding else "本组订正已全部正确，已移出需改错列表。")
+                           + "首次复习成绩和历史记录保留，未额外推进阶段，下次复习安排不变。",
+                "replayed": saved is not None and (saved.get("candidate_id") == candidate_id or not allow_correction),
+            }
+        return receipt | {"replayed": True}
     base = {"error_id": item["error_id"], "completed_question_count": len(received), "required_question_count": len(required)}
     if len(received) != len(required):
         return base | {"status": "review_waiting", "message": f"复习作答已保存（{len(received)}/{len(required)} 道必做题），尚未推进阶段。下一步：继续上传该组剩余必做题。"}

@@ -1052,6 +1052,14 @@ class NotebookService:
         calendar = self.store.review_calendar(user_id=user_id, month=month, now=now)
         return add_practice_calendar(calendar, self.list_practice_pdfs(user_id=user_id))
 
+    def progress(self, *, user_id: str, now: datetime | None = None) -> dict:
+        current = now or _now()
+        progress = self.store.progress(user_id=user_id, now=current)
+        today = learning_day(current)
+        calendar = self.review_calendar(user_id=user_id, month=today[:7], now=current)
+        day = next(row for row in calendar["days"] if row["date"] == today)
+        return progress | {"today_needs_correction_count": day["needs_correction_count"]}
+
     def today_practice_plan(self, *, user_id: str, papers: list[dict], now: datetime | None = None) -> dict | None:
         today = learning_day(now or _now())
         papers = [paper for paper in papers if paper.get("source", "generated") == "generated" and paper.get("plan_kind", "daily_review") == "daily_review" and paper.get("generated_at")
@@ -1065,7 +1073,8 @@ class NotebookService:
         manifest = (job.checkpoint or {}).get("review_manifest") or []
         ids = list({row["task_id"] for row in manifest if row.get("task_id")})
         completions = self.store.list_review_completions(user_id=user_id, task_ids=ids)
-        items = fixed_plan_items(manifest, completions, self.store.list_active_reviews(user_id=user_id))
+        items = fixed_plan_items(manifest, completions, self.store.list_active_reviews(user_id=user_id),
+                                 (paper.get("progress") or {}).get("groups", []))
         return {"task_id": job.job_id, "available": bool(manifest), "items": items, "progress": paper.get("progress"),
                 "download_url": f"/v1/practice-pdfs/{job.job_id}/download"}
 
@@ -1208,6 +1217,8 @@ class NotebookService:
             if any(linked.get(key) != context.get(key) for key in ("status", "job_id", "code")):
                 raise ValueError("an already linked review cannot be reassigned")
             return candidate
+        if context.get("correction"):
+            linked["correction"] = True
         if linked == context:
             return candidate
         diagnosis["practice_review"] = linked
@@ -1393,6 +1404,7 @@ class NotebookService:
             "status": "matched", "job_id": job.job_id, "code": item["code"], "required": item["required"],
             "error_id": item["error_id"], "question_id": item.get("question_id"),
             "kind": item["kind"], "stage": item["stage"],
+            "correction": bool((diagnosis.get("practice_review") or {}).get("correction")),
         }
         return self.store.record_grade_candidate(
             user_id=user_id, attempt_id=candidate.attempt_id, input_version=candidate.input_version,

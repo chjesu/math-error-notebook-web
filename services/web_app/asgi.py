@@ -276,7 +276,7 @@ class NotebookAsgiApp:
             elif path == "/v1/workbench" and method == "GET":
                 items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
                 pending = await self._sync(self.notebook.store.pending_job_count, user_id=user.user_id)
-                progress = await self._sync(self.notebook.store.progress, user_id=user.user_id)
+                progress = await self._sync(self.notebook.progress, user_id=user.user_id)
                 await self._json(send, 200, {"error_count": len(items), "pending_task_count": pending, "due_review_count": progress["due_review_count"], "recommendation_gap_count": progress["recommendation_gap_count"], "recent_errors": [self._error_entry(item) for item in items[:5]]})
             elif path == "/v1/exports" and method == "POST":
                 key = self._key(headers)
@@ -633,7 +633,7 @@ class NotebookAsgiApp:
                 calendar = await self._sync(self.notebook.review_calendar, user_id=user.user_id, month=month)
                 await self._json(send, 200, calendar)
             elif path == "/v1/progress" and method == "GET":
-                progress = await self._sync(self.notebook.store.progress, user_id=user.user_id)
+                progress = await self._sync(self.notebook.progress, user_id=user.user_id)
                 await self._json(send, 200, progress)
             elif path == "/v1/bank/status" and method == "GET":
                 await self._json(send, 200, await self._sync(self.notebook.store.bank_status))
@@ -1818,7 +1818,7 @@ class NotebookAsgiApp:
                 raise LookupError("review code not found")
             context = {
                 "scope": "current_bound_account",
-                "progress": await self._sync(self.notebook.store.progress, user_id=user_id),
+                "progress": await self._sync(self.notebook.progress, user_id=user_id),
                 "errors": [self._error_entry(item) for item in errors[:20]],
                 "due_reviews": due_reviews,
                 "practice_pdfs": [item | {"download_url": f"/v1/practice-pdfs/{item['task_id']}/download"} for item in papers[:20]],

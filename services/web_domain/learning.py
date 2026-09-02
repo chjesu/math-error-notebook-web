@@ -308,6 +308,11 @@ def build_review_calendar(
 ) -> dict[str, object]:
     start, end = calendar_month_range(month)
     current = _aware_utc(now or datetime.now(timezone.utc))
+    latest_reviews = {}
+    for item in review_attempts:
+        moment = _aware_utc(item["completed_at"])
+        if moment <= current:
+            latest_reviews[str(item["error_id"])] = max(moment, latest_reviews.get(str(item["error_id"]), moment))
     days: dict[str, dict[str, object]] = {}
     summary = {
         "new_error_count": 0,
@@ -335,6 +340,10 @@ def build_review_calendar(
         moment = _aware_utc(when)
         return {
             "type": kind,
+            "task_id": record.get("task_id"),
+            "completed_at": moment.isoformat() if kind == "completed" else None,
+            "needs_correction": kind == "completed" and record.get("result") in {"partial", "wrong"}
+                                and latest_reviews.get(str(record["error_id"])) == moment,
             "error_id": str(record["error_id"]),
             "question_text": str(record.get("question_text") or "未命名题目"),
             "first_error": record.get("first_error"),
@@ -371,7 +380,7 @@ def build_review_calendar(
             summary["completed_review_count"] += 1
             if record.get("result") == "correct":
                 summary["correct_review_count"] += 1
-            elif record.get("result") in {"partial", "wrong"}:
+            elif day["items"][-1]["needs_correction"]:
                 day["needs_correction_count"] += 1
                 summary["needs_correction_count"] += 1
 

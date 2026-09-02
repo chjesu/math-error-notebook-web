@@ -35,7 +35,7 @@ try {
   imageTurnBlocked = String(error.message).includes('本轮禁止再次调用确认工具');
 }
 if (!imageTurnBlocked) throw new Error('image turn must not call the follow-up confirmation tool');
-for (const status of ['review_waiting', 'review_completed', 'review_needs_correction', 'review_unmatched', 'review_stale', 'review_retryable']) {
+for (const status of ['review_waiting', 'review_completed', 'review_corrected', 'review_needs_correction', 'review_unmatched', 'review_stale', 'review_retryable']) {
   const value = {schema:'math-notebook-entry-receipt/v1', status, reference_status:'not_found',
     knowledge_point_count:1, review_status:'completed', message:'已记录',
     completed_question_count:2, required_question_count:2, next_stage:null, next_due_at:null, replayed:true};

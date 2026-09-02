@@ -1,6 +1,6 @@
 export const inject = ["workspaceRegistry", "tools", "attachments"];
 
-const receiptStatuses = ["saved", "already_saved", "not_saved_correct", "needs_review", "review_unmatched", "review_waiting", "review_completed", "review_needs_correction", "review_reference_only", "review_stale", "review_retryable"];
+const receiptStatuses = ["saved", "already_saved", "not_saved_correct", "needs_review", "review_unmatched", "review_waiting", "review_completed", "review_corrected", "review_needs_correction", "review_reference_only", "review_stale", "review_retryable"];
 const reviewLocatorSchema = {
   type: "object", additionalProperties: false,
   required: ["code", "pdf_id", "error_id", "question_id", "stage", "kind"],
@@ -91,6 +91,7 @@ function nextStepText(results) {
   if (statuses.includes("review_needs_correction")) return "下一步：先依据错因与解析订正本组题目，再按回执中的日期复习。";
   if (statuses.includes("review_stale")) return "下一步：打开错题本查看当前复习计划，这份旧练习单不会改变新的阶段。";
   if (statuses.includes("review_completed")) return "下一步：本组复习已完成，请按回执的下次日期复习，也可继续提交其他组的作答。";
+  if (statuses.includes("review_corrected")) return "下一步：本组订正已完成，复习阶段与日期不变；可继续订正其他题目。";
   if (statuses.includes("review_reference_only")) return "下一步：提交同组标记为必做的原题或推荐训练题。";
   if (statuses.includes("needs_review")) {
     return "下一步：请补充更清晰的题目或作答图片，也可以直接说明需要修正的题干、作答或解题过程。";

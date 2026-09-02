@@ -18,7 +18,7 @@ from PIL import Image
 from pypdf import PdfReader
 
 from services.web_domain import ErrorEntry, GradeCandidate, InMemoryNotebookStore, NotebookService, Question
-from services.web_domain.learning import Recommendation, ReviewTask
+from services.web_domain.learning import Recommendation, ReviewTask, build_review_calendar
 from services.web_domain.notebook import Attempt
 from services.web_domain.practice_review import fixed_plan_items, legacy_manifest, review_locator, shared_review_checkpoints
 import test_web_app_e2e as api_tests
@@ -145,6 +145,70 @@ class PracticeReviewTests(unittest.TestCase):
         self.assertEqual(calendar["summary"]["completed_review_count"], 0)
         other = self.service.review_calendar(user_id="other", month="2026-08", now=self.now)
         self.assertTrue(all(not day["practice_plans"] and not day["practice_activity"] for day in other["days"]))
+
+    def test_settled_correction_clears_current_counts_without_rewriting_history(self):
+        self.job = self.paper()
+        reprint = self.paper(key="reprint", plan_kind="practice")
+        original = self.candidate(self.job.checkpoint["review_manifest"][0], verdict="incorrect")
+        self.service.commit_practice_review(user_id=self.owner, candidate=original, now=self.now)
+        first_receipt = self.submit(1)
+        before = deepcopy((self.store.review_attempts, self.store.review_tasks, self.store.errors))
+        self.assertEqual(self.service.progress(user_id=self.owner, now=self.now)["today_needs_correction_count"], 1)
+        item = reprint.checkpoint["review_manifest"][0]
+        context = self.service.resolve_practice_review(user_id=self.owner, question_text=item["stem_text"],
+            locator={"code": item["code"]}) | {"correction": True}
+        correction = self.candidate(item, context=context)
+        later = self.now + timedelta(days=1)
+        with patch.object(self.store, "complete_review", side_effect=AssertionError("corrections must not reschedule")):
+            receipt = self.service.commit_practice_review(user_id=self.owner, candidate=correction, now=later)
+            replay = self.service.commit_practice_review(user_id=self.owner, candidate=correction, now=later)
+            # A retry of a superseded grade must not revert the accepted correction.
+            stale = replace(original, evidence=json.dumps({"practice_review": context}))
+            self.service.commit_practice_review(user_id=self.owner, candidate=stale, now=later)
+        self.assertEqual((receipt["status"], replay["status"], receipt["review_result"]),
+                         ("review_corrected", "review_corrected", "wrong"))
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(before, (self.store.review_attempts, self.store.review_tasks, self.store.errors))
+        checkpoint = self.store.jobs[reprint.job_id].checkpoint
+        self.assertEqual(checkpoint["review_receipts"][self.task.task_id], first_receipt)
+        saved = checkpoint["review_submissions"][item["code"]]
+        self.assertEqual((saved["revision"], saved["verdict"], saved["submitted_at"]), (1, "correct", self.now.isoformat()))
+        self.assertEqual(saved["history"][0]["candidate_id"], original.candidate_id)
+        calendar = self.service.review_calendar(user_id=self.owner, month="2026-08", now=later)
+        self.assertEqual((calendar["summary"]["needs_correction_count"], calendar["summary"]["completed_review_count"],
+                          calendar["summary"]["review_accuracy_percent"], calendar["summary"]["submitted_question_count"]), (0, 1, 0, 2))
+        self.assertEqual(self.service.progress(user_id=self.owner, now=self.now)["today_needs_correction_count"], 0)
+        json.dumps(calendar)  # API response remains JSON serializable.
+        papers = self.service.list_practice_pdfs(user_id=self.owner)
+        self.assertEqual([paper["progress"]["needs_correction_count"] for paper in papers], [0, 0])
+        plan = self.service.today_practice_plan(user_id=self.owner, papers=papers,
+            now=datetime.fromisoformat(self.job.checkpoint["generated_at"]))
+        self.assertEqual((plan["items"][0]["status"], plan["items"][0]["result"]), ("completed", "wrong"))
+
+    def test_settled_partial_correction_remains_outstanding_and_unclear_does_not_replace(self):
+        self.job = self.paper()
+        self.submit(0, "incorrect")
+        self.submit(1, "partial")
+        item = self.job.checkpoint["review_manifest"][0]
+        context = self.service.resolve_practice_review(user_id=self.owner, question_text=item["stem_text"],
+            locator={"code": item["code"]}) | {"correction": True}
+        candidate = self.candidate(item, context=context)
+        self.assertEqual(self.service.commit_practice_review(user_id=self.owner, candidate=candidate, now=self.now)["status"], "review_needs_correction")
+        self.assertEqual(self.service.progress(user_id=self.owner, now=self.now)["today_needs_correction_count"], 1)
+        before = deepcopy(self.store.jobs[self.job.job_id].checkpoint)
+        unclear = self.candidate(item, verdict="unclear", context=context)
+        self.assertEqual(self.service.commit_practice_review(user_id=self.owner, candidate=unclear, now=self.now)["status"], "needs_review")
+        self.assertEqual(before, self.store.jobs[self.job.job_id].checkpoint)
+        self.store.set_error_status(user_id=self.owner, error_id=self.error.error_id, status="removed")
+        self.assertEqual(self.service.commit_practice_review(user_id=self.owner, candidate=candidate, now=self.now)["status"], "review_stale")
+
+    def test_non_pdf_later_review_resolves_old_correction_without_erasing_grade(self):
+        attempts = [{"error_id": "e", "task_id": "t", "stage": 1, "result": "wrong", "completed_at": self.now},
+                    {"error_id": "e", "task_id": "t", "stage": 1, "result": "correct", "completed_at": self.now + timedelta(days=1)}]
+        calendar = build_review_calendar("2026-08", errors=[], review_tasks=[], review_attempts=attempts,
+                                         total_error_count=1, now=self.now + timedelta(days=1))
+        self.assertEqual((calendar["summary"]["needs_correction_count"], calendar["summary"]["completed_review_count"]), (0, 1))
+        self.assertEqual(calendar["days"][-1]["items"][0]["result"], "wrong")
 
     def test_reprint_state_does_not_leak_to_new_round_or_other_account(self):
         original = self.paper()
@@ -330,7 +394,7 @@ class PracticeReviewTests(unittest.TestCase):
         )
         evidence = json.dumps({
             "schema": "math-error-diagnosis/v1", "knowledge_points": ["方程"],
-            "practice_review": {"status": "unmatched", "locator": {"kind": "recommendation"}},
+            "practice_review": {"status": "unmatched", "locator": {"kind": "recommendation"}, "correction": True},
         }, ensure_ascii=False)
         candidate = self.store.record_grade_candidate(
             user_id=self.owner, attempt_id=attempt_id, input_version=1, verdict="correct",
@@ -345,6 +409,7 @@ class PracticeReviewTests(unittest.TestCase):
         context = json.loads(linked.evidence)["practice_review"]
         self.assertEqual((context["status"], context["error_id"], context["stage"]),
                          ("matched", self.error.error_id, self.task.stage))
+        self.assertTrue(context["correction"])
         self.assertEqual(self.service.list_pending_practice_review_links(user_id=self.owner), [])
         self.assertEqual(len(self.store.errors), 1)
 
@@ -363,6 +428,20 @@ class PracticeReviewTests(unittest.TestCase):
         self.assertFalse(self.store.review_attempts)
         self.assertEqual(self.store.review_tasks[self.task.task_id], self.task)
         self.assertEqual(self.submit(1)["status"], "review_completed")
+
+    def test_automatic_pending_association_keeps_correction_intent(self):
+        self.job = self.paper()
+        item = self.job.checkpoint["review_manifest"][1]
+        self.store.attempts["9" * 32] = Attempt(
+            "9" * 32, self.owner, "8" * 32, 1, item["stem_text"], "y=3或-3", "grade_ready"
+        )
+        candidate = self.store.record_grade_candidate(user_id=self.owner, attempt_id="9" * 32, input_version=1,
+            verdict="correct", first_error=None, evidence=json.dumps({"practice_review": {
+                "status": "unmatched", "locator": {"code": item["code"]}, "correction": True,
+            }}))
+        prepared = self.service.prepare_review_candidate(user_id=self.owner, candidate=candidate)
+        context = json.loads(prepared.evidence)["practice_review"]
+        self.assertEqual((context["status"], context["code"], context["correction"]), ("matched", item["code"], True))
 
     def test_old_pdf_is_read_and_matched_without_changing_generation_date(self):
         self.job = self.paper(legacy=True)

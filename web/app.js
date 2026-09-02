@@ -1478,7 +1478,7 @@ function bindProgress() {
     if (activeFilter === "new") return day.items.filter(item => item.type === "new");
     if (activeFilter === "due") return day.items.filter(item => item.type === "due");
     if (activeFilter === "completed") return day.items.filter(item => item.type === "completed");
-    if (activeFilter === "correction") return day.items.filter(item => item.type === "completed" && ["partial", "wrong"].includes(item.result));
+    if (activeFilter === "correction") return day.items.filter(item => item.needs_correction);
     return day.items;
   }
 
@@ -1507,7 +1507,7 @@ function bindProgress() {
     if (kind === "due") return selectedMetric ? due : [...due, ...backlog];
     if (kind === "new") return day.items.filter(item => item.type === "new");
     if (kind === "completed") return day.items.filter(item => item.type === "completed");
-    if (kind === "correction") return day.items.filter(item => item.type === "completed" && ["partial", "wrong"].includes(item.result));
+    if (kind === "correction") return day.items.filter(item => item.needs_correction);
     return future ? due : [...day.items, ...backlog];
   }
 
@@ -1547,7 +1547,7 @@ function bindProgress() {
     const label = selectedMetric === "backlog" ? selectedDate === todaySnapshot.date ? "历史逾期" : "截至当天未完成" : selectedMetric === "due" ? selectedDate > todaySnapshot.date ? "计划复习" : "当日到期" : filterLabels[selectedMetric || activeFilter];
     $("#calendar-day-title").textContent = `${selectedDate} · ${label}`;
     $("#calendar-history-note").textContent = day.history_complete === false ? "历史记录不完整：部分旧到期日期已被覆盖或任务已取消，以下只展示可核实的记录，不能视为完整统计。" : selectedDate < todaySnapshot.date ? "未完成数量截至所选日期当天结束（中国时间）；已在之后完成的题仍保留在当时的记录中。" : selectedDate > todaySnapshot.date ? "仅展示已经安排的复习计划，后续阶段按实际完成情况生成；选题不改变原定复习日期。" : "历史逾期包含以前月份，不包含今天到期的题目。";
-    $("#calendar-history-note").textContent += " PDF 显示截至现在的逐题进度；当日已答题按实际提交日统计，完成复习组后才推进阶段。重印共享作答，不重复计数。";
+    $("#calendar-history-note").textContent += " 需改错与 PDF 显示截至现在的逐题状态；首次成绩和提交日期保留，订正不额外推进阶段。重印共享作答，不重复计数。";
     const hasSelectable = [...groups.values()].some(group => group.selectable);
     $("#calendar-selection-status").hidden = !hasSelectable;
     status($("#calendar-selection-status"), `已选 ${selectedErrorIds.size}/12 道。仅仍在待复习任务中的题目可加入今日选题。`);
