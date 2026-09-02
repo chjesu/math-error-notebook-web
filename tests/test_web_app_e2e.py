@@ -912,7 +912,10 @@ class NotebookE2ETests(unittest.TestCase):
         )
 
         def seed_progress(checkpoint, _get, _complete):
-            checkpoint["review_submissions"] = {"frozen": {"verdict": "correct"}}
+            code = checkpoint["review_manifest"][1]["code"]
+            checkpoint["review_submissions"] = {code: {
+                "candidate_id": "c" * 32, "verdict": "correct", "submitted_at": now.isoformat()
+            }}
             checkpoint["review_receipts"] = {"frozen": {"status": "review_waiting"}}
 
         self.domain_store.mutate_practice_checkpoint(user_id=user.user_id, job_id=paper.job_id, operation=seed_progress)
@@ -931,7 +934,8 @@ class NotebookE2ETests(unittest.TestCase):
         }
         context_response = self.call(
             "/v1/internal/harness/context", method="POST",
-            payload={"session_id": "session-context", "error_id": error.error_id}, **internal,
+            payload={"session_id": "session-context", "error_id": error.error_id,
+                     "review_code": frozen_manifest[1]["code"]}, **internal,
         )
         self.assertEqual(context_response[0], 200)
         context = json.loads(context_response[2]["context_json"])
@@ -939,6 +943,9 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(context["error"]["error_id"], error.error_id)
         self.assertEqual(context["progress"]["due_review_count"], 1)
         self.assertEqual(context["practice_pdfs"][0]["task_id"], paper.job_id)
+        self.assertEqual(context["review_item"]["status"], "correct")
+        self.assertEqual(context["review_item"]["recommended_action"], "submit_remaining_required")
+        self.assertEqual(context["review_item"]["pending_items"][0]["review_code"], frozen_manifest[0]["code"])
         denied_context = self.call(
             "/v1/internal/harness/context", method="POST",
             payload={"session_id": "session-context-other", "error_id": error.error_id}, **internal,

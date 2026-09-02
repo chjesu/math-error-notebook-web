@@ -58,9 +58,9 @@ def shared_review_checkpoints(checkpoints: dict[str, dict]) -> dict[str, dict]:
                     continue
             except (KeyError, ValueError, TypeError):
                 continue
-            rank = (moment, saved["candidate_id"])
+            rank = (-int(saved.get("revision", 0)), moment, saved["candidate_id"])
             if key not in submissions or rank < submissions[key][0]:
-                submissions[key] = (rank, saved)
+                submissions[key] = (rank, saved | {"source_code": saved.get("source_code") or item["code"]})
         for task_id, receipt in (checkpoint.get("review_receipts") or {}).items():
             key = review_group_key(manifest, task_id)
             if key and receipt.get("status") in {"review_completed", "review_needs_correction"}:
@@ -93,10 +93,12 @@ def practice_paper_progress(papers: list[dict]) -> list[dict]:
             seen.add(key)
             saved = (checkpoint.get("review_submissions") or {}).get(item["code"]) if item.get("required") else None
             verdict = saved.get("verdict") if saved else None
-            rows.append({"item_id": key, "error_id": item["error_id"], "question_id": item.get("question_id"),
+            rows.append({"item_id": key, "review_code": item["code"], "task_id": item["task_id"],
+                         "error_id": item["error_id"], "question_id": item.get("question_id"),
                          "question_text": item["stem_text"], "kind": item["kind"], "stage": item["stage"],
                          "required": bool(item.get("required")), "status": "reference_only" if not item.get("required") else "correct" if verdict == "correct" else "needs_correction" if verdict in {"partial", "incorrect"} else "pending",
-                         "verdict": verdict, "submitted_at": saved.get("submitted_at") if saved else None})
+                         "verdict": verdict, "submitted_at": saved.get("submitted_at") if saved else None,
+                         "inherited_from_code": saved.get("source_code") if saved and saved.get("source_code") != item["code"] else None})
         required = [row for row in rows if row["required"]]
         answered = [row for row in required if row["submitted_at"]]
         groups = []
@@ -107,7 +109,7 @@ def practice_paper_progress(papers: list[dict]) -> list[dict]:
                 continue
             group_rows = [row for row in rows if row["item_id"] in keys]
             receipt = (checkpoint.get("review_receipts") or {}).get(task_id, {})
-            groups.append({"error_id": group_items[0]["error_id"], "stage": group_items[0]["stage"],
+            groups.append({"task_id": task_id, "error_id": group_items[0]["error_id"], "stage": group_items[0]["stage"],
                            "answered_count": sum(bool(row["submitted_at"]) for row in group_rows), "required_count": len(keys),
                            "completed": receipt.get("status") in {"review_completed", "review_needs_correction"}})
         progress = {"available": bool(manifest) and len(seen) == len(manifest), "required_count": len(required),
@@ -121,6 +123,38 @@ def practice_paper_progress(papers: list[dict]) -> list[dict]:
         result.append({key: value for key, value in paper.items() if key != "_checkpoint"} |
                       {"plan_id": plan_id, "progress": progress})
     return result
+
+
+def review_code_state(papers: list[dict], code: str) -> dict | None:
+    """Canonical item/group state; callers never need to infer it from PDF history."""
+    matches = [(paper, row) for paper in papers for row in paper.get("progress", {}).get("items", [])
+               if str(row.get("review_code", "")).lower() == code.lower()]
+    if len(matches) != 1:
+        return None
+    paper, item = matches[0]
+    group_rows = [row for row in paper["progress"]["items"]
+                  if row.get("task_id") == item.get("task_id") and row.get("required")]
+    group = next((row for row in paper["progress"].get("groups", []) if row.get("task_id") == item.get("task_id")), {})
+    pending = [{"review_code": row["review_code"], "kind": row["kind"], "question_id": row.get("question_id"),
+                "question_text": row["question_text"]} for row in group_rows if row["status"] == "pending"]
+    if item["status"] == "pending":
+        action = "upload_this_item"
+    elif item["status"] == "needs_correction":
+        action = "upload_correction"
+    elif pending:
+        action = "submit_remaining_required"
+    elif group.get("completed"):
+        action = "already_completed"
+    else:
+        action = "retry_group_confirmation"
+    return {
+        "review_code": item["review_code"], "status": item["status"], "verdict": item.get("verdict"),
+        "inherited_from_code": item.get("inherited_from_code"), "error_id": item["error_id"],
+        "question_id": item.get("question_id"), "kind": item["kind"], "stage": item["stage"],
+        "answered_count": group.get("answered_count", 0), "required_count": group.get("required_count", len(group_rows)),
+        "group_completed": bool(group.get("completed")), "pending_items": pending,
+        "recommended_action": action,
+    }
 
 
 def add_practice_calendar(calendar: dict, papers: list[dict]) -> dict:
@@ -300,7 +334,8 @@ def unresolved_receipt(message: str) -> dict:
     return {"status": "review_unmatched", "message": message, "review_status": "waiting_match"}
 
 
-def apply_submission(checkpoint: dict, *, code: str, candidate_id: str, verdict: str, now: datetime, get_task, complete) -> dict:
+def apply_submission(checkpoint: dict, *, code: str, candidate_id: str, verdict: str, now: datetime, get_task, complete,
+                     allow_correction: bool = False) -> dict:
     manifest = checkpoint.get("review_manifest", [])
     item = next((row for row in manifest if row["code"] == code), None)
     if not item:
@@ -319,9 +354,23 @@ def apply_submission(checkpoint: dict, *, code: str, candidate_id: str, verdict:
     if verdict not in {"correct", "partial", "incorrect"}:
         return {"status": "needs_review", "message": "复习题证据不足，判题结果已保留，尚未推进阶段。请补充清晰的作答。"}
     submissions = checkpoint.setdefault("review_submissions", {})
-    # One frozen result per printed question. Retried photos cannot overwrite
-    # an earlier result or make an incomplete review pass.
-    submissions.setdefault(code, {"candidate_id": candidate_id, "verdict": verdict, "submitted_at": now.isoformat()})
+    # Ordinary retries are idempotent. An explicit correction may replace an
+    # unfinished-stage result while preserving its audit trail.
+    saved = submissions.get(code)
+    if saved is None:
+        submissions[code] = {"candidate_id": candidate_id, "verdict": verdict, "submitted_at": now.isoformat(), "revision": 0}
+    elif allow_correction and saved.get("candidate_id") != candidate_id:
+        history = list(saved.get("history") or [])
+        history.append({
+            "candidate_id": saved.get("candidate_id"), "verdict": saved.get("verdict"),
+            "submitted_at": saved.get("corrected_at") or saved.get("submitted_at"),
+        })
+        submissions[code] = {
+            "candidate_id": candidate_id, "verdict": verdict, "submitted_at": saved["submitted_at"],
+            "corrected_at": now.isoformat(), "previous_candidate_id": saved.get("candidate_id"),
+            "previous_verdict": saved.get("verdict"), "revision": int(saved.get("revision", 0)) + 1,
+            "history": history,
+        }
     required = [row for row in manifest if row["task_id"] == task_id and row["required"]]
     received = [submissions[row["code"]] for row in required if row["code"] in submissions]
     base = {"error_id": item["error_id"], "completed_question_count": len(received), "required_question_count": len(required)}

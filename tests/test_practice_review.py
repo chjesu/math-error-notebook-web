@@ -92,6 +92,36 @@ class PracticeReviewTests(unittest.TestCase):
         self.assertEqual(len(self.store.review_attempts), 1)
         self.assertEqual([paper["progress"]["answered_count"] for paper in self.service.list_practice_pdfs(user_id=self.owner)], [2, 2])
 
+    def test_review_code_state_names_inherited_result_and_next_pending_item(self):
+        original = self.paper(key="original")
+        reprint = self.paper(key="reprint", plan_kind="practice")
+        self.job = original
+        self.submit(1)
+        state = self.service.inspect_review_code(
+            user_id=self.owner, code=reprint.checkpoint["review_manifest"][1]["code"]
+        )
+        self.assertEqual((state["status"], state["answered_count"], state["required_count"]), ("correct", 1, 2))
+        self.assertEqual(state["inherited_from_code"], original.checkpoint["review_manifest"][1]["code"])
+        self.assertEqual(state["recommended_action"], "submit_remaining_required")
+        self.assertEqual(state["pending_items"][0]["review_code"], reprint.checkpoint["review_manifest"][0]["code"])
+
+    def test_explicit_correction_replaces_unfinished_submission_and_keeps_audit_chain(self):
+        self.job = self.paper()
+        item = self.job.checkpoint["review_manifest"][1]
+        first = self.candidate(item, verdict="partial")
+        self.service.commit_practice_review(user_id=self.owner, candidate=first, now=self.now)
+        context = self.service.resolve_practice_review(
+            user_id=self.owner, question_text=item["stem_text"], locator={"code": item["code"]}
+        ) | {"correction": True}
+        corrected = self.candidate(item, verdict="correct", context=context)
+        receipt = self.service.commit_practice_review(user_id=self.owner, candidate=corrected, now=self.now + timedelta(hours=1))
+        saved = self.store.jobs[self.job.job_id].checkpoint["review_submissions"][item["code"]]
+        self.assertEqual((receipt["status"], saved["verdict"], saved["revision"]), ("review_waiting", "correct", 1))
+        self.assertEqual((saved["previous_candidate_id"], saved["previous_verdict"]), (first.candidate_id, "partial"))
+        self.assertEqual(saved["history"], [{
+            "candidate_id": first.candidate_id, "verdict": "partial", "submitted_at": self.now.isoformat(),
+        }])
+
     def test_calendar_keeps_paper_progress_and_actual_submission_day_separate(self):
         original = self.paper(key="original")
         reprint = self.paper(key="reprint", plan_kind="practice")
@@ -419,6 +449,17 @@ class PracticeReviewApiTests(unittest.TestCase):
             result = self.process()
         self.assertEqual(result["receipt_status"], "review_retryable")
         self.assertTrue(result["candidate_id"])
+        code = self.job.checkpoint["review_manifest"][0]["code"]
+        state = self.call("/v1/internal/harness/context", {"session_id": "review-test", "review_code": code})
+        context = json.loads(state[2]["context_json"])
+        self.assertEqual(context["review_item"]["recommended_action"], "retry_group_confirmation")
+        retried = self.call("/v1/internal/harness/practice-reviews/retry", {
+            "session_id": "review-test", "review_code": code,
+        })
+        self.assertEqual(retried[0], 200, retried)
+        retried_result = json.loads(retried[2]["result_json"])
+        self.assertEqual(retried_result["receipt"]["status"], "review_waiting")
+        self.assertEqual(retried_result["review_item"]["recommended_action"], "submit_remaining_required")
         confirmed = self.call(f"/v1/internal/harness/grade-results/{result['candidate_id']}/commit", {"session_id": "review-test", "input_version": 1})
         self.assertEqual(confirmed[2]["receipt"]["status"], "review_waiting")
 

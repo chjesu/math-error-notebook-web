@@ -190,7 +190,7 @@ function processResultText(value) {
   const lines = [];
   for (const item of value.results) {
     lines.push(
-      `第 ${item.item_no} 题`,
+      `图片 ${item.attachment_index} · 第 ${item.item_no} 题`,
       errorIdText(item),
       `题目：${item.question_text}`,
       `学生作答：${item.answer_text || "未作答"}`,
@@ -232,7 +232,7 @@ function referenceReviewText(item) {
 
 function transcribeAttachmentsTool(ctx) {
   const itemProperties = {
-    attachment_index: {type: "integer", const: 1},
+    attachment_index: {type: "integer"},
     item_no: {type: "integer"},
     question_text: {type: "string"},
     answer_text: {type: "string"},
@@ -240,10 +240,10 @@ function transcribeAttachmentsTool(ctx) {
   };
   return {
     name: "transcribe_error_notebook_attachments",
-    description: "Required first when the latest user message contains one math image. Do OCR and segmentation only: copy each printed question stem separately from the student's final handwritten answer, in reading order. Do not solve or grade yet. The returned transcription is frozen for the later processing call in this same turn.",
+    description: "Required first when the latest user message contains 1-10 math images. Do OCR and segmentation only: for each image copy every printed question stem separately from the student's final handwritten answer, in image order. Do not solve or grade yet. Use one-based attachment_index and restart item_no at 1 for every image. The returned transcription is frozen for the later processing call in this same turn.",
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
-      properties: {items: {type: "array", minItems: 1, maxItems: 20, items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
+      properties: {items: {type: "array", minItems: 1, maxItems: 200, items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
     },
     output: {
       schema: {
@@ -256,8 +256,8 @@ function transcribeAttachmentsTool(ctx) {
       render: (_args, value) => value.items.length === 0 ? [{type: "text", text: missingImageMessage}] : [{type: "text", text: [
         "题干与作答已经冻结。下一步只能基于以下文字独立解题和判题，不得重新识别或改写：",
         ...value.items.flatMap((item) => [
-          `第 ${item.item_no} 题题干：${item.question_text}`,
-          `第 ${item.item_no} 题学生作答：${item.answer_text || "未作答"}`
+          `图片 ${item.attachment_index} · 第 ${item.item_no} 题题干：${item.question_text}`,
+          `图片 ${item.attachment_index} · 第 ${item.item_no} 题学生作答：${item.answer_text || "未作答"}`
         ])
       ].join("\n")}]
     },
@@ -268,9 +268,12 @@ function transcribeAttachmentsTool(ctx) {
         exec.concludeTurn();
         return {schema: "math-notebook-transcription/v1", items: []};
       }
-      if (images.length > 1) throw new Error("一条消息最多上传 1 张图片，请删除多余图片后重新发送");
-      if (args.items.some((item, index) => item.attachment_index !== 1 || item.item_no !== index + 1)) {
-        throw new Error("Transcription items must use attachment_index=1 and continuous item_no values");
+      if (images.length > 10) throw new Error("一条消息最多上传 10 张图片，请分批发送");
+      if (images.some((_image, imageIndex) => {
+        const items = args.items.filter((item) => item.attachment_index === imageIndex + 1);
+        return items.length === 0 || items.some((item, itemIndex) => item.item_no !== itemIndex + 1);
+      }) || args.items.some((item) => item.attachment_index < 1 || item.attachment_index > images.length)) {
+        throw new Error("每张图片都必须使用对应 attachment_index，且 item_no 从 1 连续编号");
       }
       const items = args.items.map((item) => ({
         ...item,
@@ -278,7 +281,7 @@ function transcribeAttachmentsTool(ctx) {
         answer_text: item.answer_text.trim()
       }));
       if (items.some((item) => item.question_text === "")) throw new Error("Every transcription item requires a question stem");
-      transcriptionByAgent.set(exec.agent, {attachment: images[0].attachment, items});
+      transcriptionByAgent.set(exec.agent, {attachments: images.map((image) => image.attachment), items});
       return {schema: "math-notebook-transcription/v1", items};
     },
     presentCall: () => ({card: "generic", title: "识别题干与作答", kind: "other", rawInput: null})
@@ -327,7 +330,7 @@ function processAttachmentsTool(ctx) {
   };
   return {
     name: "process_error_notebook_attachments",
-    description: "Required once after transcribe_error_notebook_attachments freezes the latest image transcription. Independently solve and grade only from that frozen question_text and answer_text, then submit judgments in reading order with attachment_index=1. The two frozen text fields and review locator must be copied exactly. The tool stores the image, freezes grades, cross-checks the bank, and either records new errors or accumulates PDF review results on their original tasks. A recognized review that cannot be linked must stay pending and must never become a new notebook error. Follow actual receipts, never infer stage completion. If reference_review is returned, submit the frozen independent/reference comparison through adjudicate_error_notebook_reference_conflicts. Never invent ids.",
+    description: "Required once after transcribe_error_notebook_attachments freezes the latest 1-10 image transcription. Independently solve and grade only from that frozen question_text and answer_text, then submit all judgments in image order using the frozen attachment_index and per-image item_no. The two frozen text fields and review locator must be copied exactly. The tool stores every image separately, freezes grades, cross-checks the bank, and either records new errors or accumulates PDF review results on their original tasks. A recognized review that cannot be linked must stay pending and must never become a new notebook error. Follow actual receipts, never infer stage completion. If reference_review is returned, submit the frozen independent/reference comparison through adjudicate_error_notebook_reference_conflicts. Never invent ids.",
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
       properties: {items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
@@ -350,9 +353,9 @@ function processAttachmentsTool(ctx) {
         exec.concludeTurn();
         return {schema: "math-notebook-process-result/v1", results: []};
       }
-      if (images.length > 1) throw new Error("一条消息最多上传 1 张图片，请删除多余图片后重新发送");
+      if (images.length > 10) throw new Error("一条消息最多上传 10 张图片，请分批发送");
       const frozen = transcriptionByAgent.get(exec.agent);
-      if (!frozen || frozen.attachment !== images[0].attachment) throw new Error("请先调用 transcribe_error_notebook_attachments 冻结本张图片的题干与作答");
+      if (!frozen || frozen.attachments.length !== images.length || frozen.attachments.some((attachment, index) => attachment !== images[index].attachment)) throw new Error("请先调用 transcribe_error_notebook_attachments 冻结本批图片的题干与作答");
       if (args.items.length !== frozen.items.length || args.items.some((item, index) => {
         const expected = frozen.items[index];
         return item.attachment_index !== expected.attachment_index
@@ -376,6 +379,7 @@ function processAttachmentsTool(ctx) {
           body: JSON.stringify({
             session_id: exec.agent.id,
             review_mode: /复习|推荐题|练习单|PDF/i.test(latestUserText(exec.agent)) || items.some((item) => Object.values(item.review || {}).some(Boolean)),
+            correction_mode: /改错|订正|纠正|重新判|改判/.test(latestUserText(exec.agent)),
             attachment: {
               attachment_id: String(stored.ref.attachmentId),
               name: stored.ref.name || `question-${attachmentIndex}.${stored.ref.mediaType === "image/png" ? "png" : "jpg"}`,
@@ -590,10 +594,13 @@ function inspectNotebookTool() {
   if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
   return {
     name: "inspect_math_notebook",
-    description: "Read authoritative current-account notebook context. Use before answering questions about existing error_id records, due reviews, today's plan, learning progress, generated PDFs, or pending PDF-review links. Pass error_id only for one exact 32-character notebook id. This is read-only and cannot inspect another account.",
+    description: "Read authoritative current-account notebook context. Use before answering questions about existing error_id records, review codes, due reviews, today's plan, learning progress, generated PDFs, or pending PDF-review links. Pass review_code whenever the user gives one; review_item then provides the canonical inherited status, group counts, pending items and recommended_action. Never override that action with a guess. This is read-only and cannot inspect another account.",
     parameters: {
       type: "object", additionalProperties: false,
-      properties: {error_id: {type: "string", pattern: "^[0-9a-f]{32}$"}}
+      properties: {
+        error_id: {type: "string", pattern: "^[0-9a-f]{32}$"},
+        review_code: {type: "string", pattern: "^R[0-9a-fA-F]{12}-[0-9]{2}(?:-[0-9A-Fa-f]{6})?$"}
+      }
     },
     output: {
       schema: {
@@ -607,7 +614,7 @@ function inspectNotebookTool() {
       const response = await fetch(`${origin}/v1/internal/harness/context`, {
         method: "POST",
         headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
-        body: JSON.stringify({session_id: exec.agent.id, ...(args.error_id ? {error_id: args.error_id} : {})}),
+        body: JSON.stringify({session_id: exec.agent.id, ...(args.error_id ? {error_id: args.error_id} : {}), ...(args.review_code ? {review_code: args.review_code} : {})}),
         signal: exec.signal
       });
       const payload = await response.json();
@@ -615,6 +622,40 @@ function inspectNotebookTool() {
       return payload;
     },
     presentCall: () => ({card: "generic", title: "读取学习记录", kind: "other", rawInput: null})
+  };
+}
+
+function retryPracticeReviewTool() {
+  const origin = process.env.LZLM_PRODUCT_ORIGIN;
+  const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
+  if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
+  return {
+    name: "retry_practice_review_confirmation",
+    description: "Retry the saved grade for one review code without asking for the image again. Call only after inspect_math_notebook returns review_item.recommended_action=retry_group_confirmation for that exact code. For every other action, obey review_item instead.",
+    parameters: {
+      type: "object", additionalProperties: false, required: ["review_code"],
+      properties: {review_code: {type: "string", pattern: "^R[0-9a-fA-F]{12}-[0-9]{2}(?:-[0-9A-Fa-f]{6})?$"}}
+    },
+    output: {
+      schema: {
+        type: "object", additionalProperties: false, required: ["result_json"],
+        properties: {result_json: {type: "string"}}
+      },
+      render: (_args, value) => [{type: "text", text: `复习记录重试结果（权威回执）\n${JSON.stringify(JSON.parse(value.result_json), null, 2)}`}]
+    },
+    async execute(args, exec) {
+      if (!exec.agent) throw new Error("Practice review retry requires an owning Harness session");
+      const response = await fetch(`${origin}/v1/internal/harness/practice-reviews/retry`, {
+        method: "POST",
+        headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
+        body: JSON.stringify({session_id: exec.agent.id, review_code: args.review_code}),
+        signal: exec.signal
+      });
+      const payload = await response.json();
+      if (!response.ok || typeof payload.result_json !== "string") throw toolRequestError("Practice review retry failed", response, payload);
+      return payload;
+    },
+    presentCall: () => ({card: "generic", title: "重试复习记录", kind: "other", rawInput: null})
   };
 }
 
@@ -669,6 +710,7 @@ export async function apply(ctx) {
   ctx.tools.register(transcribeAttachmentsTool(ctx));
   ctx.tools.register(processAttachmentsTool(ctx));
   ctx.tools.register(inspectNotebookTool());
+  ctx.tools.register(retryPracticeReviewTool());
   ctx.tools.register(reflowPracticePdfTool());
   ctx.tools.register(lookupQuestionBankReferenceTool());
   ctx.tools.register(recheckReferenceConflictTool());

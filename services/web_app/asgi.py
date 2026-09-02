@@ -155,6 +155,9 @@ class NotebookAsgiApp:
         if path == "/v1/internal/harness/context" and method == "POST":
             await self._internal_harness_context(scope, receive, send, headers)
             return
+        if path == "/v1/internal/harness/practice-reviews/retry" and method == "POST":
+            await self._internal_harness_retry_practice_review(scope, receive, send, headers)
+            return
         if path.startswith("/v1/internal/harness/practice-pdfs/") and path.endswith("/reflow") and method == "POST":
             await self._internal_harness_reflow_practice_pdf(scope, receive, send, headers)
             return
@@ -1002,9 +1005,9 @@ class NotebookAsgiApp:
         completed_intakes: set[str] = set()
         try:
             payload = await self._json_body(receive, max_bytes=self.max_upload_bytes * 2)
-            if not {"session_id", "attachment", "items"} <= set(payload) or set(payload) - {"session_id", "attachment", "items", "review_mode"}:
+            if not {"session_id", "attachment", "items"} <= set(payload) or set(payload) - {"session_id", "attachment", "items", "review_mode", "correction_mode"}:
                 raise ValueError("invalid Harness processing request")
-            if not isinstance(payload.get("review_mode", False), bool):
+            if not isinstance(payload.get("review_mode", False), bool) or not isinstance(payload.get("correction_mode", False), bool):
                 raise ValueError("invalid review mode")
             session_id = self._harness_session_id(payload)
             user_id = await self._harness_user_id(session_id)
@@ -1177,6 +1180,8 @@ class NotebookAsgiApp:
                                 locator={"question_id": question_id, "kind": "recommendation"}, review_mode=True,
                             )
                     if context:
+                        if payload.get("correction_mode"):
+                            context = dict(context) | {"correction": True}
                         diagnosis = self._diagnosis(evidence)
                         diagnosis["practice_review"] = context
                         evidence = json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":"))
@@ -1623,11 +1628,14 @@ class NotebookAsgiApp:
             return
         try:
             payload = await self._json_body(receive)
-            if "session_id" not in payload or set(payload) - {"session_id", "error_id"}:
+            if "session_id" not in payload or set(payload) - {"session_id", "error_id", "review_code"}:
                 raise ValueError("invalid context request")
             session_id = self._harness_session_id(payload)
             error_id = payload.get("error_id")
+            review_code = payload.get("review_code")
             if error_id is not None and (not isinstance(error_id, str) or re.fullmatch(r"[0-9a-f]{32}", error_id) is None):
+                raise ValueError("invalid context request")
+            if review_code is not None and (not isinstance(review_code, str) or re.fullmatch(r"R[0-9a-f]{12}-\d{2}(?:-[0-9A-F]{6})?", review_code, re.IGNORECASE) is None):
                 raise ValueError("invalid context request")
             user_id = await self._harness_user_id(session_id)
             if user_id is None:
@@ -1650,6 +1658,9 @@ class NotebookAsgiApp:
             papers = await self._sync(self.notebook.list_practice_pdfs, user_id=user_id)
             plan = await self._sync(self.notebook.today_practice_plan, user_id=user_id, papers=papers)
             pending = await self._sync(self.notebook.list_pending_practice_review_links, user_id=user_id)
+            review_item = await self._sync(self.notebook.inspect_review_code, user_id=user_id, code=review_code) if review_code else None
+            if review_code and review_item is None:
+                raise LookupError("review code not found")
             context = {
                 "scope": "current_bound_account",
                 "progress": await self._sync(self.notebook.store.progress, user_id=user_id),
@@ -1659,12 +1670,58 @@ class NotebookAsgiApp:
                 "today_plan": plan,
                 "pending_review_links": pending[:20],
                 "error": exact_error,
+                "review_item": review_item,
             }
             await self._json(send, 200, {"context_json": json.dumps(context, ensure_ascii=False, separators=(",", ":"))})
         except LookupError:
             await self._error(send, 404, "not_found")
         except PermissionError:
             await self._error(send, 403, "forbidden")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    async def _internal_harness_retry_practice_review(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive)
+            if set(payload) != {"session_id", "review_code"}:
+                raise ValueError("invalid review retry request")
+            session_id = self._harness_session_id(payload)
+            review_code = payload["review_code"]
+            if not isinstance(review_code, str) or re.fullmatch(
+                r"R[0-9a-f]{12}-\d{2}(?:-[0-9A-F]{6})?", review_code, re.IGNORECASE
+            ) is None:
+                raise ValueError("invalid review retry request")
+            user_id = await self._harness_user_id(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            state = await self._sync(self.notebook.inspect_review_code, user_id=user_id, code=review_code)
+            if state is None:
+                raise LookupError("review code not found")
+            if state.get("recommended_action") != "retry_group_confirmation":
+                raise RuntimeError("review_retry_not_needed")
+            candidate = await self._sync(self.notebook.review_candidate_for_code, user_id=user_id, code=review_code)
+            if candidate is None:
+                raise LookupError("grade candidate not found")
+            receipt = await self._commit_candidate_receipt(user_id, candidate)
+            state = await self._sync(self.notebook.inspect_review_code, user_id=user_id, code=review_code)
+            await self._json(send, 200, {
+                "result_json": json.dumps({"receipt": receipt, "review_item": state}, ensure_ascii=False, separators=(",", ":"))
+            })
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except RuntimeError:
+            await self._error(send, 409, "review_retry_not_needed")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
 

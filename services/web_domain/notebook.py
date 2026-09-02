@@ -36,7 +36,7 @@ from .learning import (
 )
 from .mysql_store import ErrorEntry, FileRecord, GradeCandidate, IntakeItem, Job, normalize_extraction_items
 from .practice_pdf import build_practice_pdf
-from .practice_review import add_practice_calendar, apply_submission, build_manifest, fixed_plan_items, identity_matching_items, legacy_manifest, matching_items, practice_paper_progress, review_locator, shared_review_checkpoints, unresolved_receipt
+from .practice_review import add_practice_calendar, apply_submission, build_manifest, fixed_plan_items, identity_matching_items, legacy_manifest, matching_items, practice_paper_progress, review_code_state, review_locator, shared_review_checkpoints, unresolved_receipt
 
 
 @dataclass(frozen=True)
@@ -1021,6 +1021,29 @@ class NotebookService:
     def list_practice_pdfs(self, *, user_id: str) -> list[dict]:
         return practice_paper_progress(self.store.list_practice_pdfs(user_id=user_id, include_checkpoints=True))
 
+    def inspect_review_code(self, *, user_id: str, code: str) -> dict | None:
+        state = review_code_state(self.list_practice_pdfs(user_id=user_id), code)
+        if state and state["status"] == "pending":
+            candidate = self.review_candidate_for_code(user_id=user_id, code=code)
+            if candidate is not None:
+                state |= {
+                    "status": "graded_unconfirmed",
+                    "verdict": candidate.verdict,
+                    "recommended_action": "retry_group_confirmation",
+                }
+        return state
+
+    def review_candidate_for_code(self, *, user_id: str, code: str) -> GradeCandidate | None:
+        expected = code.lower()
+        for candidate in self.store.list_latest_grade_candidates(user_id=user_id):
+            try:
+                context = json.loads(candidate.evidence or "{}").get("practice_review") or {}
+            except (TypeError, ValueError):
+                continue
+            if context.get("status") == "matched" and str(context.get("code") or "").lower() == expected:
+                return candidate
+        return None
+
     def review_calendar(self, *, user_id: str, month: str, now: datetime | None = None) -> dict:
         calendar = self.store.review_calendar(user_id=user_id, month=month, now=now)
         return add_practice_calendar(calendar, self.list_practice_pdfs(user_id=user_id))
@@ -1345,7 +1368,8 @@ class NotebookService:
         current = now or _now()
         def submit(checkpoint, get_task, complete):
             return apply_submission(checkpoint, code=context["code"], candidate_id=candidate.candidate_id,
-                                    verdict=candidate.verdict, now=current, get_task=get_task, complete=complete)
+                                    verdict=candidate.verdict, now=current, get_task=get_task, complete=complete,
+                                    allow_correction=bool(context.get("correction")))
         try:
             return self.store.mutate_practice_checkpoint(user_id=user_id, job_id=context["job_id"], operation=submit, share_reviews=True)
         except LookupError as exc:

@@ -176,13 +176,15 @@ globalThis.fetch = async (url, options) => {{
     }}}})}};
   }}
   if (!url.endsWith('/v1/internal/harness/intakes/process')) throw new Error('wrong endpoint');
-  if (body.session_id !== 'session-process' || body.attachment.attachment_id !== 'sha256:' + 'c'.repeat(64)) throw new Error('wrong attachment');
+  if (body.session_id !== 'session-process' || !['c','d'].includes(body.attachment.attachment_id.slice(7, 8))) throw new Error('wrong attachment');
   if (body.items.length !== 1 || body.items[0].item_no !== 1 || 'attachment_index' in body.items[0]) throw new Error('wrong items');
+  if (body.correction_mode !== true) throw new Error('correction mode missing');
+  const second = body.attachment.attachment_id === 'sha256:' + 'd'.repeat(64);
   return {{ok: true, status: 200, json: async () => ({{results: [{{
-    item_no: 1, candidate_id: 'a'.repeat(32), input_version: 1, verdict: 'incorrect', question_text: 'q', answer_text: 'a',
+    item_no: 1, candidate_id: (second ? 'f' : 'a').repeat(32), input_version: 1, verdict: 'incorrect', question_text: second ? 'q2' : 'q', answer_text: 'a',
     first_error: 'e', cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'],
     correct_solution: 'solution', final_answer: 'answer', prevention_cue: 'check', receipt_status: 'saved',
-    receipt_message: '已计入错题本', error_id: 'b'.repeat(32)
+    receipt_message: '已计入错题本', error_id: (second ? 'e' : 'b').repeat(32)
   }}]}})}};
 }};
 const extension = await import({json.dumps(module_uri)});
@@ -191,33 +193,40 @@ await extension.apply({{
   workspaceRegistry: {{create: async () => undefined}},
   tools: {{register: (value) => registered.push(value)}},
   attachments: {{readImage: async (ref) => {{
-    if (ref !== 'image-ref') throw new Error('wrong image ref');
-    return {{ref: {{attachmentId: 'sha256:' + 'c'.repeat(64), mediaType: 'image/png', name: 'q.png'}}, data: new Uint8Array([1, 2, 3])}};
+    if (!['image-ref', 'image-ref-2'].includes(ref)) throw new Error('wrong image ref');
+    const second = ref === 'image-ref-2';
+    return {{ref: {{attachmentId: 'sha256:' + (second ? 'd' : 'c').repeat(64), mediaType: 'image/png', name: second ? 'q2.png' : 'q.png'}}, data: new Uint8Array([1, 2, 3])}};
   }}}}
 }});
 const agent = {{id: 'session-process', session: {{deriveMessages: () => [
   {{role: 'user', content: [{{type: 'image', attachment: 'old-ref'}}]}},
   {{role: 'assistant', content: [{{type: 'text', text: 'old'}}]}},
-  {{role: 'user', content: [{{type: 'text', text: 'please process'}}, {{type: 'image', attachment: 'image-ref'}}]}}
+  {{role: 'user', content: [{{type: 'text', text: '请重新判并改错'}}, {{type: 'image', attachment: 'image-ref'}}, {{type: 'image', attachment: 'image-ref-2'}}]}}
 ]}}}};
 const review = {{code: '', pdf_id: '', error_id: '', question_id: '', stage: 0, kind: ''}};
 const transcriber = registered.find((value) => value.name === 'transcribe_error_notebook_attachments');
 const transcription = await transcriber.execute({{items: [{{
   attachment_index: 1, item_no: 1, question_text: 'q', answer_text: 'a', review
+}}, {{
+  attachment_index: 2, item_no: 1, question_text: 'q2', answer_text: 'a', review
 }}]}}, {{agent, signal: new AbortController().signal}});
-if (transcription.schema !== 'math-notebook-transcription/v1' || transcription.items[0].question_text !== 'q') throw new Error('wrong transcription');
+if (transcription.schema !== 'math-notebook-transcription/v1' || transcription.items.length !== 2) throw new Error('wrong transcription');
 const tool = registered.find((value) => value.name === 'process_error_notebook_attachments');
 const result = await tool.execute({{items: [{{
   attachment_index: 1, item_no: 1, question_text: 'q', answer_text: 'a', verdict: 'incorrect', first_error: 'e',
   cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'], correct_solution: 'solution',
   final_answer: 'answer', prevention_cue: 'check', confidence: 0.9, review
+}}, {{
+  attachment_index: 2, item_no: 1, question_text: 'q2', answer_text: 'a', verdict: 'incorrect', first_error: 'e',
+  cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'], correct_solution: 'solution',
+  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9, review
 }}]}}, {{
   agent, signal: new AbortController().signal
 }});
-if (result.schema !== 'math-notebook-process-result/v1' || result.results[0].attachment_index !== 1) throw new Error('wrong result');
+if (result.schema !== 'math-notebook-process-result/v1' || result.results.length !== 2 || result.results[1].attachment_index !== 2) throw new Error('wrong result');
 const rendered = tool.output.render({{}}, result)[0].text;
-if (!rendered.includes('第 1 题') || !rendered.includes('已计入错题本')) throw new Error('result not rendered');
-if (!rendered.startsWith('第 1 题\\n错题编号（error_id）：' + 'b'.repeat(32) + '\\n题目：')) throw new Error('full error id must precede question');
+if (!rendered.includes('图片 1 · 第 1 题') || !rendered.includes('图片 2 · 第 1 题') || !rendered.includes('已计入错题本')) throw new Error('result not rendered');
+if (!rendered.startsWith('图片 1 · 第 1 题\\n错题编号（error_id）：' + 'b'.repeat(32) + '\\n题目：')) throw new Error('full error id must precede question');
 for (const [receipt_status,error_id,label] of [
   ['already_saved','b'.repeat(32),'b'.repeat(32)],
   ['review_completed','b'.repeat(32),'b'.repeat(32)],
@@ -228,24 +237,9 @@ for (const [receipt_status,error_id,label] of [
   ['needs_review','b'.repeat(8),'暂不可用（等待入本或关联确认）'],
 ]) {{
   const text = tool.output.render({{}}, {{results:[{{...result.results[0],receipt_status,error_id}}]}})[0].text;
-  if (!text.startsWith('第 1 题\\n错题编号（error_id）：' + label + '\\n题目：')) throw new Error('incorrect id display for ' + receipt_status);
+  if (!text.startsWith('图片 1 · 第 1 题\\n错题编号（error_id）：' + label + '\\n题目：')) throw new Error('incorrect id display for ' + receipt_status);
 }}
 if (!rendered.includes('下一步：') || !rendered.includes('打开「错题本」')) throw new Error('processing next step missing');
-let multipleImagesRejected = false;
-try {{
-  await tool.execute({{items: [{{
-    attachment_index: 1, item_no: 1, question_text: 'q', answer_text: 'a', verdict: 'incorrect', first_error: 'e',
-    cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'], correct_solution: 'solution',
-    final_answer: 'answer', prevention_cue: 'check', confidence: 0.9
-  }}]}}, {{
-    agent: {{id: 'session-process', session: {{deriveMessages: () => [
-      {{role: 'user', content: [{{type: 'image', attachment: 'image-ref'}}, {{type: 'image', attachment: 'image-ref-2'}}]}}
-    ]}}}}, signal: new AbortController().signal
-  }});
-}} catch (error) {{
-  multipleImagesRejected = String(error).includes('一条消息最多上传 1 张图片');
-}}
-if (!multipleImagesRejected) throw new Error('multiple images were not rejected');
 const adjudicator = registered.find((value) => value.name === 'adjudicate_error_notebook_reference_conflicts');
 const rechecker = registered.find((value) => value.name === 'recheck_error_notebook_reference_conflict');
 const rechecked = await rechecker.execute({{question_text: 'historical q'}}, {{agent: {{id: 'session-process'}}, signal: new AbortController().signal}});
