@@ -198,11 +198,18 @@ await extension.apply({{
     return {{ref: {{attachmentId: 'sha256:' + (second ? 'd' : 'c').repeat(64), mediaType: 'image/png', name: second ? 'q2.png' : 'q.png'}}, data: new Uint8Array([1, 2, 3])}};
   }}}}
 }});
-const agent = {{id: 'session-process', session: {{deriveMessages: () => [
+let afterTranscription = false;
+const messages = [
   {{role: 'user', content: [{{type: 'image', attachment: 'old-ref'}}]}},
   {{role: 'assistant', content: [{{type: 'text', text: 'old'}}]}},
   {{role: 'user', content: [{{type: 'text', text: '请重新判并改错'}}, {{type: 'image', attachment: 'image-ref'}}, {{type: 'image', attachment: 'image-ref-2'}}]}}
-]}}}};
+];
+const agent = {{id: 'session-process', session: {{
+  events: [{{type: 'turn/start', data: {{turn: 7}}}}],
+  deriveMessages: () => afterTranscription
+    ? [...messages, {{role: 'user', content: [{{type: 'tool_result', text: 'OCR frozen'}}]}}]
+    : messages
+}}}};
 const review = {{code: '', pdf_id: '', error_id: '', question_id: '', stage: 0, kind: ''}};
 const transcriber = registered.find((value) => value.name === 'transcribe_error_notebook_attachments');
 const transcription = await transcriber.execute({{items: [{{
@@ -211,6 +218,7 @@ const transcription = await transcriber.execute({{items: [{{
   attachment_index: 2, item_no: 1, question_text: 'q2', answer_text: 'a', review
 }}]}}, {{agent, signal: new AbortController().signal}});
 if (transcription.schema !== 'math-notebook-transcription/v1' || transcription.items.length !== 2) throw new Error('wrong transcription');
+afterTranscription = true;
 const tool = registered.find((value) => value.name === 'process_error_notebook_attachments');
 const result = await tool.execute({{items: [{{
   attachment_index: 1, item_no: 1, question_text: 'q', answer_text: 'a', verdict: 'incorrect', first_error: 'e',

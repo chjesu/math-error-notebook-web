@@ -138,6 +138,15 @@ function latestUserText(agent) {
   return "";
 }
 
+function currentTurn(agent) {
+  const events = agent.session.events;
+  if (!Array.isArray(events)) return null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.type === "turn/start") return events[index].data?.turn ?? null;
+  }
+  return null;
+}
+
 const missingImageMessage = "当前消息没有可读取的图片附件。请重新添加图片，确认缩略图出现并完成上传后，再发送判题请求。";
 
 function removeErrorTool() {
@@ -281,7 +290,7 @@ function transcribeAttachmentsTool(ctx) {
         answer_text: item.answer_text.trim()
       }));
       if (items.some((item) => item.question_text === "")) throw new Error("Every transcription item requires a question stem");
-      transcriptionByAgent.set(exec.agent, {attachments: images.map((image) => image.attachment), items});
+      transcriptionByAgent.set(exec.agent, {images, items, userText: latestUserText(exec.agent), turn: currentTurn(exec.agent)});
       return {schema: "math-notebook-transcription/v1", items};
     },
     presentCall: () => ({card: "generic", title: "识别题干与作答", kind: "other", rawInput: null})
@@ -348,14 +357,9 @@ function processAttachmentsTool(ctx) {
     },
     async execute(args, exec) {
       if (!exec.agent) throw new Error("Notebook processing requires an owning Harness session");
-      const images = latestUserImages(exec.agent);
-      if (images.length === 0) {
-        exec.concludeTurn();
-        return {schema: "math-notebook-process-result/v1", results: []};
-      }
-      if (images.length > 10) throw new Error("一条消息最多上传 10 张图片，请分批发送");
       const frozen = transcriptionByAgent.get(exec.agent);
-      if (!frozen || frozen.attachments.length !== images.length || frozen.attachments.some((attachment, index) => attachment !== images[index].attachment)) throw new Error("请先调用 transcribe_error_notebook_attachments 冻结本批图片的题干与作答");
+      if (!frozen || (frozen.turn !== null && currentTurn(exec.agent) !== frozen.turn)) throw new Error("请先调用 transcribe_error_notebook_attachments 冻结本批图片的题干与作答");
+      const images = frozen.images;
       if (args.items.length !== frozen.items.length || args.items.some((item, index) => {
         const expected = frozen.items[index];
         return item.attachment_index !== expected.attachment_index
@@ -378,8 +382,8 @@ function processAttachmentsTool(ctx) {
           headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
           body: JSON.stringify({
             session_id: exec.agent.id,
-            review_mode: /复习|推荐题|练习单|PDF/i.test(latestUserText(exec.agent)) || items.some((item) => Object.values(item.review || {}).some(Boolean)),
-            correction_mode: /改错|订正|纠正|重新判|改判/.test(latestUserText(exec.agent)),
+            review_mode: /复习|推荐题|练习单|PDF/i.test(frozen.userText) || items.some((item) => Object.values(item.review || {}).some(Boolean)),
+            correction_mode: /改错|订正|纠正|重新判|改判/.test(frozen.userText),
             attachment: {
               attachment_id: String(stored.ref.attachmentId),
               name: stored.ref.name || `question-${attachmentIndex}.${stored.ref.mediaType === "image/png" ? "png" : "jpg"}`,
