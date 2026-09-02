@@ -1271,6 +1271,7 @@ class NotebookService:
             "error_id": item["error_id"],
             "question_id": item.get("question_id"),
             "kind": item["kind"],
+            "stage": item["stage"],
             "stem_text": item["stem_text"],
         }
 
@@ -1356,7 +1357,9 @@ class NotebookService:
         if item is None:
             raise RuntimeError("conflict")
         diagnosis["practice_review"] = {
-            "status": "matched", "job_id": job.job_id, "code": item["code"], "required": item["required"]
+            "status": "matched", "job_id": job.job_id, "code": item["code"], "required": item["required"],
+            "error_id": item["error_id"], "question_id": item.get("question_id"),
+            "kind": item["kind"], "stage": item["stage"],
         }
         return self.store.record_grade_candidate(
             user_id=user_id, attempt_id=candidate.attempt_id, input_version=candidate.input_version,

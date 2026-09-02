@@ -1215,6 +1215,7 @@ class NotebookAsgiApp:
                 receipt = await self._commit_candidate_receipt(user_id, candidate)
                 candidate = await self._sync(self.notebook.store.get_grade_candidate, user_id=user_id, candidate_id=receipt["candidate_id"])
                 diagnosis = self._diagnosis(candidate.evidence)
+                review = diagnosis.get("practice_review") if isinstance(diagnosis.get("practice_review"), dict) else {}
                 result_item = {
                     "item_no": intake.item_no,
                     "candidate_id": candidate.candidate_id,
@@ -1232,6 +1233,15 @@ class NotebookAsgiApp:
                     "receipt_status": receipt["status"],
                     "receipt_message": receipt["message"],
                     "error_id": str(receipt.get("error_id") or ""),
+                    "review_association": {
+                        "status": str(review.get("status") or "not_review"),
+                        "pdf_id": str(review.get("job_id") or ""),
+                        "review_code": str(review.get("code") or ""),
+                        "error_id": str(review.get("error_id") or receipt.get("error_id") or ""),
+                        "question_id": str(review.get("question_id") or ""),
+                        "stage": int(review.get("stage") or 0),
+                        "kind": str(review.get("kind") or ""),
+                    },
                     "reference_review": None,
                 }
                 if reference is not None and receipt["reference_status"] == "conflict":

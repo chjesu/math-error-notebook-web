@@ -198,6 +198,7 @@ function processResultText(value) {
   if (value.results.length === 0) return [{type: "text", text: missingImageMessage}];
   const lines = [];
   for (const item of value.results) {
+    const association = item.review_association || {status: "not_review"};
     lines.push(
       `图片 ${item.attachment_index} · 第 ${item.item_no} 题`,
       errorIdText(item),
@@ -210,6 +211,9 @@ function processResultText(value) {
       `详细解析：${item.correct_solution || "无"}`,
       `最终答案：${item.final_answer || "无"}`,
       `小建议：${item.prevention_cue || "无"}`,
+      association.status === "matched"
+        ? `复习关联：已命中 PDF ${association.pdf_id}，复习码 ${association.review_code}，错题 ${association.error_id}，第 ${association.stage} 阶段`
+        : association.status === "unmatched" ? "复习关联：未找到唯一 PDF 记录" : "复习关联：普通判题，无需关联 PDF",
       item.receipt_message,
       ""
     );
@@ -323,6 +327,15 @@ function processAttachmentsTool(ctx) {
     first_error: {type: "string"}, cause_code: {type: "string"}, cause_evidence: {type: "string"}, knowledge_points: {type: "array", items: {type: "string"}},
     correct_solution: {type: "string"}, final_answer: {type: "string"}, prevention_cue: {type: "string"},
     receipt_status: {type: "string", enum: receiptStatuses}, receipt_message: {type: "string"}, error_id: {type: "string"},
+    review_association: {
+      type: "object", additionalProperties: false,
+      required: ["status", "pdf_id", "review_code", "error_id", "question_id", "stage", "kind"],
+      properties: {
+        status: {type: "string", enum: ["not_review", "matched", "unmatched"]},
+        pdf_id: {type: "string"}, review_code: {type: "string"}, error_id: {type: "string"}, question_id: {type: "string"},
+        stage: {type: "integer", enum: [0, 1, 2, 3, 4, 5, 6]}, kind: {type: "string", enum: ["", "original", "recommendation"]}
+      }
+    },
     reference_review: {
       oneOf: [
         {type: "null"},
@@ -339,7 +352,7 @@ function processAttachmentsTool(ctx) {
   };
   return {
     name: "process_error_notebook_attachments",
-    description: "Required once after transcribe_error_notebook_attachments freezes the latest 1-10 image transcription. Independently solve and grade only from that frozen question_text and answer_text, then submit all judgments in image order using the frozen attachment_index and per-image item_no. The two frozen text fields and review locator must be copied exactly. The tool stores every image separately, freezes grades, cross-checks the bank, and either records new errors or accumulates PDF review results on their original tasks. A recognized review that cannot be linked must stay pending and must never become a new notebook error. Follow actual receipts, never infer stage completion. If reference_review is returned, submit the frozen independent/reference comparison through adjudicate_error_notebook_reference_conflicts. Never invent ids.",
+    description: "Required once after transcribe_error_notebook_attachments freezes the latest 1-10 image transcription. Independently solve and grade only from that frozen question_text and answer_text, then submit all judgments in image order using the frozen attachment_index and per-image item_no. The two frozen text fields and review locator must be copied exactly. The tool queries the current account's frozen PDF records and returns the authoritative review_association for every item, then stores every image separately, freezes grades, cross-checks the bank, and either records new errors or accumulates PDF review results on their original tasks. A recognized review that cannot be linked must stay pending and must never become a new notebook error. Follow review_association and actual receipts; never infer PDF identity or stage completion. If reference_review is returned, submit the frozen independent/reference comparison through adjudicate_error_notebook_reference_conflicts. Never invent ids.",
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
       properties: {items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}

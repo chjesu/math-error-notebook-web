@@ -312,7 +312,9 @@ class PracticeReviewTests(unittest.TestCase):
             user_id=self.owner, candidate_id=candidate.candidate_id, input_version=1,
             code=pending[0]["options"][0]["code"],
         )
-        self.assertEqual(json.loads(linked.evidence)["practice_review"]["status"], "matched")
+        context = json.loads(linked.evidence)["practice_review"]
+        self.assertEqual((context["status"], context["error_id"], context["stage"]),
+                         ("matched", self.error.error_id, self.task.stage))
         self.assertEqual(self.service.list_pending_practice_review_links(user_id=self.owner), [])
         self.assertEqual(len(self.store.errors), 1)
 
@@ -416,6 +418,11 @@ class PracticeReviewApiTests(unittest.TestCase):
         item = self.job.checkpoint["review_manifest"][1]
         result = self.process(1, color="green", question_text=r"已知 y^2/3=9，求 y。")
         self.assertEqual(result["question_text"], item["stem_text"])
+        self.assertEqual(result["review_association"], {
+            "status": "matched", "pdf_id": self.job.job_id, "review_code": item["code"],
+            "error_id": item["error_id"], "question_id": item["question_id"], "stage": item["stage"],
+            "kind": item["kind"],
+        })
         candidate = self.fixture.store.get_grade_candidate(user_id=self.fixture.owner, candidate_id=result["candidate_id"])
         attempt = self.fixture.store.get_attempt(user_id=self.fixture.owner, attempt_id=candidate.attempt_id)
         self.assertEqual((attempt.question_text, attempt.question_id), (item["stem_text"], self.fixture.question.question_id))
@@ -468,6 +475,7 @@ class PracticeReviewApiTests(unittest.TestCase):
     def test_unmatched_result_can_be_linked_by_text_without_image(self):
         result = self.process(code=False)
         self.assertEqual(result["receipt_status"], "review_unmatched")
+        self.assertEqual(result["review_association"]["status"], "unmatched")
         linked = self.call(f"/v1/internal/harness/grade-results/{result['candidate_id']}/commit", {
             "session_id": "review-test", "input_version": result["input_version"],
             "review": {"code": self.job.checkpoint["review_manifest"][0]["code"]}})

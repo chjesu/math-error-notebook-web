@@ -437,6 +437,7 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertIn('name: "transcribe_error_notebook_attachments"', host_plugin)
         self.assertIn('name: "confirm_error_notebook_entry"', host_plugin)
         self.assertIn('name: "process_error_notebook_attachments"', host_plugin)
+        self.assertIn('review_association', host_plugin)
         self.assertIn('name: "recheck_error_notebook_reference_conflict"', host_plugin)
         self.assertIn('name: "lookup_question_bank_reference"', host_plugin)
         self.assertIn('name: "inspect_math_notebook"', host_plugin)
