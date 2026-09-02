@@ -111,6 +111,15 @@ def normalized_question_text(text: str) -> str:
     option = re.search(r"(?:^|\s)[a-f][.、．:：)]\s*", value)
     if option and option.start() > 10:
         value = value[:option.start()]
+    # OCR commonly drops purely presentational LaTeX commands while the
+    # frozen question bank keeps them.  Normalize both spellings before the
+    # conservative similarity check used by legacy PDF review codes.
+    value = re.sub(r"\\(?:vec|overrightarrow|overleftarrow|widehat|hat|bar)\s*", "", value)
+    greek = "alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega"
+    value = re.sub(rf"\\({greek})\b", r"\1", value)
+    for symbol, name in {"α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "θ": "theta", "λ": "lambda", "μ": "mu", "π": "pi", "φ": "phi", "ω": "omega"}.items():
+        value = value.replace(symbol, name)
+    value = re.sub(r"\\(?:angle|cdot|times|perp|parallel)\b", "", value)
     value = re.sub(r"\\(?:left|right|displaystyle|textstyle|,|!)", "", value)
     value = re.sub(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}", r"(\1)/(\2)", value)
     value = re.sub(r"\\sqrt\s*\{([^{}]+)\}", r"sqrt(\1)", value)

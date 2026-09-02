@@ -248,6 +248,10 @@ for (const [receipt_status,error_id,label] of [
   if (!text.startsWith('图片 1 · 第 1 题\\n错题编号（error_id）：' + label + '\\n题目：')) throw new Error('incorrect id display for ' + receipt_status);
 }}
 if (!rendered.includes('下一步：') || !rendered.includes('打开「错题本」')) throw new Error('processing next step missing');
+const waitingText = tool.output.render({{}}, {{results:[{{...result.results[0], receipt_status:'review_waiting', review_association:{{status:'matched',pdf_id:'p',review_code:'r',error_id:'e',stage:1}}}}]}})[0].text;
+if (waitingText.includes('confirm_error_notebook_entry') || waitingText.includes('candidate_id=')) throw new Error('matched review must not request another confirmation');
+const unmatchedText = tool.output.render({{}}, {{results:[{{...result.results[0], receipt_status:'review_unmatched', review_association:{{status:'unmatched'}}}}]}})[0].text;
+if (!unmatchedText.includes('confirm_error_notebook_entry') || !unmatchedText.includes('candidate_id=')) throw new Error('unmatched review must retain its linking receipt');
 const adjudicator = registered.find((value) => value.name === 'adjudicate_error_notebook_reference_conflicts');
 const rechecker = registered.find((value) => value.name === 'recheck_error_notebook_reference_conflict');
 const rechecked = await rechecker.execute({{question_text: 'historical q'}}, {{agent: {{id: 'session-process'}}, signal: new AbortController().signal}});

@@ -482,6 +482,27 @@ class PracticeReviewApiTests(unittest.TestCase):
         self.assertEqual((linked[0], linked[2]["receipt"]["status"]), (200, "review_waiting"))
         self.assertEqual(len(self.fixture.store.files), 2)  # PDF + original photo
 
+    def test_legacy_review_code_links_latex_stem_to_ocr_text_without_image(self):
+        checkpoint = deepcopy(self.job.checkpoint)
+        item = checkpoint["review_manifest"][0]
+        item["code"] = f"R{self.job.job_id[:12]}-01"
+        item["stem_text"] = (
+            r"【湖北重点高中2022高一联考】平面向量 $\vec a,\vec b$ 满足 "
+            r"$|\vec a|=2,|\vec b|=1,|\vec a-2\vec b|=2|\vec a+\vec b|$。"
+            r"求 $\vec a,\vec b$ 的夹角 $\theta$。"
+        )
+        self.job = replace(self.job, checkpoint=checkpoint)
+        self.fixture.store.jobs[self.job.job_id] = self.job
+        ocr_text = "【湖北重点高中2022高一联考】平面向量 a,b 满足 |a|=2,|b|=1,|a-2b|=2|a+b|。求 a,b 的夹角 θ。"
+        result = self.process(code=False, question_text=ocr_text)
+        self.assertEqual(result["receipt_status"], "review_unmatched")
+        linked = self.call(f"/v1/internal/harness/grade-results/{result['candidate_id']}/commit", {
+            "session_id": "review-test", "input_version": result["input_version"],
+            "review": {"code": item["code"], "pdf_id": self.job.job_id, "error_id": item["error_id"],
+                       "question_id": "", "stage": item["stage"], "kind": item["kind"]},
+        })
+        self.assertEqual((linked[0], linked[2]["receipt"]["status"]), (200, "review_waiting"))
+
     def test_reference_conflict_blocks_review_until_adjudication(self):
         self.process()
         result = self.process(1, conflict=True, color="red")

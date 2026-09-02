@@ -64,7 +64,7 @@ function receiptTool() {
   if (!origin || !token) throw new Error("Harness receipt bridge is not configured");
   return {
     name: "confirm_error_notebook_entry",
-    description: "Confirm a real notebook/review receipt using the frozen candidate_id and input_version. For a review_unmatched result, once the student supplies printed PDF locating details, pass review to link the already-graded photo without re-uploading. For review_retryable or an early review reaching its due time, omit review and retry this confirmation. Never invent ids or claim success before this authoritative receipt.",
+    description: "Confirm a frozen notebook/review result only when the latest authoritative process receipt is review_unmatched or review_retryable. For review_unmatched, once the student supplies printed PDF locating details, pass review to link the already-graded photo without re-uploading. For review_retryable, omit review. Never call this tool for review_waiting or any already matched process result; those results are already saved. Never invent ids or claim success before this authoritative receipt.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -220,8 +220,10 @@ function processResultText(value) {
     if (item.reference_review) {
       lines.push(...referenceReviewText(item), "");
     }
-    if (["review_unmatched", "review_waiting", "review_retryable"].includes(item.receipt_status)) {
-      lines.push(`仅供后续确认工具使用：candidate_id=${item.candidate_id}, input_version=${item.input_version}。学生补充 PDF 定位后调用 confirm_error_notebook_entry 并附 review；尚未到期的结果可到期后直接确认，不要要求重传。`, "");
+    if (item.receipt_status === "review_unmatched") {
+      lines.push(`仅供补充关联使用：candidate_id=${item.candidate_id}, input_version=${item.input_version}。学生补充 PDF 定位后调用 confirm_error_notebook_entry 并附 review，不要要求重传。`, "");
+    } else if (item.receipt_status === "review_retryable") {
+      lines.push(`仅供重试确认使用：candidate_id=${item.candidate_id}, input_version=${item.input_version}。调用 confirm_error_notebook_entry 时不要附 review，也不要要求重传。`, "");
     }
   }
   if (value.usage) {
