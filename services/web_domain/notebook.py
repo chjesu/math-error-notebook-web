@@ -1019,7 +1019,11 @@ class NotebookService:
         self.store.clear_conversation(user_id=user_id)
 
     def list_practice_pdfs(self, *, user_id: str) -> list[dict]:
-        return practice_paper_progress(self.store.list_practice_pdfs(user_id=user_id, include_checkpoints=True))
+        active_error_ids = {item.error_id for item in self.store.list_errors(user_id=user_id)}
+        return practice_paper_progress(
+            self.store.list_practice_pdfs(user_id=user_id, include_checkpoints=True),
+            active_error_ids=active_error_ids,
+        )
 
     def inspect_review_code(self, *, user_id: str, code: str) -> dict | None:
         state = review_code_state(self.list_practice_pdfs(user_id=user_id), code)

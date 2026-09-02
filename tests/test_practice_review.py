@@ -249,6 +249,8 @@ class PracticeReviewTests(unittest.TestCase):
         self.store.set_error_status(user_id=self.owner, error_id=self.error.error_id, status="removed")
         self.assertEqual(self.submit(0)["status"], "review_stale")
         self.assertFalse(self.store.review_attempts)
+        progress = self.service.list_practice_pdfs(user_id=self.owner)[0]["progress"]
+        self.assertEqual((progress["required_count"], progress["needs_correction_count"], progress["items"]), (0, 0, []))
 
     def test_early_or_unclear_never_advances(self):
         self.store.review_tasks[self.task.task_id] = replace(self.task, due_at=self.now + timedelta(days=1))

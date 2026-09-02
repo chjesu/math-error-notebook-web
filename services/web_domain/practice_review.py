@@ -79,12 +79,13 @@ def shared_review_checkpoints(checkpoints: dict[str, dict]) -> dict[str, dict]:
     return result
 
 
-def practice_paper_progress(papers: list[dict]) -> list[dict]:
+def practice_paper_progress(papers: list[dict], *, active_error_ids: set[str] | None = None) -> list[dict]:
     checkpoints = shared_review_checkpoints({paper["task_id"]: paper.get("_checkpoint") or {} for paper in papers})
     result = []
     for paper in papers:
         checkpoint = checkpoints[paper["task_id"]]
-        manifest = checkpoint.get("review_manifest") or []
+        manifest = [item for item in checkpoint.get("review_manifest") or []
+                    if active_error_ids is None or item.get("error_id") in active_error_ids]
         rows, seen = [], set()
         for item in manifest:
             key = review_item_key(item)
