@@ -431,6 +431,13 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertIn('data-lzlm-product-surface', plugin)
         self.assertIn('?embedded=1', plugin)
         self.assertIn('data-lzlm-product-path', plugin)
+        self.assertIn('/v1/harness/navigation-status', plugin)
+        self.assertIn('installProductNavigationStatus(ctx)', plugin)
+        self.assertIn('markProductNavigationSeen(path)', plugin)
+        self.assertIn('setInterval(refresh, 15000)', plugin)
+        self.assertIn('data-lzlm-nav-status', plugin)
+        self.assertIn('kind: "pending"', plugin)
+        self.assertIn('待复习 ${payload.progress.due_count} 道，需改错 ${payload.progress.needs_correction_count} 道', plugin)
         self.assertIn('element.textContent === "探索未至之境"', plugin)
         self.assertIn('element.textContent = "今天要整理哪道错题?"', plugin)
         self.assertIn('textarea[placeholder="描述你想要构建的内容"]', plugin)
@@ -564,6 +571,54 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertNotRegex(script, r'<a[^>]+\sdownload(?:[\s=>])')
         self.assertGreaterEqual(script.count('target="_top"'), 4)
         self.assertGreaterEqual(script.count('link.target = "_top"'), 2)
+
+    def test_navigation_status_uses_view_and_completion_clear_rules(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is needed for frontend behavior checks")
+        script = r"""
+const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+const source = fs.readFileSync('extensions/dsh-math-notebook-ui/lib/client.js', 'utf8');
+const indicators = new Map(), buttons = ['/errors','/practice','/progress'].map(path => ({dataset:{lzlmProductPath:path},
+  title:'', attrs:{}, setAttribute(k,v){this.attrs[k]=v;}, removeAttribute(k){delete this.attrs[k];},
+  querySelector(){if(!indicators.has(path)) indicators.set(path,{hidden:true,dataset:{}}); return indicators.get(path);}}));
+const storage = new Map();
+let payload = {scope:'account-a',errors:{count:1,revision:'errors-1'},practice:{count:1,revision:'pdf-1'},
+  progress:{due_count:2,needs_correction_count:1}};
+const context = {productOrigin:'http://127.0.0.1:8000', navigationItems:[
+  {path:'/errors',label:'错题本'},{path:'/practice',label:'练习 PDF'},{path:'/progress',label:'学习进度'}],
+  document:{hidden:false,querySelectorAll:()=>buttons,addEventListener(){},removeEventListener(){}},
+  window:{addEventListener(){},removeEventListener(){}}, console, setInterval, clearInterval,
+  localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v)},
+  fetch:async()=>({ok:true,json:async()=>payload})};
+const start = source.indexOf('    let activeProductPath');
+const end = source.indexOf('    function closeProductSurface');
+vm.createContext(context); vm.runInContext(source.slice(start,end),context);
+(async()=>{
+  await context.refreshProductNavigationStatus();
+  assert.equal(indicators.get('/errors').hidden,false);
+  assert.equal(indicators.get('/practice').hidden,false);
+  assert.equal(indicators.get('/progress').hidden,false);
+  assert.equal(indicators.get('/progress').dataset.kind,'pending');
+  context.markProductNavigationSeen('/errors');
+  assert.equal(indicators.get('/errors').hidden,true);
+  await context.refreshProductNavigationStatus();
+  assert.equal(indicators.get('/errors').hidden,true);
+  payload={...payload,errors:{count:1,revision:'errors-2'}};
+  await context.refreshProductNavigationStatus();
+  assert.equal(indicators.get('/errors').hidden,false);
+  context.markProductNavigationSeen('/progress');
+  assert.equal(indicators.get('/progress').hidden,false);
+  payload={...payload,progress:{due_count:0,needs_correction_count:0}};
+  await context.refreshProductNavigationStatus();
+  assert.equal(indicators.get('/progress').hidden,true);
+  payload={...payload,scope:'account-b'};
+  await context.refreshProductNavigationStatus();
+  assert.equal(indicators.get('/practice').hidden,false);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+        result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_harness_product_views_hide_the_legacy_sidebar(self) -> None:
         script = (WEB / "app.js").read_text(encoding="utf-8")

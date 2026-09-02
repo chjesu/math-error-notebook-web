@@ -138,6 +138,38 @@ class NotebookE2ETests(unittest.TestCase):
         )
         self.assertEqual(rebound[0], 403)
 
+    def test_harness_navigation_status_is_read_only_and_account_scoped(self) -> None:
+        cookie = self.login("13600136022")
+        other_cookie = self.login("13600136023")
+        harness_origin = "http://example.test:3080"
+        empty = self.call("/v1/harness/navigation-status", cookie=cookie, origin=harness_origin)
+        self.assertEqual(empty[0], 200)
+        self.assertEqual(empty[1]["access-control-allow-origin"], harness_origin)
+        self.assertEqual(empty[2]["errors"]["count"], 0)
+        self.assertEqual(empty[2]["practice"]["count"], 0)
+        self.assertEqual(empty[2]["progress"], {"due_count": 0, "needs_correction_count": 0})
+
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        now = datetime.now(timezone.utc)
+        error_id = "7" * 32
+        task_id = "8" * 32
+        self.domain_store.errors[error_id] = ErrorEntry(error_id, user.user_id, "9" * 32, "题目", "作答", "错因", "open", now)
+        self.domain_store.review_tasks[task_id] = ReviewTask(task_id, user.user_id, error_id, 1, now - timedelta(minutes=1), "pending")
+        changed = self.call("/v1/harness/navigation-status", cookie=cookie, origin=harness_origin)
+        self.assertEqual((changed[2]["errors"]["count"], changed[2]["progress"]["due_count"]), (1, 1))
+        self.assertNotEqual(changed[2]["errors"]["revision"], empty[2]["errors"]["revision"])
+        self.domain_store.complete_review(user_id=user.user_id, task_id=task_id, result="partial", idempotency_key="nav-partial", now=now)
+        corrected = self.call("/v1/harness/navigation-status", cookie=cookie, origin=harness_origin)
+        self.assertEqual(corrected[2]["progress"], {"due_count": 0, "needs_correction_count": 1})
+
+        isolated = self.call("/v1/harness/navigation-status", cookie=other_cookie, origin=harness_origin)
+        self.assertEqual(isolated[2]["errors"]["count"], 0)
+        self.assertNotEqual(isolated[2]["scope"], changed[2]["scope"])
+        denied = self.call("/v1/harness/navigation-status", cookie=cookie, origin="https://evil.example")
+        self.assertEqual((denied[0], denied[2]["error"]["code"]), (403, "forbidden"))
+        preflight = self.call("/v1/harness/navigation-status", method="OPTIONS", origin=None, extra_headers={"origin": harness_origin})
+        self.assertEqual((preflight[0], preflight[1]["access-control-allow-methods"]), (200, "GET,POST,OPTIONS"))
+
     def test_public_upload_cannot_claim_internal_pdf_purpose(self) -> None:
         cookie = self.login("13600136000")
         content_type, body = self.multipart("fake.pdf", b"%PDF-1.4\n%%EOF", purpose="practice_pdf")

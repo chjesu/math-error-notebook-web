@@ -128,13 +128,17 @@ class NotebookAsgiApp:
         origin = headers.get("origin", "")
         harness_origin = origin if origin in self.harness_origins else None
         harness_session_routes = {"/v1/harness/sessions/bind", "/v1/harness/sessions/usage"}
-        if path in harness_session_routes and method == "OPTIONS":
+        harness_cors_routes = harness_session_routes | {"/v1/harness/navigation-status"}
+        if path in harness_cors_routes and method == "OPTIONS":
             if harness_origin is None:
                 await self._error(send, 403, "forbidden")
             else:
                 await self._json(send, 200, {"status": "ok"}, extra_headers=self._harness_cors(harness_origin))
             return
         if path in harness_session_routes and method == "POST" and harness_origin is None:
+            await self._error(send, 403, "forbidden")
+            return
+        if path == "/v1/harness/navigation-status" and method == "GET" and harness_origin is None:
             await self._error(send, 403, "forbidden")
             return
         if path == "/v1/internal/harness/intakes/process" and method == "POST":
@@ -273,6 +277,29 @@ class NotebookAsgiApp:
                 await self._sync(self.notebook.clear_conversation, user_id=user.user_id)
                 await send({"type": "http.response.start", "status": 204, "headers": [(b"cache-control", b"no-store")]})
                 await send({"type": "http.response.body", "body": b""})
+            elif path == "/v1/harness/navigation-status" and method == "GET":
+                items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
+                reviews = await self._sync(self.notebook.store.list_active_reviews, user_id=user.user_id)
+                review_by_error = {item.error_id: item for item in reviews}
+                error_state = [
+                    [item.error_id, item.status, item.created_at.isoformat(), review.stage, review.status, review.due_at.isoformat()]
+                    if (review := review_by_error.get(item.error_id)) else [item.error_id, item.status, item.created_at.isoformat()]
+                    for item in items
+                ]
+                papers = await self._sync(self.notebook.list_practice_pdfs, user_id=user.user_id)
+                paper_state = [
+                    [item.get("task_id"), item.get("filename"), item.get("byte_size"), item.get("generated_at"),
+                     (item.get("progress") or {}).get("answered_count"), (item.get("progress") or {}).get("required_count"),
+                     (item.get("progress") or {}).get("needs_correction_count")]
+                    for item in papers
+                ]
+                progress = await self._sync(self.notebook.progress, user_id=user.user_id)
+                await self._json(send, 200, {
+                    "scope": hashlib.sha256(f"navigation-status:{user.user_id}".encode("utf-8")).hexdigest()[:24],
+                    "errors": {"count": len(items), "revision": hashlib.sha256(json.dumps(error_state, separators=(",", ":")).encode("utf-8")).hexdigest()[:24]},
+                    "practice": {"count": len(papers), "revision": hashlib.sha256(json.dumps(paper_state, separators=(",", ":")).encode("utf-8")).hexdigest()[:24]},
+                    "progress": {"due_count": int(progress["due_review_count"]), "needs_correction_count": int(progress["today_needs_correction_count"])},
+                }, extra_headers=self._harness_cors(harness_origin))
             elif path == "/v1/workbench" and method == "GET":
                 items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
                 pending = await self._sync(self.notebook.store.pending_job_count, user_id=user.user_id)
@@ -2062,7 +2089,7 @@ class NotebookAsgiApp:
         return [
             (b"access-control-allow-origin", origin.encode("ascii")),
             (b"access-control-allow-credentials", b"true"),
-            (b"access-control-allow-methods", b"POST,OPTIONS"),
+            (b"access-control-allow-methods", b"GET,POST,OPTIONS"),
             (b"access-control-allow-headers", b"content-type"),
             (b"vary", b"Origin"),
         ]

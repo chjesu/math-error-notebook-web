@@ -19,13 +19,84 @@ window.__ModuleLoader__.load({
     };
     let activeProductPath = null;
     let disposeProductSurface = null;
+    let productNavigationStatus = {};
+    let productNavigationScope = "";
+
+    function navigationSeenKey(path) {
+      return `lzlm:navigation-seen:${productNavigationScope}:${path}`;
+    }
+
+    function markProductNavigationSeen(path) {
+      const status = productNavigationStatus[path];
+      if (!productNavigationScope || !status?.revision || !["/errors", "/practice"].includes(path)) return;
+      try {
+        localStorage.setItem(navigationSeenKey(path), status.revision);
+        status.visible = false;
+      } catch (_) {}
+      updateProductNavigation();
+    }
 
     function updateProductNavigation() {
       document.querySelectorAll("[data-lzlm-product-path]").forEach((element) => {
         const active = element.dataset.lzlmProductPath === activeProductPath;
+        const item = navigationItems.find(({path}) => path === element.dataset.lzlmProductPath);
+        const status = productNavigationStatus[element.dataset.lzlmProductPath];
+        const indicator = element.querySelector("[data-lzlm-nav-status]");
         if (active) element.setAttribute("aria-current", "page");
         else element.removeAttribute("aria-current");
+        if (indicator) {
+          indicator.hidden = !status?.visible;
+          indicator.dataset.kind = status?.kind || "";
+        }
+        if (item) {
+          element.title = status?.visible ? `${item.label}：${status.label}` : item.label;
+          element.setAttribute("aria-label", status?.visible ? `${item.label}，${status.label}` : item.label);
+        }
       });
+    }
+
+    function refreshProductNavigationStatus() {
+      return fetch(`${productOrigin}/v1/harness/navigation-status`, {credentials: "include"})
+        .then((response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.json();
+        })
+        .then((payload) => {
+          productNavigationScope = payload.scope;
+          const unread = (path, state, label) => {
+            let seen = "";
+            try { seen = localStorage.getItem(navigationSeenKey(path)) || ""; } catch (_) {}
+            return {kind: "unread", label, revision: state.revision, visible: state.count > 0 && state.revision !== seen};
+          };
+          productNavigationStatus = {
+            "/errors": unread("/errors", payload.errors, "有新的错题状态"),
+            "/practice": unread("/practice", payload.practice, "练习 PDF 有新状态"),
+            "/progress": {
+              kind: "pending",
+              label: `待复习 ${payload.progress.due_count} 道，需改错 ${payload.progress.needs_correction_count} 道`,
+              visible: payload.progress.due_count > 0 || payload.progress.needs_correction_count > 0
+            }
+          };
+          if (["/errors", "/practice"].includes(activeProductPath)) markProductNavigationSeen(activeProductPath);
+          else updateProductNavigation();
+        })
+        .catch((reason) => console.warn("math notebook navigation status failed:", reason));
+    }
+
+    function installProductNavigationStatus(ctx) {
+      ctx.effect(() => {
+        const refresh = () => refreshProductNavigationStatus();
+        const timer = setInterval(refresh, 15000);
+        const onVisibility = () => { if (!document.hidden) refresh(); };
+        window.addEventListener("focus", refresh);
+        document.addEventListener("visibilitychange", onVisibility);
+        refresh();
+        return () => {
+          clearInterval(timer);
+          window.removeEventListener("focus", refresh);
+          document.removeEventListener("visibilitychange", onVisibility);
+        };
+      }, "math-notebook: product navigation status");
     }
 
     function closeProductSurface() {
@@ -44,6 +115,7 @@ window.__ModuleLoader__.load({
         "data-lzlm-product-surface": "",
         children: jsx("iframe", {
           src: `${productOrigin}${item.path}?embedded=1`,
+          onLoad: refreshProductNavigationStatus,
           title: item.label
         })
       });
@@ -51,6 +123,7 @@ window.__ModuleLoader__.load({
 
     function openProductSurface(ctx, path) {
       if (activeProductPath === path && disposeProductSurface !== null) return;
+      markProductNavigationSeen(path);
       closeProductSurface();
       activeProductPath = path;
       try {
@@ -88,6 +161,7 @@ window.__ModuleLoader__.load({
             border-top: 1px solid var(--dsw-alias-border-l3);
           }
           [data-lzlm-product-nav] button {
+            position: relative;
             display: flex;
             width: 100%;
             min-height: 36px;
@@ -117,6 +191,17 @@ window.__ModuleLoader__.load({
             stroke-linecap: round;
             stroke-linejoin: round;
           }
+          [data-lzlm-nav-status] {
+            position: absolute;
+            top: 7px;
+            right: 8px;
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: #4f7cff;
+          }
+          [data-lzlm-nav-status][data-kind="pending"] { background: #dc2626; }
+          [data-lzlm-nav-status][hidden] { display: none; }
           [data-lzlm-product-surface] {
             width: 100%;
             height: 100%;
@@ -490,7 +575,8 @@ window.__ModuleLoader__.load({
           onClick: () => openProductSurface(pluginContext, item.path),
           title: item.label,
           style: wide ? undefined : {justifyContent: "center", padding: 0},
-          children: [jsx(NavIcon, {name: item.icon}, "icon"), wide ? jsx("span", {children: item.label}, "label") : null]
+          children: [jsx(NavIcon, {name: item.icon}, "icon"), wide ? jsx("span", {children: item.label}, "label") : null,
+            jsx("span", {"data-lzlm-nav-status": "", "data-kind": productNavigationStatus[item.path]?.kind || "", hidden: !productNavigationStatus[item.path]?.visible, "aria-hidden": "true"}, "status")]
         }, item.path))
       });
     }
@@ -513,6 +599,7 @@ window.__ModuleLoader__.load({
       openProductWorkspace(ctx);
       startFreshModelSession(ctx);
       bindProductSession(ctx);
+      installProductNavigationStatus(ctx);
       reportProductTokenUsage(ctx);
       closeProductOnSessionClick(ctx);
       installSelectionToConversation(ctx);
