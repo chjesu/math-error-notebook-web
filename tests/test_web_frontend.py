@@ -404,7 +404,7 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertIn('customizeStudentCopy(ctx)', plugin)
         self.assertIn('[data-variant="think"] [class*="_leading"]', plugin)
         self.assertIn('logo-symbol-color-64-v1.png', plugin)
-        self.assertIn('[data-variant="think"] [class*="_leading"] > svg', plugin)
+        self.assertIn('[data-variant="think"] [class*="_leading"] svg', plugin)
         self.assertIn("closeProductOnSessionClick(ctx)", plugin)
         self.assertIn("event.target.closest('[role=\"treeitem\"]')", plugin)
         self.assertNotIn('target: "_top",\n          title: item.label', plugin)

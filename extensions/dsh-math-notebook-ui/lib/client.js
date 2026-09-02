@@ -168,7 +168,7 @@ window.__ModuleLoader__.load({
             height: 16px;
             background: url("${productOrigin}/assets/branding/logo-symbol-color-64-v1.png") center / 16px 16px no-repeat;
           }
-          [data-variant="think"] [class*="_leading"] > svg {
+          [data-variant="think"] [class*="_leading"] svg {
             opacity: 0;
           }
         `;
