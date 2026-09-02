@@ -123,6 +123,7 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   assert.equal(JSON.parse(generated.options.body).error_ids.length,12);
   assert.equal(requests.filter(row=>row.path==='/v1/practice-pdfs'&&row.options.method==='POST').length,1);
   assert.equal($('#calendar-pdf-status').children[1].href,'/v1/practice-pdfs/paper/download');
+  assert.equal($('#calendar-pdf-status').children[1].target,'_top');
   await $('#refresh-progress').handlers.click();
   assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,12);
   assert.equal(JSON.stringify(history),before);
@@ -556,6 +557,13 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertRegex(patch, r"- id: llm-pi-ai\s+config:\s+providers:\s+notebook-provider:")
         self.assertIn("apiKeyEnv: !!js process.env.HARNESS_API_KEY_ENV ?? 'DASHSCOPE_API_KEY'", patch)
         self.assertRegex(patch, r"- id: agent-default-model\s+config:\s+provider: notebook-provider")
+
+    def test_downloads_escape_the_nested_harness_frame(self) -> None:
+        script = (WEB / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn('setAttribute("download", "")', script)
+        self.assertNotRegex(script, r'<a[^>]+\sdownload(?:[\s=>])')
+        self.assertGreaterEqual(script.count('target="_top"'), 4)
+        self.assertGreaterEqual(script.count('link.target = "_top"'), 2)
 
     def test_harness_product_views_hide_the_legacy_sidebar(self) -> None:
         script = (WEB / "app.js").read_text(encoding="utf-8")

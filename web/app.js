@@ -1164,7 +1164,7 @@ function bindErrors() {
     if (selectionMode === "fixed") {
       const counts = fixedPlanCounts();
       const unfinished = counts.pending + counts.correction + counts.unavailable;
-      const link = fixedPlan?.download_url ? `<a href="${escapeHtml(fixedPlan.download_url)}" download>下载今日复习推荐题 PDF</a>` : "";
+      const link = fixedPlan?.download_url ? `<a href="${escapeHtml(fixedPlan.download_url)}" target="_top">下载今日复习推荐题 PDF</a>` : "";
       $("#selected-error-count").textContent = fixedPlan?.available ? `今日计划固定 ${counts.total} 道` : "今日 PDF 的选题清单不可还原";
       $("#pdf-step-state").textContent = "今日已生成，计划不再自动换题";
       $("#correction-step-state").textContent = counts.correction ? `已完成 ${counts.completed} 道，${counts.correction} 道需继续改错` : `已完成 ${counts.completed} 道，待完成 ${counts.pending} 道`;
@@ -1450,8 +1450,8 @@ function showPracticePdfResult(result, target) {
   if (!result.download_url) return status(target, "PDF 正在生成，请稍后刷新。");
   const link = document.createElement("a");
   link.href = result.download_url;
+  link.target = "_top";
   link.textContent = "下载今日复习推荐题 PDF";
-  link.setAttribute("download", "");
   target.replaceChildren("已生成：", link);
 }
 
@@ -1553,9 +1553,9 @@ function bindProgress() {
     status($("#calendar-selection-status"), `已选 ${selectedErrorIds.size}/12 道。仅仍在待复习任务中的题目可加入今日选题。`);
     $("#calendar-pdf-actions").hidden = !hasSelectable;
     $("#calendar-generate-pdf").disabled = !selectedErrorIds.size || generatingPdf || Boolean(fixedPlan);
-    if (fixedPlan) $("#calendar-pdf-status").innerHTML = fixedPlan.download_url ? `今日计划已固定：<a href="${escapeHtml(fixedPlan.download_url)}" download>下载 PDF</a>` : "今日计划已固定。";
+    if (fixedPlan) $("#calendar-pdf-status").innerHTML = fixedPlan.download_url ? `今日计划已固定：<a href="${escapeHtml(fixedPlan.download_url)}" target="_top">下载 PDF</a>` : "今日计划已固定。";
     const kind = selectedMetric || activeFilter;
-    const paperHtml = ["all", "due", "completed", "papers"].includes(kind) ? (day.practice_plans || []).map(paper => `<article class="calendar-detail-item"><h4>${escapeHtml(paper.filename)}</h4>${practiceProgressMarkup(paper)}<a href="/v1/practice-pdfs/${encodeURIComponent(paper.task_id)}/download" download>下载 PDF</a></article>`).join("") : "";
+    const paperHtml = ["all", "due", "completed", "papers"].includes(kind) ? (day.practice_plans || []).map(paper => `<article class="calendar-detail-item"><h4>${escapeHtml(paper.filename)}</h4>${practiceProgressMarkup(paper)}<a href="/v1/practice-pdfs/${encodeURIComponent(paper.task_id)}/download" target="_top">下载 PDF</a></article>`).join("") : "";
     const activityHtml = ["all", "completed", "answered", "correction"].includes(kind) ? (day.practice_activity || []).filter(row => kind !== "correction" || row.status === "needs_correction").map(row => `<article class="calendar-detail-item"><div class="calendar-event-labels"><span>${row.kind === "original" ? "原题重做" : "推荐训练"} · ${practiceVerdictLabel(row)}</span><span>实际提交 ${escapeHtml(new Date(row.submitted_at).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"}))}</span></div><p data-math-text>${escapeHtml(row.question_text)}</p><small>来源：${escapeHtml(row.filename)} · 错题 ${escapeHtml(row.error_id.slice(0, 8))}</small></article>`).join("") : "";
     $("#calendar-day-items").innerHTML = paperHtml + activityHtml + [...groups.values()].map(group => {
       const labels = [...group.labels].map(label => `<span>${escapeHtml(label)}</span>`).join("");
@@ -1720,7 +1720,7 @@ function bindPractice() {
         ? `每日复习练习-${dateParts.year}年${dateParts.month}月${dateParts.day}日-${dateParts.hour}时${dateParts.minute}分.pdf`
         : item.filename;
       const details = item.source === "desktop_skill" ? `${generated} · Skill 历史文件` : `${generated} · ${item.question_count || 0} 道题${item.include_answers ? " · 含答案" : ""}`;
-      return `<article class="pdf-history-item"><div><strong>${escapeHtml(displayName)}</strong><small>${escapeHtml(details)}</small>${practiceProgressMarkup(item)}</div><a class="pdf-download" href="${escapeHtml(item.download_url)}" download>下载</a></article>`;
+      return `<article class="pdf-history-item"><div><strong>${escapeHtml(displayName)}</strong><small>${escapeHtml(details)}</small>${practiceProgressMarkup(item)}</div><a class="pdf-download" href="${escapeHtml(item.download_url)}" target="_top">下载</a></article>`;
     }).join("") : '<p class="empty">还没有生成过练习 PDF。</p>';
     $("#practice-pdf-history").querySelectorAll("[data-math-text]").forEach(renderMath);
   }).catch(error => { $("#practice-pdf-history").innerHTML = `<p class="status error">${escapeHtml(authError(error))}</p>`; });
@@ -1761,8 +1761,8 @@ function bindSettings() {
       $("#sensitive-code").value = "";
       const link = document.createElement("a");
       link.href = job.download_url;
+      link.target = "_top";
       link.textContent = "下载个人数据";
-      link.setAttribute("download", "");
       settingsStatus.replaceChildren("导出已生成：", link);
     } catch (error) { status(settingsStatus, authError(error), true); }
   });
