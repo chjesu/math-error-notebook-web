@@ -35,6 +35,7 @@ class VerifiedQuestionReference:
     solution_text: str | None
     source_title: str
     match_score: float
+    options: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -177,7 +178,16 @@ def cross_validate_reference(reference: VerifiedQuestionReference, independent_a
     actual_parts = _canonical_answer_parts(independent_answer)
     expected = json.dumps(expected_parts, ensure_ascii=False, separators=(",", ":"))
     actual = json.dumps(actual_parts, ensure_ascii=False, separators=(",", ":"))
-    status = "consistent" if expected_parts and actual_parts and expected_parts == actual_parts else "conflict"
+    comparable_expected = expected_parts
+    option_label = normalized_answer_text(reference.answer_text)
+    if reference.options and len(option_label) == 1 and "a" <= option_label <= "z":
+        option_index = ord(option_label) - ord("a")
+        if option_index < len(reference.options):
+            option_text = re.sub(
+                r"^\s*[A-Z]\s*[.、．:：)]\s*", "", reference.options[option_index], flags=re.IGNORECASE,
+            )
+            comparable_expected = _canonical_answer_parts(option_text)
+    status = "consistent" if comparable_expected and actual_parts and comparable_expected == actual_parts else "conflict"
     return {
         "schema": "question-bank-cross-validation/v1",
         "status": status,

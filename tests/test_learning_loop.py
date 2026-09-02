@@ -291,6 +291,24 @@ class LearningLoopTests(unittest.TestCase):
         self.assertEqual(normalized["status"], "consistent")
         self.assertEqual(normalized["reference_answer_sha256"], normalized["independent_answer_sha256"])
 
+    def test_bank_cross_validation_resolves_choice_label_to_option_value(self) -> None:
+        reference = VerifiedQuestionReference(
+            "7" * 32,
+            "8" * 32,
+            1,
+            "抛物线的焦点到准线距离为多少？",
+            "C",
+            "由定义可得距离为 2，故选 C。",
+            "授权题库",
+            1.0,
+            (r"A．$\frac{1}{2}$", "B．1", "C．2", "D．4"),
+        )
+
+        validation = cross_validate_reference(reference, "2")
+
+        self.assertEqual(validation["status"], "consistent")
+        self.assertNotEqual(validation["reference_answer_sha256"], validation["independent_answer_sha256"])
+
 
 if __name__ == "__main__":
     unittest.main()

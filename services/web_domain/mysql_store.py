@@ -556,7 +556,7 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             cursor.execute(
-                "SELECT q.id,v.id,v.version_no,v.stem_text,v.answer_text,v.solution_text,s.title "
+                "SELECT q.id,v.id,v.version_no,v.stem_text,v.answer_text,v.solution_text,s.title,v.options_json "
                 "FROM questions q JOIN question_sources s ON s.id=q.source_id "
                 "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
                 "WHERE q.status='verified' AND s.license_status IN ('open','user_authorized') "
@@ -573,6 +573,7 @@ class MySqlDomainStore:
                         question_id=str(row[0]), version_id=str(row[1]), version_no=int(row[2]),
                         stem_text=str(row[3]), answer_text=str(row[4]), solution_text=row[5],
                         source_title=str(row[6]), match_score=score,
+                        options=self._options(row[7], stem_text=str(row[3])),
                     ))
             return sorted(matches, key=lambda value: (-value.match_score, value.question_id))[0] if matches else None
         finally:
@@ -584,7 +585,7 @@ class MySqlDomainStore:
         cursor = connection.cursor()
         try:
             cursor.execute(
-                "SELECT q.id,v.id,v.version_no,v.stem_text,v.answer_text,v.solution_text,s.title "
+                "SELECT q.id,v.id,v.version_no,v.stem_text,v.answer_text,v.solution_text,s.title,v.options_json "
                 "FROM questions q JOIN question_sources s ON s.id=q.source_id "
                 "JOIN question_versions v ON v.question_id=q.id AND v.version_no=q.current_version_no "
                 "WHERE q.id=%s AND q.status='verified' AND s.license_status IN ('open','user_authorized') "
@@ -597,6 +598,7 @@ class MySqlDomainStore:
                 question_id=str(row[0]), version_id=str(row[1]), version_no=int(row[2]),
                 stem_text=str(row[3]), answer_text=str(row[4]), solution_text=row[5],
                 source_title=str(row[6]), match_score=1.0,
+                options=self._options(row[7], stem_text=str(row[3])),
             ) if row else None
         finally:
             cursor.close()

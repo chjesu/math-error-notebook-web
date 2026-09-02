@@ -491,6 +491,7 @@ class InMemoryNotebookStore:
             solution_text=question.solution_text,
             source_title=question.source_title,
             match_score=1.0,
+            options=question.options,
         )
 
     def find_verified_question(self, *, question_text: str) -> VerifiedQuestionReference | None:
@@ -509,6 +510,7 @@ class InMemoryNotebookStore:
                     solution_text=question.solution_text,
                     source_title=question.source_title,
                     match_score=score,
+                    options=question.options,
                 ))
         return sorted(matches, key=lambda value: (-value.match_score, value.question_id))[0] if matches else None
 
