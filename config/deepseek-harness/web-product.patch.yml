@@ -6,6 +6,26 @@
   config:
     maxImagesPerMessage: 1
 
+- id: llm-pi-ai
+  config:
+    providers:
+      notebook-provider:
+        displayName: !!js process.env.HARNESS_PROVIDER_NAME ?? 'Qwen3.8 Flash'
+        apiKeyEnv: !!js process.env.HARNESS_API_KEY_ENV ?? 'DASHSCOPE_API_KEY'
+        api: !!js process.env.HARNESS_API_PROTOCOL ?? 'openai-completions'
+        baseURL: !!js process.env.HARNESS_BASE_URL ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        defaultInput: !!js "(process.env.HARNESS_INPUT_MODALITIES ?? 'text,image').split(',').map((value) => value.trim()).filter(Boolean)"
+        requestImagePixelBudget: 4194304
+        requestImageMaxBytes: 4194304
+        maxRequestImageBytes: 20971520
+        models:
+          - id: !!js process.env.HARNESS_MODEL ?? 'qwen3.8-flash'
+            input: !!js "(process.env.HARNESS_INPUT_MODALITIES ?? 'text,image').split(',').map((value) => value.trim()).filter(Boolean)"
+        reasoning: !!js "process.env.HARNESS_REASONING || undefined"
+        retryPolicy:
+          mode: normal
+          maxRetries: 2
+
 - id: system-prompt
   config:
     persona: >-

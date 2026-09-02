@@ -498,6 +498,8 @@ assert.ok(!source.includes('plan_kind: "practice"'));
             self.assertIn('只给出一个最优先', prompt)
             self.assertIn('固定为 1 的 attachment_index', prompt)
             self.assertNotIn('最终答案及小建议', prompt)
+        self.assertRegex(patch, r"- id: llm-pi-ai\s+config:\s+providers:\s+notebook-provider:")
+        self.assertIn("apiKeyEnv: !!js process.env.HARNESS_API_KEY_ENV ?? 'DASHSCOPE_API_KEY'", patch)
 
     def test_harness_product_views_hide_the_legacy_sidebar(self) -> None:
         script = (WEB / "app.js").read_text(encoding="utf-8")
