@@ -49,6 +49,31 @@ class LocalEnvironmentTests(unittest.TestCase):
         process.terminate.assert_called_once_with()
         process.wait.assert_called_once_with(timeout=5)
 
+    def test_harness_startup_replaces_only_the_stale_model_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(local_env, "HARNESS_WEB_HOME", Path(directory)), mock.patch.dict(
+            "os.environ", {"HARNESS_MODEL": "qwen3.8-flash"}, clear=False
+        ):
+            settings = Path(directory) / "settings.yaml"
+            settings.write_text(
+                "ui-onboarding:\n  welcomeNoticeVersion: test\nagent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-flash\n  reasoningEffort: high\n",
+                encoding="utf-8",
+            )
+            local_env._pin_harness_model_settings()
+            self.assertEqual(
+                settings.read_text(encoding="utf-8"),
+                "ui-onboarding:\n  welcomeNoticeVersion: test\nagent-default-model:\n  provider: notebook-provider\n  model: qwen3.8-flash\n",
+            )
+            local_env._pin_harness_model_settings()
+            self.assertNotIn("deepseek", settings.read_text(encoding="utf-8"))
+
+    def test_harness_startup_rejects_an_invalid_model_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(local_env, "HARNESS_WEB_HOME", Path(directory)), mock.patch.dict(
+            "os.environ", {"HARNESS_MODEL": "qwen\nmodel: injected"}, clear=False
+        ):
+            (Path(directory) / "settings.yaml").write_text("ui-onboarding: {}\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "valid model id"):
+                local_env._pin_harness_model_settings()
+
     def test_harness_receipt_bridge_token_is_runtime_only(self) -> None:
         source = inspect.getsource(local_env._start_harness_web)
         serve = inspect.getsource(local_env.serve)

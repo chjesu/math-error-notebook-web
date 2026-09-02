@@ -6,6 +6,7 @@ window.__ModuleLoader__.load({
     const {jsx} = require("react/jsx-runtime");
     const productOrigin = "http://127.0.0.1:8000";
     const productWorkspaceTitle = "错题会话";
+    const modelEpoch = "qwen3.8-flash-v1";
     const navigationItems = [
       {path: "/errors", label: "错题本", icon: "errors"},
       {path: "/practice", label: "练习 PDF", icon: "practice"},
@@ -241,6 +242,35 @@ window.__ModuleLoader__.load({
         open();
         return unsubscribe;
       }, "math-notebook: fixed workspace");
+    }
+
+    function startFreshModelSession(ctx) {
+      ctx.effect(() => {
+        const marker = `lzlm:model-epoch:${modelEpoch}`;
+        try {
+          if (sessionStorage.getItem(marker) === "ready") return;
+        } catch (_) {
+          return;
+        }
+        let done = false;
+        const migrate = () => {
+          if (done) return;
+          const workspaces = ctx.workspaces.list.getSnapshot();
+          const sessions = ctx.sessions.list.getSnapshot();
+          const workspace = workspaces.items.find((item) => item.title === productWorkspaceTitle);
+          if (!workspaces.baselinesReady || workspace === undefined || sessions.current === undefined) return;
+          done = true;
+          sessionStorage.setItem(marker, "ready");
+          ctx.workspaces.startSession(workspace.workspaceId);
+        };
+        const unsubscribeWorkspaces = ctx.workspaces.list.subscribe(migrate);
+        const unsubscribeSessions = ctx.sessions.list.subscribe(migrate);
+        migrate();
+        return () => {
+          unsubscribeWorkspaces();
+          unsubscribeSessions();
+        };
+      }, "math-notebook: fresh model epoch session");
     }
 
     function bindProductSession(ctx) {
@@ -481,6 +511,7 @@ window.__ModuleLoader__.load({
       customizeStudentCopy(ctx);
       restrictStudentSettings(ctx);
       openProductWorkspace(ctx);
+      startFreshModelSession(ctx);
       bindProductSession(ctx);
       reportProductTokenUsage(ctx);
       closeProductOnSessionClick(ctx);

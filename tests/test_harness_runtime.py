@@ -195,17 +195,24 @@ await extension.apply({{
     return {{ref: {{attachmentId: 'sha256:' + 'c'.repeat(64), mediaType: 'image/png', name: 'q.png'}}, data: new Uint8Array([1, 2, 3])}};
   }}}}
 }});
+const agent = {{id: 'session-process', session: {{deriveMessages: () => [
+  {{role: 'user', content: [{{type: 'image', attachment: 'old-ref'}}]}},
+  {{role: 'assistant', content: [{{type: 'text', text: 'old'}}]}},
+  {{role: 'user', content: [{{type: 'text', text: 'please process'}}, {{type: 'image', attachment: 'image-ref'}}]}}
+]}}}};
+const review = {{code: '', pdf_id: '', error_id: '', question_id: '', stage: 0, kind: ''}};
+const transcriber = registered.find((value) => value.name === 'transcribe_error_notebook_attachments');
+const transcription = await transcriber.execute({{items: [{{
+  attachment_index: 1, item_no: 1, question_text: 'q', answer_text: 'a', review
+}}]}}, {{agent, signal: new AbortController().signal}});
+if (transcription.schema !== 'math-notebook-transcription/v1' || transcription.items[0].question_text !== 'q') throw new Error('wrong transcription');
 const tool = registered.find((value) => value.name === 'process_error_notebook_attachments');
 const result = await tool.execute({{items: [{{
   attachment_index: 1, item_no: 1, question_text: 'q', answer_text: 'a', verdict: 'incorrect', first_error: 'e',
   cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'], correct_solution: 'solution',
-  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9
+  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9, review
 }}]}}, {{
-  agent: {{id: 'session-process', session: {{deriveMessages: () => [
-    {{role: 'user', content: [{{type: 'image', attachment: 'old-ref'}}]}},
-    {{role: 'assistant', content: [{{type: 'text', text: 'old'}}]}},
-    {{role: 'user', content: [{{type: 'text', text: 'please process'}}, {{type: 'image', attachment: 'image-ref'}}]}}
-  ]}}}}, signal: new AbortController().signal
+  agent, signal: new AbortController().signal
 }});
 if (result.schema !== 'math-notebook-process-result/v1' || result.results[0].attachment_index !== 1) throw new Error('wrong result');
 const rendered = tool.output.render({{}}, result)[0].text;

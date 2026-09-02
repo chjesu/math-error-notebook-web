@@ -62,6 +62,8 @@ HARNESS_WEB_PATCH = ROOT / "config" / "deepseek-harness" / "web-product.patch.ym
 HARNESS_WEB_STDOUT = ROOT / "data" / "runtime" / "deepseek-harness-web.stdout.log"
 HARNESS_WEB_STDERR = ROOT / "data" / "runtime" / "deepseek-harness-web.stderr.log"
 HARNESS_WEB_PORT = 3080
+HARNESS_PROVIDER = "notebook-provider"
+HARNESS_MODEL = "qwen3.8-flash"
 
 
 def _basedir() -> Path:
@@ -997,8 +999,40 @@ def _harness_web_command() -> list[str]:
     ]
 
 
+def _pin_harness_model_settings() -> None:
+    """Remove a stale UI model choice so the product-owned Qwen default wins."""
+    settings = HARNESS_WEB_HOME / "settings.yaml"
+    if not settings.is_file():
+        return
+    model = os.environ.get("HARNESS_MODEL", HARNESS_MODEL).strip()
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", model) is None:
+        raise RuntimeError("HARNESS_MODEL is not a valid model id")
+    lines = settings.read_text(encoding="utf-8").splitlines()
+    kept: list[str] = []
+    skipping = False
+    for line in lines:
+        top_level = bool(line) and not line[0].isspace() and not line.startswith("#")
+        if top_level:
+            skipping = line.rstrip() == "agent-default-model:"
+        if not skipping:
+            kept.append(line)
+    kept.extend((
+        "agent-default-model:",
+        f"  provider: {HARNESS_PROVIDER}",
+        f"  model: {model}",
+    ))
+    content = "\n".join(kept) + "\n"
+    if settings.read_text(encoding="utf-8") == content:
+        return
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=settings.parent, delete=False) as handle:
+        handle.write(content)
+        temporary = Path(handle.name)
+    os.replace(temporary, settings)
+
+
 def _start_harness_web(internal_token: str) -> subprocess.Popen[Any]:
     HARNESS_WEB_HOME.mkdir(parents=True, exist_ok=True)
+    _pin_harness_model_settings()
     HARNESS_PRODUCT_WORKSPACE.mkdir(parents=True, exist_ok=True)
     HARNESS_RUNTIME_PRESET.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(HARNESS_AGENT_PRESETS / "math-notebook" / "agent.cordis.yml", HARNESS_RUNTIME_PRESET)

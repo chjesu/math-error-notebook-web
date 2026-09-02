@@ -10,6 +10,7 @@ const reviewLocatorSchema = {
   },
   description: "Copy only visible review code, PDF name/id, printed error/question id, stage and original/recommendation kind. Unknown strings are empty and stage is 0. Never guess. Ordinary new questions use all empty values."
 };
+const transcriptionByAgent = new WeakMap();
 
 function toolRequestError(label, response, payload) {
   const code = payload?.error?.code;
@@ -137,6 +138,8 @@ function latestUserText(agent) {
   return "";
 }
 
+const missingImageMessage = "当前消息没有可读取的图片附件。请重新添加图片，确认缩略图出现并完成上传后，再发送判题请求。";
+
 function removeErrorTool() {
   const origin = process.env.LZLM_PRODUCT_ORIGIN;
   const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
@@ -183,6 +186,7 @@ function removeErrorTool() {
 }
 
 function processResultText(value) {
+  if (value.results.length === 0) return [{type: "text", text: missingImageMessage}];
   const lines = [];
   for (const item of value.results) {
     lines.push(
@@ -224,6 +228,61 @@ function referenceReviewText(item) {
     `题库参考答案：${item.reference_review.reference_answer}`,
     `题库参考解析：${item.reference_review.reference_solution || "无"}`
   ];
+}
+
+function transcribeAttachmentsTool(ctx) {
+  const itemProperties = {
+    attachment_index: {type: "integer", const: 1},
+    item_no: {type: "integer"},
+    question_text: {type: "string"},
+    answer_text: {type: "string"},
+    review: reviewLocatorSchema
+  };
+  return {
+    name: "transcribe_error_notebook_attachments",
+    description: "Required first when the latest user message contains one math image. Do OCR and segmentation only: copy each printed question stem separately from the student's final handwritten answer, in reading order. Do not solve or grade yet. The returned transcription is frozen for the later processing call in this same turn.",
+    parameters: {
+      type: "object", additionalProperties: false, required: ["items"],
+      properties: {items: {type: "array", minItems: 1, maxItems: 20, items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
+    },
+    output: {
+      schema: {
+        type: "object", additionalProperties: false, required: ["schema", "items"],
+        properties: {
+          schema: {type: "string", const: "math-notebook-transcription/v1"},
+          items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}
+        }
+      },
+      render: (_args, value) => value.items.length === 0 ? [{type: "text", text: missingImageMessage}] : [{type: "text", text: [
+        "题干与作答已经冻结。下一步只能基于以下文字独立解题和判题，不得重新识别或改写：",
+        ...value.items.flatMap((item) => [
+          `第 ${item.item_no} 题题干：${item.question_text}`,
+          `第 ${item.item_no} 题学生作答：${item.answer_text || "未作答"}`
+        ])
+      ].join("\n")}]
+    },
+    async execute(args, exec) {
+      if (!exec.agent) throw new Error("Notebook transcription requires an owning Harness session");
+      const images = latestUserImages(exec.agent);
+      if (images.length === 0) {
+        exec.concludeTurn();
+        return {schema: "math-notebook-transcription/v1", items: []};
+      }
+      if (images.length > 1) throw new Error("一条消息最多上传 1 张图片，请删除多余图片后重新发送");
+      if (args.items.some((item, index) => item.attachment_index !== 1 || item.item_no !== index + 1)) {
+        throw new Error("Transcription items must use attachment_index=1 and continuous item_no values");
+      }
+      const items = args.items.map((item) => ({
+        ...item,
+        question_text: item.question_text.trim(),
+        answer_text: item.answer_text.trim()
+      }));
+      if (items.some((item) => item.question_text === "")) throw new Error("Every transcription item requires a question stem");
+      transcriptionByAgent.set(exec.agent, {attachment: images[0].attachment, items});
+      return {schema: "math-notebook-transcription/v1", items};
+    },
+    presentCall: () => ({card: "generic", title: "识别题干与作答", kind: "other", rawInput: null})
+  };
 }
 
 function processAttachmentsTool(ctx) {
@@ -268,7 +327,7 @@ function processAttachmentsTool(ctx) {
   };
   return {
     name: "process_error_notebook_attachments",
-    description: "Required once when the latest user message contains one math image. Submit recognized questions and judgments in reading order with attachment_index=1. Keep question_text to the complete stem only. If the image visibly contains 复习码, 同类型推荐题, or 题库编号 Q-, review is mandatory: copy every visible PDF/review identifier exactly and never leave review empty. Do not submit unattempted originals marked reference-only. Ordinary new questions use empty review fields. The tool stores the image, freezes grades, cross-checks the bank, and either records new errors or accumulates PDF review results on their original tasks. A recognized review that cannot be linked must stay pending and must never become a new notebook error. Follow actual receipts, never infer stage completion. If reference_review is returned, submit the frozen independent/reference comparison through adjudicate_error_notebook_reference_conflicts. Never invent ids.",
+    description: "Required once after transcribe_error_notebook_attachments freezes the latest image transcription. Independently solve and grade only from that frozen question_text and answer_text, then submit judgments in reading order with attachment_index=1. The two frozen text fields and review locator must be copied exactly. The tool stores the image, freezes grades, cross-checks the bank, and either records new errors or accumulates PDF review results on their original tasks. A recognized review that cannot be linked must stay pending and must never become a new notebook error. Follow actual receipts, never infer stage completion. If reference_review is returned, submit the frozen independent/reference comparison through adjudicate_error_notebook_reference_conflicts. Never invent ids.",
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
       properties: {items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
@@ -287,8 +346,21 @@ function processAttachmentsTool(ctx) {
     async execute(args, exec) {
       if (!exec.agent) throw new Error("Notebook processing requires an owning Harness session");
       const images = latestUserImages(exec.agent);
-      if (images.length === 0) throw new Error("The latest user message has no image attachments");
+      if (images.length === 0) {
+        exec.concludeTurn();
+        return {schema: "math-notebook-process-result/v1", results: []};
+      }
       if (images.length > 1) throw new Error("一条消息最多上传 1 张图片，请删除多余图片后重新发送");
+      const frozen = transcriptionByAgent.get(exec.agent);
+      if (!frozen || frozen.attachment !== images[0].attachment) throw new Error("请先调用 transcribe_error_notebook_attachments 冻结本张图片的题干与作答");
+      if (args.items.length !== frozen.items.length || args.items.some((item, index) => {
+        const expected = frozen.items[index];
+        return item.attachment_index !== expected.attachment_index
+          || item.item_no !== expected.item_no
+          || item.question_text.trim() !== expected.question_text
+          || item.answer_text.trim() !== expected.answer_text
+          || Object.keys(reviewLocatorSchema.properties).some((key) => item.review?.[key] !== expected.review?.[key]);
+      })) throw new Error("判题提交必须原样使用已冻结的题干、作答和复习定位信息");
       if (args.items.some((item) => item.attachment_index < 1 || item.attachment_index > images.length)) {
         throw new Error("A result refers to an attachment outside the latest user message");
       }
@@ -323,6 +395,7 @@ function processAttachmentsTool(ctx) {
         usage = payload.usage || usage;
         results.push(...payload.results.map((item) => ({...item, attachment_index: attachmentIndex})));
       }
+      transcriptionByAgent.delete(exec.agent);
       return {schema: "math-notebook-process-result/v1", results, ...(usage ? {usage} : {})};
     },
     presentCall: () => ({card: "generic", title: "整理并记录错题", kind: "other", rawInput: null})
@@ -593,6 +666,7 @@ export async function apply(ctx) {
     throw new Error("LZLM_HARNESS_WORKSPACE_ROOT is required");
   }
   await ctx.workspaceRegistry.create(workspacePath, "错题会话");
+  ctx.tools.register(transcribeAttachmentsTool(ctx));
   ctx.tools.register(processAttachmentsTool(ctx));
   ctx.tools.register(inspectNotebookTool());
   ctx.tools.register(reflowPracticePdfTool());
