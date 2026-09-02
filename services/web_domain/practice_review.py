@@ -9,7 +9,7 @@ import json
 import re
 from typing import Any
 
-from .learning import ReviewTask, question_match_score, learning_day, normalized_question_text
+from .learning import ReviewTask, question_match_score, question_number_tokens, learning_day, normalized_question_text
 
 
 def review_item_key(item: dict) -> str | None:
@@ -325,7 +325,7 @@ def matching_items(manifest: list[dict], locator: dict, question_text: str, user
         # prevents a mistyped code from grading a different paper's question.
         if question_match_score(question_text, item["stem_text"]) < 0.92:
             continue
-        if re.findall(r"\d+(?:\.\d+)?", normalized_question_text(question_text)) != re.findall(r"\d+(?:\.\d+)?", normalized_question_text(item["stem_text"])):
+        if question_number_tokens(question_text) != question_number_tokens(item["stem_text"]):
             continue
         matches.append(item)
     return matches

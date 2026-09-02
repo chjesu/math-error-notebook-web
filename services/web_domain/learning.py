@@ -182,6 +182,13 @@ def question_match_score(source: str, candidate: str) -> float:
     return SequenceMatcher(None, left, right, autojunk=False).ratio()
 
 
+def question_number_tokens(text: str) -> tuple[str, ...]:
+    """Keep numeric boundaries that disappear in compact LaTeX normalization."""
+    value = _normalized_math_source(text)
+    value = re.sub(r"\\frac\s*([0-9])\s*([0-9])", r"\1/\2", value)
+    return tuple(re.findall(r"\d+(?:\.\d+)?", value))
+
+
 def cross_validate_reference(reference: VerifiedQuestionReference, independent_answer: str) -> dict[str, object]:
     expected_parts = _canonical_answer_parts(reference.answer_text)
     actual_parts = _canonical_answer_parts(independent_answer)

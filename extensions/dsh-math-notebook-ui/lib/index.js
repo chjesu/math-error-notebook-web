@@ -100,6 +100,9 @@ function receiptTool() {
     },
     async execute(args, exec) {
       if (!exec.agent) throw new Error("Notebook receipt requires an owning Harness session");
+      if (latestUserImages(exec.agent).length) {
+        throw new Error("当前图片已由 process_error_notebook_attachments 处理；本轮禁止再次调用确认工具，请直接采用处理或复核回执完成回复。");
+      }
       const response = await fetch(`${origin}/v1/internal/harness/grade-results/${args.candidate_id}/commit`, {
         method: "POST",
         headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
@@ -116,6 +119,7 @@ function receiptTool() {
 }
 
 function latestUserImages(agent) {
+  if (!agent.session?.deriveMessages) return [];
   const messages = agent.session.deriveMessages();
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];

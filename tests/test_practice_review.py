@@ -503,6 +503,31 @@ class PracticeReviewApiTests(unittest.TestCase):
         })
         self.assertEqual((linked[0], linked[2]["receipt"]["status"]), (200, "review_waiting"))
 
+    def test_legacy_review_code_preserves_latex_fraction_number_boundaries(self):
+        checkpoint = deepcopy(self.job.checkpoint)
+        item = checkpoint["review_manifest"][0]
+        item["code"] = f"R{self.job.job_id[:12]}-01"
+        item["stem_text"] = (
+            r"【全国新高考Ⅰ2022·6】函数 $f(x)=\sin(\omega x+\frac{\pi}{4})+b$（$\omega>0$）"
+            r"的最小正周期为 $T$，且 $\frac{2\pi}{3}<T<\pi$；图象关于点 "
+            r"$(\frac{3\pi}{2},2)$ 中心对称。求 $f(\frac{\pi}{2})$。"
+            r"选项：A.1；B.$\frac32$；C.$\frac52$；D.3。"
+        )
+        self.job = replace(self.job, checkpoint=checkpoint)
+        self.fixture.store.jobs[self.job.job_id] = self.job
+        ocr_text = (
+            "【全国新高考 I 2022-6】函数 f(x)=sin(ωx+π/4)+B（ω>0）的最小正周期为 T，"
+            "且 2π/3<T<π；图象关于点 (3π/2,2) 中心对称。求 f(π/2)。选项：A.1；B.3/2；C.5/2；D.3。"
+        )
+        result = self.process(code=False, question_text=ocr_text)
+        linked = self.call(f"/v1/internal/harness/grade-results/{result['candidate_id']}/commit", {
+            "session_id": "review-test", "input_version": result["input_version"],
+            "review": {"code": item["code"], "pdf_id": self.job.job_id, "error_id": item["error_id"],
+                       "question_id": "", "stage": item["stage"], "kind": item["kind"]},
+        })
+        self.assertEqual((result["receipt_status"], linked[0], linked[2]["receipt"]["status"]),
+                         ("review_unmatched", 200, "review_waiting"))
+
     def test_reference_conflict_blocks_review_until_adjudication(self):
         self.process()
         result = self.process(1, conflict=True, color="red")
