@@ -1639,7 +1639,15 @@ function bindProgress() {
     if (!button) return;
     selectedDate = button.dataset.calendarDate;
     selectedMetric = button.dataset.calendarKind || "";
+    let selectionSaved = true;
+    if (selectedDate === todaySnapshot.date && selectedMetric === "due" && !fixedPlan && !generatingPdf
+        && readReviewSelection(selectionScope, currentReviews) === null) {
+      const day = calendar.days.find(item => item.date === selectedDate) || {date: selectedDate, items: []};
+      selectedErrorIds = new Set([...new Set(detailItems(day).filter(selectable).map(item => item.error_id))].slice(0, 12));
+      selectionSaved = writeReviewSelection(selectionScope, selectedErrorIds, currentReviews);
+    }
     renderCalendar();
+    if (!selectionSaved) status($("#calendar-selection-status"), "当前浏览器无法保存选题，离开页面后需重新选择。", true);
     $("#calendar-day-detail").scrollIntoView({block: "nearest"});
   });
   $("#calendar-day-items").addEventListener("change", event => {

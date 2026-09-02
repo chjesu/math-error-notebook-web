@@ -205,6 +205,39 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   assert.equal($('#calendar-day-detail').hidden,true);
   $('#calendar-prev').handlers.click(); await tick();
   assert.equal($('#calendar-month').textContent,'2026 年 8 月');
+  // Opening today's due list selects only eligible items, once, up to 12.
+  context.sessionStorage.setItem=(k,v)=>storage.set(k,v);
+  storage.clear();
+  errors.splice(0,errors.length,...Array.from({length:13},(_,i)=>({error_id:String(i),status:'open',
+    review:{review_id:`today-${i}`,stage:2,status:'pending',due_at:'2026-08-31T00:00:00Z'}})));
+  history.days=[{date:'2026-08-31',items:[
+    ...errors.map(error=>({...recorded(error.error_id),original_due_date:'2026-08-31'})),
+    {...recorded('0'),original_due_date:'2026-08-31'},
+    {...recorded('finished'),original_due_date:'2026-08-31'}]}];
+  todayPlan=null; await $('#refresh-progress').handlers.click();
+  const writesBeforeDefaults=writes();
+  clickDay('2026-08-31','due');
+  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,12);
+  assert.equal(($('#calendar-day-items').innerHTML.match(/name="calendar-error"/g)||[]).length,13);
+  assert.equal($('#calendar-generate-pdf').disabled,false);
+  const reviews=new Map(errors.map(error=>[error.error_id,error.review]));
+  assert.deepEqual([...context.readReviewSelection('a'.repeat(24),reviews)],errors.slice(0,12).map(error=>error.error_id));
+  assert.equal(writes(),writesBeforeDefaults); // Selecting never generates a PDF.
+  change('0',false);
+  clickDay('2026-08-31','due');
+  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,11);
+  await $('#refresh-progress').handlers.click();
+  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,11);
+  for(let i=1;i<12;i++) change(String(i),false);
+  clickDay('2026-08-31','due');
+  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,0);
+  assert.equal($('#calendar-generate-pdf').disabled,true); // Keep deliberate deselect-all.
+  todayPlan={available:true,items:errors.slice(0,2),download_url:'/fixed'};
+  storage.clear(); await $('#refresh-progress').handlers.click();
+  clickDay('2026-08-31','due');
+  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,2);
+  assert.equal(($('#calendar-day-items').innerHTML.match(/ disabled/g)||[]).length,13);
+  assert.equal(storage.size,0); // Fixed plans are not rewritten by defaults.
 })().catch(error=>{console.error(error);process.exitCode=1;});
 """
         result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=15)
