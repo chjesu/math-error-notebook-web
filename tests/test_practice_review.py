@@ -528,6 +528,62 @@ class PracticeReviewApiTests(unittest.TestCase):
         self.assertEqual((result["receipt_status"], linked[0], linked[2]["receipt"]["status"]),
                          ("review_unmatched", 200, "review_waiting"))
 
+    def test_legacy_review_code_normalizes_source_label_and_compact_fraction(self):
+        checkpoint = deepcopy(self.job.checkpoint)
+        item = checkpoint["review_manifest"][0]
+        item["code"] = f"R{self.job.job_id[:12]}-01"
+        item["stem_text"] = (
+            r"【广东梅州2022摸底】$\triangle ABC$ 是边长为 $a$ 的等边三角形，$P$ 为平面 $ABC$ 内一点，"
+            r"求 $\overrightarrow{PA}\cdot(\overrightarrow{PB}+\overrightarrow{PC})$ 的最小值。"
+            r"选项：A.$-2a^2$；B.$-\frac38a^2$；C.$-\frac43a^2$；D.$-a^2$。"
+        )
+        self.job = replace(self.job, checkpoint=checkpoint)
+        self.fixture.store.jobs[self.job.job_id] = self.job
+        ocr_text = (
+            "【广东梅州2022模拟】△ABC 是边长为 a 的等边三角形，P 为平面 ABC 内一点，"
+            "求 PA·(PB+PC) 的最小值。选项：A.-2a²；B.-3/8a²；C.-4/3a²；D.-a²。"
+        )
+        context = self.fixture.service.resolve_practice_review(
+            user_id=self.fixture.owner, question_text=ocr_text,
+            locator={"code": item["code"], "error_id": item["error_id"][:8], "stage": 1, "kind": "original"},
+            review_mode=True,
+        )
+        self.assertEqual((context["status"], context["code"]), ("matched", item["code"]))
+
+    def test_one_photo_uses_its_confirmed_pdf_for_an_ambiguous_recommendation(self):
+        current = self.job
+        extra = Question("c" * 32, "已知二次方程 z 的平方等于十六，求 z。", "z=4或-4", 10, 2, "测试题库")
+        self.fixture.store.add_question(extra)
+        self.fixture.store.recommendations["r2"] = Recommendation(
+            "r2", self.fixture.owner, self.fixture.error.error_id, extra, "同知识点", "assigned"
+        )
+        longer = self.fixture.paper(key="longer-reprint", plan_kind="practice")
+        longer_checkpoint = deepcopy(longer.checkpoint)
+        extra_item = dict(current.checkpoint["review_manifest"][1])
+        extra_item.update(code=f"R{longer.job_id[:12]}-99-ABCDEF", question_id=extra.question_id,
+                          stem_text=extra.stem_text)
+        longer_checkpoint["review_manifest"].append(extra_item)
+        self.fixture.store.jobs[longer.job_id] = replace(longer, checkpoint=longer_checkpoint)
+        ambiguous = self.fixture.service.resolve_practice_review(
+            user_id=self.fixture.owner, question_text=self.fixture.question.stem_text,
+            locator={"question_id": self.fixture.question.question_id, "kind": "recommendation"}, review_mode=True,
+        )
+        self.assertEqual(ambiguous["status"], "unmatched")
+
+        self.job = current
+        with patch.object(self.client, "call", return_value=(200, {}, {"results": [{}]})):
+            self.process(0)
+        row = dict(self.last_payload["items"][0])
+        recommendation = current.checkpoint["review_manifest"][1]
+        row.update(item_no=2, question_text=recommendation["stem_text"],
+                   review={"question_id": recommendation["question_id"], "kind": "recommendation"})
+        self.last_payload["items"].append(row)
+        response = self.call("/v1/internal/harness/intakes/process", self.last_payload)
+        self.assertEqual(response[0], 200, response)
+        associations = [item["review_association"] for item in response[2]["results"]]
+        self.assertEqual([item["pdf_id"] for item in associations], [current.job_id, current.job_id])
+        self.assertEqual(associations[1]["review_code"], recommendation["code"])
+
     def test_reference_conflict_blocks_review_until_adjudication(self):
         self.process()
         result = self.process(1, conflict=True, color="red")

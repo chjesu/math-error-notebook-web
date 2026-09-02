@@ -1081,6 +1081,23 @@ class NotebookAsgiApp:
                         review_mode=True,
                     )
                 exact_review_contexts.append(context if context and context.get("status") == "matched" else None)
+            batch_jobs = {context["job_id"] for context in exact_review_contexts if context}
+            if len(batch_jobs) == 1:
+                batch_job = next(iter(batch_jobs))
+                for index, item in enumerate(raw_items):
+                    if exact_review_contexts[index] is not None:
+                        continue
+                    locator = review_locator(item.get("review"))
+                    locator.setdefault("pdf_id", batch_job)
+                    context = await self._sync(
+                        self.notebook.resolve_practice_review,
+                        user_id=user_id,
+                        question_text=str(item["question_text"]).strip(),
+                        locator=locator,
+                        review_mode=True,
+                    )
+                    if context and context.get("status") == "matched":
+                        exact_review_contexts[index] = context
             intakes = await self._sync(self.notebook.store.get_file_intakes, user_id=user_id, file_id=record.file_id)
             if intakes:
                 primary = intakes[0]

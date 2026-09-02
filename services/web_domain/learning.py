@@ -105,6 +105,7 @@ def normalized_question_text(text: str) -> str:
     # Storage paths are not part of the mathematics visible in a paper photo.
     text = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", text)
     text = re.sub(r"【(?:原题图|题图|附图)】", "", text)
+    text = re.sub(r"^\s*【[^】\r\n]{1,80}】\s*", "", text)
     value = _normalized_math_source(text).casefold()
     value = re.sub(r"^\s*(?:题干|题目)\s*[:：]\s*", "", value)
     value = re.sub(r"^\s*\d+\s*[.、．]\s*", "", value)
@@ -114,7 +115,7 @@ def normalized_question_text(text: str) -> str:
     # OCR commonly drops purely presentational LaTeX commands while the
     # frozen question bank keeps them.  Normalize both spellings before the
     # conservative similarity check used by legacy PDF review codes.
-    value = re.sub(r"\\(?:vec|overrightarrow|overleftarrow|widehat|hat|bar)\s*", "", value)
+    value = re.sub(r"\\(?:vec|overrightarrow|overleftarrow|widehat|hat|bar|triangle)\s*", "", value)
     greek = "alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega"
     value = re.sub(rf"\\({greek})\b", r"\1", value)
     for symbol, name in {"α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "θ": "theta", "λ": "lambda", "μ": "mu", "π": "pi", "φ": "phi", "ω": "omega"}.items():
@@ -122,6 +123,7 @@ def normalized_question_text(text: str) -> str:
     value = re.sub(r"\\(?:angle|cdot|times|perp|parallel)\b", "", value)
     value = re.sub(r"\\(?:left|right|displaystyle|textstyle|,|!)", "", value)
     value = re.sub(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}", r"(\1)/(\2)", value)
+    value = re.sub(r"\\frac\s*([0-9a-z])\s*([0-9a-z])", r"(\1)/(\2)", value)
     value = re.sub(r"\\sqrt\s*\{([^{}]+)\}", r"sqrt(\1)", value)
     return "".join(re.findall(r"[0-9a-z\u4e00-\u9fff+\-*/=<>≤≥√^_|]", value))
 
@@ -184,6 +186,7 @@ def question_match_score(source: str, candidate: str) -> float:
 
 def question_number_tokens(text: str) -> tuple[str, ...]:
     """Keep numeric boundaries that disappear in compact LaTeX normalization."""
+    text = re.sub(r"^\s*【[^】\r\n]{1,80}】\s*", "", text)
     value = _normalized_math_source(text)
     value = re.sub(r"\\frac\s*([0-9])\s*([0-9])", r"\1/\2", value)
     return tuple(re.findall(r"\d+(?:\.\d+)?", value))
