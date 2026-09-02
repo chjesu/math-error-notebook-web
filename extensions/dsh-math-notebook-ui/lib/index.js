@@ -11,6 +11,14 @@ const reviewLocatorSchema = {
   description: "Copy only visible review code, PDF name/id, printed error/question id, stage and original/recommendation kind. Unknown strings are empty and stage is 0. Never guess. Ordinary new questions use all empty values."
 };
 const transcriptionByAgent = new WeakMap();
+const pendingAdjudicationByAgent = new WeakMap();
+
+function rememberPendingAdjudication(agent, results) {
+  const items = results.filter((item) => item.reference_review).map((item) => ({candidate_id: item.candidate_id, input_version: item.input_version}));
+  if (items.length) pendingAdjudicationByAgent.set(agent, items);
+  else pendingAdjudicationByAgent.delete(agent);
+  return items.length > 0;
+}
 
 function toolRequestError(label, response, payload) {
   const code = payload?.error?.code;
@@ -230,6 +238,9 @@ function processResultText(value) {
       lines.push(`仅供重试确认使用：candidate_id=${item.candidate_id}, input_version=${item.input_version}。调用 confirm_error_notebook_entry 时不要附 review，也不要要求重传。`, "");
     }
   }
+  lines.push(value.results.some((item) => item.reference_review)
+    ? "Agent 下一动作：只调用 adjudicate_error_notebook_reference_conflicts，一次提交上述全部待复核候选。"
+    : "Agent 下一动作：直接生成最终回复；禁止再调用 confirm_error_notebook_entry。", "");
   if (value.usage) {
     lines.push(`今日学习负荷：已判题 ${value.usage.grade.count}/${value.usage.grade.limit}（建议 ${value.usage.grade.target}）；已生成推荐题 ${value.usage.recommendation.count}/${value.usage.recommendation.limit}（建议 ${value.usage.recommendation.target}）。`, "");
   }
@@ -423,6 +434,7 @@ function processAttachmentsTool(ctx) {
         results.push(...payload.results.map((item) => ({...item, attachment_index: attachmentIndex})));
       }
       transcriptionByAgent.delete(exec.agent);
+      rememberPendingAdjudication(exec.agent, results);
       return {schema: "math-notebook-process-result/v1", results, ...(usage ? {usage} : {})};
     },
     presentCall: () => ({card: "generic", title: "整理并记录错题", kind: "other", rawInput: null})
@@ -483,10 +495,14 @@ function adjudicateReferenceConflictsTool() {
           }
         }
       },
-      render: (_args, value) => [{type: "text", text: [...value.results.map((item) => `${errorIdText(item)}\n${item.receipt_message}`), "", nextStepText(value.results)].join("\n")}]
+      render: (_args, value) => [{type: "text", text: [...value.results.map((item) => `${errorIdText(item)}\n${item.receipt_message}`), "", "Agent 下一动作：直接生成最终回复；禁止调用 confirm_error_notebook_entry。", nextStepText(value.results)].join("\n")}]
     },
     async execute(args, exec) {
       if (!exec.agent) throw new Error("Reference adjudication requires an owning Harness session");
+      const pending = pendingAdjudicationByAgent.get(exec.agent);
+      if (pending && (pending.length !== args.items.length || pending.some((expected) => !args.items.some((item) => item.candidate_id === expected.candidate_id && item.input_version === expected.input_version)))) {
+        throw new Error("必须一次提交本轮 process 返回的全部待复核 candidate_id 和 input_version，不得遗漏或串题");
+      }
       const response = await fetch(`${origin}/v1/internal/harness/reference-conflicts/adjudicate`, {
         method: "POST",
         headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
@@ -495,6 +511,7 @@ function adjudicateReferenceConflictsTool() {
       });
       const payload = await response.json();
       if (!response.ok || !Array.isArray(payload.results)) throw toolRequestError("Reference adjudication failed", response, payload);
+      pendingAdjudicationByAgent.delete(exec.agent);
       return payload;
     },
     presentCall: () => ({card: "generic", title: "复核题库答案", kind: "other", rawInput: null})
@@ -556,6 +573,7 @@ function recheckReferenceConflictTool() {
       });
       const payload = await response.json();
       if (!response.ok || !payload.result) throw toolRequestError("Reference recheck failed", response, payload);
+      rememberPendingAdjudication(exec.agent, [payload.result]);
       return payload;
     },
     presentCall: () => ({card: "generic", title: "重新核对题库答案", kind: "other", rawInput: null})

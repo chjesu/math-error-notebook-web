@@ -191,7 +191,8 @@ globalThis.fetch = async (url, options) => {{
     item_no: 1, candidate_id: (second ? 'f' : 'a').repeat(32), input_version: 1, verdict: 'incorrect', question_text: second ? 'q2' : 'q', answer_text: 'a',
     first_error: 'e', cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'],
     correct_solution: 'solution', final_answer: 'answer', prevention_cue: 'check', receipt_status: 'saved',
-    receipt_message: '已计入错题本', error_id: (second ? 'e' : 'b').repeat(32)
+    receipt_message: '已计入错题本', error_id: (second ? 'e' : 'b').repeat(32),
+    reference_review: second ? null : {{source_title: '题库', version_no: 1, independent_answer: 'x=1', reference_answer: 'x=1', reference_solution: '解得 x=1'}}
   }}]}})}};
 }};
 const extension = await import({json.dumps(module_uri)});
@@ -254,12 +255,19 @@ for (const [receipt_status,error_id,label] of [
   const text = tool.output.render({{}}, {{results:[{{...result.results[0],receipt_status,error_id}}]}})[0].text;
   if (!text.startsWith('图片 1 · 第 1 题\\n错题编号（error_id）：' + label + '\\n题目：')) throw new Error('incorrect id display for ' + receipt_status);
 }}
-if (!rendered.includes('下一步：') || !rendered.includes('打开「错题本」')) throw new Error('processing next step missing');
-const waitingText = tool.output.render({{}}, {{results:[{{...result.results[0], receipt_status:'review_waiting', review_association:{{status:'matched',pdf_id:'p',review_code:'r',error_id:'e',stage:1}}}}]}})[0].text;
-if (waitingText.includes('confirm_error_notebook_entry') || waitingText.includes('candidate_id=')) throw new Error('matched review must not request another confirmation');
-const unmatchedText = tool.output.render({{}}, {{results:[{{...result.results[0], receipt_status:'review_unmatched', review_association:{{status:'unmatched'}}}}]}})[0].text;
+if (!rendered.includes('下一步：') || !rendered.includes('等待本轮复核完成')) throw new Error('processing next step missing');
+const waitingText = tool.output.render({{}}, {{results:[{{...result.results[0], receipt_status:'review_waiting', reference_review:null, review_association:{{status:'matched',pdf_id:'p',review_code:'r',error_id:'e',stage:1}}}}]}})[0].text;
+if (waitingText.includes('candidate_id=') || !waitingText.includes('禁止再调用 confirm_error_notebook_entry')) throw new Error('matched review must not request another confirmation');
+const unmatchedText = tool.output.render({{}}, {{results:[{{...result.results[0], receipt_status:'review_unmatched', reference_review:null, review_association:{{status:'unmatched'}}}}]}})[0].text;
 if (!unmatchedText.includes('confirm_error_notebook_entry') || !unmatchedText.includes('candidate_id=')) throw new Error('unmatched review must retain its linking receipt');
 const adjudicator = registered.find((value) => value.name === 'adjudicate_error_notebook_reference_conflicts');
+let wrongCandidateBlocked = false;
+try {{
+  await adjudicator.execute({{items: [{{candidate_id:'c'.repeat(32),input_version:1,status:'consistent',rationale:'该候选并非本轮 process 返回的待复核题目。'}}]}}, {{agent,signal:new AbortController().signal}});
+}} catch (error) {{
+  wrongCandidateBlocked = String(error.message).includes('不得遗漏或串题');
+}}
+if (!wrongCandidateBlocked) throw new Error('wrong adjudication candidate must be blocked');
 const rechecker = registered.find((value) => value.name === 'recheck_error_notebook_reference_conflict');
 const rechecked = await rechecker.execute({{question_text: 'historical q'}}, {{agent: {{id: 'session-process'}}, signal: new AbortController().signal}});
 if (rechecked.result.reference_review.reference_answer !== 'x=1') throw new Error('reference conflict not reloaded');
@@ -269,7 +277,7 @@ if (!recheckRendered.includes('下一步：') || !recheckRendered.includes('等�
 const adjudicated = await adjudicator.execute({{items: [{{
   candidate_id: 'a'.repeat(32), input_version: 1, status: 'consistent',
   rationale: '独立答案与题库答案的数学结论完全一致。'
-}}]}}, {{agent: {{id: 'session-process'}}, signal: new AbortController().signal}});
+}}]}}, {{agent, signal: new AbortController().signal}});
 if (adjudicated.results[0].status !== 'saved') throw new Error('reference conflict not adjudicated');
 const adjudicatedRendered = adjudicator.output.render({{}}, adjudicated)[0].text;
 if (!adjudicatedRendered.startsWith('错题编号（error_id）：' + 'b'.repeat(32))) throw new Error('adjudication error id missing');
@@ -278,6 +286,7 @@ const resolvedRecheck = {{result:{{...rechecked.result, receipt_status:'saved', 
 if (!rechecker.output.render({{}}, resolvedRecheck)[0].text.startsWith('错题编号（error_id）：' + 'b'.repeat(32))) throw new Error('resolved recheck id missing');
 if (!rechecker.output.schema.properties.result.properties.error_id) throw new Error('recheck id missing from schema');
 if (!adjudicatedRendered.includes('下一步：') || !adjudicatedRendered.includes('打开「错题本」')) throw new Error('adjudication next step missing');
+if (!rendered.includes('只调用 adjudicate_error_notebook_reference_conflicts') || !adjudicatedRendered.includes('直接生成最终回复')) throw new Error('agent action must be explicit');
 const remover = registered.find((value) => value.name === 'remove_error_notebook_entry');
 let concluded = false;
 const removed = await remover.execute({{error_id: 'b'.repeat(32)}}, {{
