@@ -550,6 +550,24 @@ class PracticeReviewApiTests(unittest.TestCase):
         )
         self.assertEqual((context["status"], context["code"]), ("matched", item["code"]))
 
+    def test_legacy_review_code_does_not_treat_vector_b_as_a_choice(self):
+        checkpoint = deepcopy(self.job.checkpoint)
+        item = checkpoint["review_manifest"][0]
+        item["code"] = f"R{self.job.job_id[:12]}-01"
+        item["stem_text"] = (
+            r"设 $|\vec a|=1$，$|\vec b|=2$，且 $\vec a,\vec b$ 的夹角为 $120^\circ$，"
+            r"求 $(\vec a+\vec b)\cdot(\vec a-2\vec b)$ 与 $|2\vec a+\vec b|$。"
+        )
+        self.job = replace(self.job, checkpoint=checkpoint)
+        self.fixture.store.jobs[self.job.job_id] = self.job
+        context = self.fixture.service.resolve_practice_review(
+            user_id=self.fixture.owner,
+            question_text="设 |a|=1，|b|=2，且 a,b 的夹角为 120°，求 (a+b)·(a-2b) 与 |2a+b|。",
+            locator={"code": item["code"], "error_id": item["error_id"][:8], "stage": 1, "kind": "original"},
+            review_mode=True,
+        )
+        self.assertEqual((context["status"], context["code"]), ("matched", item["code"]))
+
     def test_one_photo_uses_its_confirmed_pdf_for_an_ambiguous_recommendation(self):
         current = self.job
         extra = Question("c" * 32, "已知二次方程 z 的平方等于十六，求 z。", "z=4或-4", 10, 2, "测试题库")

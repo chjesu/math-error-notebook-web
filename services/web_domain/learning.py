@@ -109,7 +109,7 @@ def normalized_question_text(text: str) -> str:
     value = _normalized_math_source(text).casefold()
     value = re.sub(r"^\s*(?:题干|题目)\s*[:：]\s*", "", value)
     value = re.sub(r"^\s*\d+\s*[.、．]\s*", "", value)
-    option = re.search(r"(?:^|\s)[a-f][.、．:：)]\s*", value)
+    option = re.search(r"(?:选项\s*[:：]\s*|(?:^|\n)\s*)[a-f][.、．:：)]\s*", value)
     if option and option.start() > 10:
         value = value[:option.start()]
     # OCR commonly drops purely presentational LaTeX commands while the
@@ -120,7 +120,7 @@ def normalized_question_text(text: str) -> str:
     value = re.sub(rf"\\({greek})\b", r"\1", value)
     for symbol, name in {"α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "θ": "theta", "λ": "lambda", "μ": "mu", "π": "pi", "φ": "phi", "ω": "omega"}.items():
         value = value.replace(symbol, name)
-    value = re.sub(r"\\(?:angle|cdot|times|perp|parallel)\b", "", value)
+    value = re.sub(r"\\(?:angle|cdot|times|perp|parallel|circ)\b", "", value)
     value = re.sub(r"\\(?:left|right|displaystyle|textstyle|,|!)", "", value)
     value = re.sub(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}", r"(\1)/(\2)", value)
     value = re.sub(r"\\frac\s*([0-9a-z])\s*([0-9a-z])", r"(\1)/(\2)", value)
