@@ -66,6 +66,7 @@ HARNESS_PRODUCT_WORKSPACE = HARNESS_WEB_HOME / "math-notebook-workspace"
 HARNESS_AGENT_PRESETS = ROOT / "config" / "deepseek-harness" / "agent-presets"
 HARNESS_RUNTIME_PRESET = HARNESS_WEB_HOME / ".agent-presets" / "math-notebook" / "agent.cordis.yml"
 HARNESS_WEB_PATCH = ROOT / "config" / "deepseek-harness" / "web-product.patch.yml"
+HARNESS_JSONRPC_SERVER = ROOT / "config" / "deepseek-harness" / "notebook-jsonrpc-server.mjs"
 HARNESS_WEB_STDOUT = ROOT / "data" / "runtime" / "deepseek-harness-web.stdout.log"
 HARNESS_WEB_STDERR = ROOT / "data" / "runtime" / "deepseek-harness-web.stderr.log"
 HARNESS_PROVIDER = "notebook-provider"
@@ -1732,13 +1733,14 @@ def _check_harness_sources() -> None:
         ROOT / "extensions/dsh-math-notebook-ui/lib/client.js",
         ROOT / "extensions/dsh-math-notebook-ui/lib/index.js",
         ROOT / "config/deepseek-harness/cordis.yml",
+        HARNESS_JSONRPC_SERVER,
         HARNESS_WEB_PATCH,
         HARNESS_AGENT_PRESETS / "math-notebook/agent.cordis.yml",
     ]
     for source in sources:
         if re.search(r"(?m)^(<<<<<<< |=======\s*$|>>>>>>> )", source.read_text(encoding="utf-8")):
             raise RuntimeError(f"unresolved merge markers in {source.relative_to(ROOT)}")
-        if source.suffix == ".js":
+        if source.suffix in {".js", ".mjs"}:
             result = subprocess.run([node, "--check", str(source)], capture_output=True, timeout=15)
             if result.returncode:
                 raise RuntimeError(f"invalid Harness JavaScript: {source.relative_to(ROOT)}")

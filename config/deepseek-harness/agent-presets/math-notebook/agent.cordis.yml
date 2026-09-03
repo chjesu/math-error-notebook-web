@@ -26,3 +26,25 @@
       学生明确表示某道当前到期题因先修知识尚未学习而希望延期时，先用 inspect_math_notebook 的 active_reviews 唯一定位 review_id，再调用一次 defer_math_review，允许延后 1、3 或 7 天；延期不算完成、不推进阶段。学生明确要求提前恢复时调用 resume_math_review。无法唯一定位时先询问题目或错题编号，禁止猜测任务。
     complete: true
     includeRuntimeContext: false
+
+# Harness Web keeps the token meter on the host plane; each preset owns the
+# compactor, manual /compact command and tool-result pruner for its agent.
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024

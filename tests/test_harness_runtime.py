@@ -389,6 +389,50 @@ if (processedPages !== 2 || pageTwo.results.length !== 21 || pageTwo.next_review
             value = HarnessRuntimeConfig.from_environment(Path(directory))
         self.assertEqual((value.provider, value.model, value.max_tokens), ("qwen-compatible", "qwen-vl-test", 4096))
 
+    def test_manual_compaction_uses_the_harness_session_rpc(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            adapter = HarnessRuntimeAdapter(self.config(Path(directory)))
+            with patch.object(adapter, "start") as start, patch.object(
+                adapter, "_request", return_value={"status": "completed", "compacted": True},
+            ) as request:
+                result = adapter.compact("session-test")
+        start.assert_called_once_with()
+        request.assert_called_once_with(
+            "session/compact", {"sessionId": "session-test", "timeoutMs": 170_000}, timeout=180.0,
+        )
+        self.assertEqual(result, {"status": "completed", "compacted": True})
+
+    def test_manual_compaction_rejects_an_invalid_session_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            adapter = HarnessRuntimeAdapter(self.config(Path(directory)))
+            with self.assertRaisesRegex(ValueError, "invalid Harness session id"):
+                adapter.compact("bad/session")
+
+    def test_real_runtime_compacts_an_empty_session_without_calling_the_model(self) -> None:
+        node = shutil.which("node")
+        root = Path(__file__).parents[1]
+        runtime = root / "node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js"
+        if node is None or not runtime.is_file():
+            self.skipTest("Installed Harness is needed for JSON-RPC compaction")
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            adapter = HarnessRuntimeAdapter(HarnessRuntimeConfig(
+                project_root=root,
+                cordis_config=root / "config/deepseek-harness/cordis.yml",
+                runtime_entry=runtime,
+                image_admission_entry=root / "scripts/harness_admit_images.mjs",
+                session_root=temporary / "sessions",
+                attachment_home=temporary / "attachments",
+                projection_root=temporary / "projection",
+            ))
+            try:
+                self.assertEqual(
+                    adapter.compact("session-empty-compaction"),
+                    {"status": "completed", "compacted": False},
+                )
+            finally:
+                adapter.close()
+
     def test_history_projection_is_durable_and_cursor_paginated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             adapter = HarnessRuntimeAdapter(self.config(Path(directory)))

@@ -1,6 +1,6 @@
 # Product-owned DeepSeek Harness composition. Stdout is JSON-RPC only.
 - id: sdk-jsonrpc-server
-  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+  name: './notebook-jsonrpc-server.mjs'
   config:
     maxTokensAsSuccess: false
 
@@ -25,6 +25,8 @@
         maxRequestImageBytes: 20971520
         models:
           - id: !!js process.env.HARNESS_MODEL ?? 'qwen3.8-flash'
+            contextWindow: !!js Number.parseInt(process.env.HARNESS_CONTEXT_WINDOW ?? '1000000', 10)
+            maxTokens: !!js Number.parseInt(process.env.HARNESS_MAX_TOKENS ?? '32768', 10)
             input: !!js "(process.env.HARNESS_INPUT_MODALITIES ?? 'text,image').split(',').map((value) => value.trim()).filter(Boolean)"
         reasoning: !!js "process.env.HARNESS_REASONING || undefined"
         retryPolicy:
@@ -32,6 +34,7 @@
           maxRetries: 2
 
 - id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
   config:
     provider: notebook-provider
     model: !!js process.env.HARNESS_MODEL ?? 'qwen3.8-flash'
@@ -88,3 +91,10 @@
     retainRatio: 0.16
     maxTokens: 8192
     compactionRetries: 1
+
+- id: tool-result-pruner
+  name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+  config:
+    thresholdChars: 8192
+    headChars: 4096
+    tailChars: 1024

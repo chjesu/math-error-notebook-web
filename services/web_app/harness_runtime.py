@@ -159,7 +159,15 @@ class HarnessRuntimeAdapter:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2.0)
+        for reader in (self._reader, self._stderr_reader):
+            if reader is not None:
+                reader.join(timeout=1.0)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
         self._process = None
+        self._reader = None
+        self._stderr_reader = None
         self._fail_waiters(HarnessRuntimeError("DeepSeek Harness runtime stopped", public_code="model_interrupted"))
 
     def run_conversation_turn(
@@ -233,10 +241,17 @@ class HarnessRuntimeAdapter:
                 items.append({"item": {"type": "agentMessage", "text": record["text"]}})
         return {"items": items, "next_cursor": str(start) if start else None}
 
-    @staticmethod
-    def compact(_thread_id: str) -> dict[str, str]:
-        # compaction-basic owns automatic pressure/context-overflow compaction.
-        return {"status": "completed"}
+    def compact(self, thread_id: str) -> dict[str, Any]:
+        """Ask Harness to durably compact one idle session."""
+        if not _SESSION_ID.fullmatch(thread_id):
+            raise ValueError("invalid Harness session id")
+        self.start()
+        value = self._request(
+            "session/compact", {"sessionId": thread_id, "timeoutMs": 170_000}, timeout=180.0,
+        )
+        if not isinstance(value, dict) or value.get("status") != "completed":
+            raise HarnessRuntimeError("DeepSeek Harness returned an invalid compaction result")
+        return value
 
     def _run_structured(
         self,
@@ -281,7 +296,7 @@ class HarnessRuntimeAdapter:
                 raise HarnessRuntimeError("DeepSeek Harness omitted the prompt receipt")
             while True:
                 if cancel_event is not None and cancel_event.is_set():
-                    self.close()
+                    self._request("session/cancel", {"sessionId": resolved_session}, timeout=10.0)
                     raise HarnessRuntimeError("Harness turn interrupted", public_code="model_interrupted")
                 try:
                     notification = subscription.get(timeout=0.2)
