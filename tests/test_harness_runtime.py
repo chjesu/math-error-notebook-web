@@ -13,6 +13,11 @@ from services.web_app.harness_runtime import HarnessRuntimeAdapter, HarnessRunti
 
 
 class HarnessRuntimeTests(unittest.TestCase):
+    def test_default_provider_matches_the_product_qwen_configuration(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = HarnessRuntimeConfig.from_environment(Path(__file__).parents[1])
+        self.assertEqual((config.provider, config.model), ("notebook-provider", "qwen3.8-flash"))
+
     def test_product_tool_schemas_match_installed_harness_runtime(self) -> None:
         node = shutil.which("node")
         root = Path(__file__).parents[1]

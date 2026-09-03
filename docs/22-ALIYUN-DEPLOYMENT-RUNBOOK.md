@@ -15,7 +15,7 @@
 - `scripts/local_env.py` 会启动本地 MySQL、模拟短信和模拟 CAPTCHA，并强制只监听 localhost；
 - 完整 `NotebookAsgiApp` 尚无生产依赖装配入口；现有 `services.web_auth.bootstrap:create_app` 只装配认证子应用；
 - 上传原图、PDF、导出文件、Harness 附件和会话仍有本地文件路径；
-- 首页把工作台地址固定为 `http://127.0.0.1:3080/`，生产同源网关尚未落地；
+- 本地同源网关已能统一代理 Harness，但完整生产装配入口、可信转发头和生产安全响应头尚未落地；
 - Harness JSONL 会话仍在单机目录，不能安全运行两个无状态应用副本；
 - 生产异步 Worker、OSS 适配、就绪检查、生产迁移器和完整依赖锁仍未完成；
 - 真实短信、Turnstile、百炼模型、备份恢复、压测、观测和独立安全复核尚未取得上线证据。
@@ -36,9 +36,9 @@ flowchart TB
     ALB --> GW1[ECS A\n同源网关]
     ALB --> GW2[ECS B\n同源网关]
     GW1 --> API1[Python API\n127.0.0.1:8000]
-    GW1 --> WEB1[Harness Web\n127.0.0.1:3080]
+    GW1 --> WEB1[Harness Web\n随机回环端口]
     GW2 --> API2[Python API\n127.0.0.1:8000]
-    GW2 --> WEB2[Harness Web\n127.0.0.1:3080]
+    GW2 --> WEB2[Harness Web\n随机回环端口]
     API1 --> RDS[(RDS MySQL 8)]
     API2 --> RDS
     API1 --> OSS[(私有 OSS)]
@@ -119,7 +119,7 @@ VPC                 10.20.0.0/16
 | ALB | 公网 | 80 | 只做 301/308 跳转到 HTTPS |
 | ECS 同源网关 | ALB 安全组或接入子网 | 8080 | 不允许公网直接访问 |
 | Python API | 本机回环 | 8000 | 不加入 ECS 安全组 |
-| Harness Web | 本机回环 | 3080 | 永远不暴露公网 |
+| Harness Web | 本机随机回环端口 | 运行时分配 | 永远不暴露公网，也不作为浏览器入口 |
 | RDS | ECS 应用安全组/应用子网 | 3306 | 仅内网 TLS |
 | SSH | 不开放公网 | 22 | 使用云助手或堡垒机 |
 
@@ -151,9 +151,9 @@ VPC                 10.20.0.0/16
 生产浏览器只能看到 `https://math.example.cn`。网关内部再区分：
 
 - 产品 API、登录、注册、隐私页、错题本、PDF 和学习进度 → Python `127.0.0.1:8000`；
-- Harness 静态资源、会话接口和 WebSocket → Harness Web `127.0.0.1:3080`；
+- Harness 静态资源、会话接口和 WebSocket → 当前实例启动的随机回环上游；
 - 所有转发统一保留正式 Host，并只接受 ALB 提供的可信转发头；
-- 禁止把 3080 暴露为另一个公网端口或让浏览器访问 `127.0.0.1`；
+- 禁止把任何 Harness 内部端口暴露为另一个公网端口或让浏览器直接访问回环地址；
 - CSP 的 `frame-src`、`connect-src` 和 WebSocket 地址只允许正式同源地址；
 - 增加 HSTS、`X-Content-Type-Options: nosniff`、合适的 `Referrer-Policy` 和 `Permissions-Policy`。
 
@@ -306,7 +306,7 @@ tmp/
 | 进程 | 监听 | 说明 |
 |---|---|---|
 | `lzlm-api` | `127.0.0.1:8000` | 完整 `NotebookAsgiApp` 生产工厂 |
-| `lzlm-harness-web` | `127.0.0.1:3080` | 固定版官方 Harness Web 与产品补丁 |
+| `lzlm-harness-web` | 启动期随机回环端口 | 固定版官方 Harness Web 与产品补丁；只接受同实例网关转发 |
 | `lzlm-worker` | 无公网监听 | 领取解析、PDF、导出和删除任务 |
 | `nginx` 或等价网关 | ECS 私网 `:8080` | 同源路由、WebSocket 和安全头 |
 

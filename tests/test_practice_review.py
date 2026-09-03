@@ -210,6 +210,17 @@ class PracticeReviewTests(unittest.TestCase):
         self.assertEqual((calendar["summary"]["needs_correction_count"], calendar["summary"]["completed_review_count"]), (0, 1))
         self.assertEqual(calendar["days"][-1]["items"][0]["result"], "wrong")
 
+    def test_deferred_pdf_correction_is_hidden_until_resumed(self):
+        self.job = self.paper()
+        self.submit(0, "incorrect")
+        task = self.store.list_active_reviews(user_id=self.owner)[0]
+        self.assertEqual(self.service.progress(user_id=self.owner, now=self.now)["today_needs_correction_count"], 1)
+        self.store.defer_review(user_id=self.owner, task_id=task.task_id, days=3,
+            reason="prerequisite_not_learned", idempotency_key="defer-pdf", now=self.now)
+        self.assertEqual(self.service.progress(user_id=self.owner, now=self.now)["today_needs_correction_count"], 0)
+        self.store.resume_review(user_id=self.owner, task_id=task.task_id, idempotency_key="resume-pdf", now=self.now)
+        self.assertEqual(self.service.progress(user_id=self.owner, now=self.now)["today_needs_correction_count"], 1)
+
     def test_reprint_state_does_not_leak_to_new_round_or_other_account(self):
         original = self.paper()
         self.job = original

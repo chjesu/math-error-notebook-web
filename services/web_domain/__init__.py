@@ -20,6 +20,15 @@ from .learning import (
     reference_validation_from_evidence,
 )
 from .paper_intake import PaperDraft, PaperItem
+from .intake_batch import (
+    BatchClaim,
+    BatchOperation,
+    IntakeBatch,
+    IntakeBatchEngine,
+    IntakeBatchEvent,
+    IntakeBatchFailure,
+    IntakeBatchFile,
+)
 
 __all__ = [
     "ErrorEntry",
@@ -40,4 +49,11 @@ __all__ = [
     "ReviewTask",
     "PaperDraft",
     "PaperItem",
+    "BatchClaim",
+    "BatchOperation",
+    "IntakeBatch",
+    "IntakeBatchEngine",
+    "IntakeBatchEvent",
+    "IntakeBatchFailure",
+    "IntakeBatchFile",
 ]

@@ -14,6 +14,8 @@ import zipfile
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from .storage import LocalFsStorageAdapter, StorageAdapter
+
 
 @dataclass(frozen=True)
 class FileCandidate:
@@ -23,13 +25,21 @@ class FileCandidate:
     byte_size: int
     content_sha256: str
     object_key: str
-    local_path: Path
+    local_path: Path | None
+    storage_created: bool
 
 
 class FileIntake:
-    def __init__(self, root: Path, max_bytes: int = 25 * 1024 * 1024) -> None:
+    def __init__(
+        self,
+        root: Path,
+        max_bytes: int = 25 * 1024 * 1024,
+        *,
+        storage: StorageAdapter | None = None,
+    ) -> None:
         self.root = root.resolve()
         self.max_bytes = max_bytes
+        self.storage = storage if storage is not None else LocalFsStorageAdapter(self.root)
 
     @staticmethod
     def _name(value: str) -> str:
@@ -78,26 +88,22 @@ class FileIntake:
         digest = hashlib.sha256(content).hexdigest()
         user_namespace = hashlib.sha256(user_id.encode("ascii")).hexdigest()[:16]
         object_key = f"quarantine/{user_namespace}/{secrets.token_hex(16)}.{suffix}"
-        target = (self.root / object_key).resolve()
-        if self.root not in target.parents:
-            raise ValueError("unsafe quarantine path")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with target.open("xb") as handle:
-                handle.write(content)
-        except FileExistsError:
-            if hashlib.sha256(target.read_bytes()).hexdigest() != digest:
-                raise RuntimeError("quarantine hash collision")
-        return FileCandidate(user_id, name, media_type, len(content), digest, object_key, target)
+        storage_created = self.storage.save_bytes(object_key, content, media_type)
+        resolver = getattr(self.storage, "resolve", None)
+        local_path = resolver(object_key) if callable(resolver) else None
+        return FileCandidate(user_id, name, media_type, len(content), digest, object_key, local_path, storage_created)
 
     def read(self, object_key: str) -> bytes:
-        return self.resolve(object_key).read_bytes()
+        return self.storage.read_bytes(object_key)
+
+    def delete(self, object_key: str) -> None:
+        self.storage.delete_path(object_key)
 
     def resolve(self, object_key: str) -> Path:
-        target = (self.root / object_key).resolve()
-        if self.root not in target.parents or not target.is_file():
-            raise LookupError("file not found")
-        return target
+        resolver = getattr(self.storage, "resolve", None)
+        if not callable(resolver):
+            raise RuntimeError("storage object has no local path")
+        return resolver(object_key)
 
     @contextmanager
     def model_preview(self, object_key: str, expected_sha256: str) -> Iterator[Path]:

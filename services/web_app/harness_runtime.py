@@ -42,7 +42,7 @@ class HarnessRuntimeConfig:
     attachment_home: Path
     projection_root: Path
     provider: str = "notebook-provider"
-    model: str = "deepseek-v4-flash-vision-exp"
+    model: str = "qwen3.8-flash"
     max_tokens: int = 32_768
     request_timeout_seconds: float = 900.0
 
@@ -61,7 +61,7 @@ class HarnessRuntimeConfig:
             attachment_home=root / "data" / "runtime" / "deepseek-harness-home",
             projection_root=root / "data" / "runtime" / "deepseek-harness-projection",
             provider=os.environ.get("HARNESS_PROVIDER", "notebook-provider"),
-            model=os.environ.get("HARNESS_MODEL", "deepseek-v4-flash-vision-exp"),
+            model=os.environ.get("HARNESS_MODEL", "qwen3.8-flash"),
             max_tokens=max_tokens,
         )
 

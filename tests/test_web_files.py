@@ -1,17 +1,107 @@
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 from PIL import Image
 
-from services.web_files import FileIntake
+from services.web_files import FileIntake, LocalFsStorageAdapter
+from services.web_domain import InMemoryNotebookStore, NotebookService
+
+
+class FalsyLocalFsStorageAdapter(LocalFsStorageAdapter):
+    def __bool__(self) -> bool:
+        return False
+
+
+class LocalFsStorageAdapterTests(unittest.TestCase):
+    def test_saves_reads_and_deletes_an_object(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = LocalFsStorageAdapter(Path(directory))
+            storage.save_bytes("quarantine/user/object.png", b"content", "image/png")
+
+            self.assertEqual(storage.read_bytes("quarantine/user/object.png"), b"content")
+            self.assertTrue(storage.resolve("quarantine/user/object.png").is_file())
+
+            storage.delete_path("quarantine/user/object.png")
+            with self.assertRaises(LookupError):
+                storage.read_bytes("quarantine/user/object.png")
+
+    def test_rejects_unsafe_object_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = LocalFsStorageAdapter(Path(directory))
+            for object_key in (
+                "../outside", "/absolute", "folder\\escape", "folder/../escape", "C:/escape",
+                "quarantine/user/NUL", "quarantine/user/con.txt", "quarantine/user/COM1.log",
+                "quarantine/user/trailing.",
+            ):
+                with self.subTest(object_key=object_key), self.assertRaises(ValueError):
+                    storage.save_bytes(object_key, b"content", "application/octet-stream")
+
+    def test_same_key_is_idempotent_but_different_content_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = LocalFsStorageAdapter(Path(directory))
+            self.assertTrue(storage.save_bytes("quarantine/user/object.png", b"content", "image/png"))
+            self.assertFalse(storage.save_bytes("quarantine/user/object.png", b"content", "image/png"))
+
+            with self.assertRaisesRegex(RuntimeError, "collision"):
+                storage.save_bytes("quarantine/user/object.png", b"replacement", "image/png")
 
 
 class FileIntakeTests(unittest.TestCase):
+    def test_can_store_validated_files_in_a_separate_local_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory() as objects:
+            storage = LocalFsStorageAdapter(Path(objects))
+            intake = FileIntake(Path(scratch), storage=storage)
+            content = b"\x89PNG\r\n\x1a\nimage"
+
+            candidate = intake.quarantine(user_id="a" * 32, original_name="q.png", content=content)
+
+            self.assertEqual(storage.read_bytes(candidate.object_key), content)
+            self.assertEqual(intake.read(candidate.object_key), content)
+            self.assertTrue(candidate.local_path.is_relative_to(Path(objects).resolve()))
+
+    def test_notebook_service_uses_injected_storage_for_upload_and_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory() as objects:
+            storage = FalsyLocalFsStorageAdapter(Path(objects))
+            store = InMemoryNotebookStore()
+            notebook = NotebookService(store, Path(scratch), storage=storage)
+            user_id = "a" * 32
+
+            record = notebook.upload(
+                user_id=user_id,
+                purpose="question_image",
+                original_name="q.png",
+                content=b"\x89PNG\r\n\x1a\nimage",
+            )
+
+            self.assertTrue(storage.resolve(record.object_key).is_relative_to(Path(objects).resolve()))
+            notebook.prepare_user_deletion(user_id=user_id)
+            notebook.complete_user_deletion(user_id=user_id)
+            with self.assertRaises(LookupError):
+                storage.read_bytes(record.object_key)
+
+    def test_metadata_failure_does_not_delete_an_idempotently_existing_object(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory() as objects:
+            storage = LocalFsStorageAdapter(Path(objects))
+            store = InMemoryNotebookStore()
+            notebook = NotebookService(store, Path(scratch), storage=storage)
+            user_id, job_id, content = "a" * 32, "b" * 32, b"{}"
+            namespace = hashlib.sha256(user_id.encode("ascii")).hexdigest()[:16]
+            object_key = f"quarantine/{namespace}/export-{job_id}.json"
+            storage.save_bytes(object_key, content, "application/json")
+
+            with mock.patch.object(store, "create_file", side_effect=OSError("metadata unavailable")):
+                with self.assertRaisesRegex(OSError, "metadata unavailable"):
+                    notebook._store_export(user_id=user_id, job_id=job_id, content=content)
+
+            self.assertEqual(storage.read_bytes(object_key), content)
+
     def test_valid_file_is_user_scoped_and_object_key_is_unpredictable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             intake = FileIntake(Path(directory))

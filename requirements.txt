@@ -4,3 +4,5 @@ matplotlib>=3.10,<4
 reportlab>=4.4,<5
 uvicorn>=0.35,<1
 pypdf>=6,<7
+websockets>=13,<16
+psutil>=5.9,<8

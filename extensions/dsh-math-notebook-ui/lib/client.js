@@ -4,7 +4,7 @@ window.__ModuleLoader__.load({
     const module = {exports: {}};
     const exports = module.exports;
     const {jsx} = require("react/jsx-runtime");
-    const productOrigin = "http://127.0.0.1:8000";
+    const productOrigin = window.location.origin;
     const productWorkspaceTitle = "错题会话";
     const modelEpoch = "qwen3.8-flash-v1";
     const navigationItems = [

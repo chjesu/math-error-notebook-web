@@ -32,14 +32,16 @@
         status.innerHTML = "<div><strong>本地工作台暂时不可用</strong><p>请确认本地服务已使用 --enable-harness-ui 启动，然后刷新页面。</p></div>";
       };
       fetch("/v1/session", {credentials: "same-origin", headers: {Accept: "application/json"}})
-        .then((response) => {
+        .then(async (response) => {
           if (response.status === 401) {
             location.replace("/login");
             return;
           }
           if (!response.ok) throw new Error("session unavailable");
+          const workspace = await fetch("/harness/", {credentials: "same-origin"});
+          if (!workspace.ok || !workspace.headers.get("content-type")?.includes("text/html")) throw new Error("workspace unavailable");
           frame.addEventListener("load", () => { status.hidden = true; frame.hidden = false; }, {once: true});
-          frame.src = "http://127.0.0.1:3080/";
+          frame.src = "/harness/";
           setTimeout(() => { if (frame.hidden) showError(); }, 10000);
         })
         .catch(showError);

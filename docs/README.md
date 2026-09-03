@@ -41,6 +41,8 @@
 | [24-OPERATIONS-ADMIN-PRD.md](./24-OPERATIONS-ADMIN-PRD.md) | 已移除后台的历史设计留档 | v0.1 | 2026-08-31 已移除运行代码，不再提供此功能 |
 | [`../openapi/web-v1.json`](../openapi/web-v1.json) | 当前完整本地候选机器可校验 API 契约 | v0.4.0 | 45 paths，零条 `/v1/admin*`；生产部署前仍需契约复核 |
 | [`../data/workflows/local-candidate-20260901.md`](../data/workflows/local-candidate-20260901.md) | 2026-09-01 本地候选完成证据、命令与生产阻断项 | — | 待集成授权；不代表生产完成 |
+| [23-SERVICE-MANAGEMENT-SCRIPTS.md](./23-SERVICE-MANAGEMENT-SCRIPTS.md) | 跨平台服务启停与运维脚本手册 (Windows 10/11 与 Linux/Unix) | v0.4.0 | 已落地可执行 |
+| [24-PRODUCT-ARCHITECTURE-REFACTORING-AND-PLAN.md](./24-PRODUCT-ARCHITECTURE-REFACTORING-AND-PLAN.md) | 产品架构重构方案与分期开发计划 (v0.5.0 演进与 WBS) | v0.5.0 | 规划已确认，待执行 |
 
 ## 活跃需求
 

@@ -90,6 +90,42 @@
         "responses": {"200": {"$ref": "#/components/responses/Task"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
       }
     },
+    "/v1/intake/batches": {
+      "post": {
+        "operationId": "createAsyncIntakeBatch",
+        "description": "冻结当前用户拥有的有序图片快照并立即返回 202；识别、独立求解和判题在部署级双槽位后台执行。精确幂等重放优先；新请求每账号最多 3 个活动批次、滚动 24 小时 60 个批次。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"$ref": "#/components/requestBodies/CreateIntakeBatch"},
+        "responses": {"202": {"$ref": "#/components/responses/AsyncIntakeBatch"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "429": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/intake/batches/active": {
+      "get": {
+        "operationId": "getActiveIntakeBatch",
+        "description": "返回当前活动批次和服务端恢复游标；后续提供该 updated_after 时，若没有活动批次则返回游标之后更新的最新终态批次，避免发现轮询漏掉极速完成。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/UpdatedAfter"}],
+        "responses": {"200": {"description": "当前用户最近的非终态批次与服务端恢复游标", "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["batch", "recovery_cursor"], "properties": {"batch": {"oneOf": [{"$ref": "#/components/schemas/AsyncIntakeBatch"}, {"type": "null"}]}, "recovery_cursor": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,12})$"}}}}}}, "401": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/intake/batches/{batch_id}": {
+      "get": {
+        "operationId": "getAsyncIntakeBatch",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/BatchId"}],
+        "responses": {"200": {"$ref": "#/components/responses/AsyncIntakeBatch"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/intake/batches/{batch_id}/events": {
+      "get": {
+        "operationId": "streamAsyncIntakeBatchEvents",
+        "description": "按批次内事件序号从 Last-Event-ID 之后持续重放 progress、item_completed、batch_completed 或 batch_failed；网络交付至少一次，客户端按 id 去重。连接受进程、账号和批次三级上限保护。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"$ref": "#/components/parameters/BatchId"}, {"$ref": "#/components/parameters/LastEventId"}],
+        "responses": {"200": {"description": "可重放的批次事件流", "content": {"text/event-stream": {"schema": {"type": "string"}}}}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "429": {"$ref": "#/components/responses/Error"}}
+      }
+    },
     "/v1/intakes": {
       "get": {
         "operationId": "listPendingIntakes",
@@ -447,6 +483,9 @@
     "parameters": {
       "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 64}},
       "TaskId": {"name": "task_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
+      "BatchId": {"name": "batch_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
+      "LastEventId": {"name": "Last-Event-ID", "in": "header", "required": false, "schema": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,18})$"}},
+      "UpdatedAfter": {"name": "updated_after", "in": "query", "required": false, "description": "上一次发现响应返回的服务端恢复游标。", "schema": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,12})$"}},
       "IntakeId": {"name": "intake_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
       "AttemptId": {"name": "attempt_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
       "ResultId": {"name": "result_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
@@ -463,6 +502,7 @@
       "DeleteAccount": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeleteAccount"}}}},
       "FileUpload": {"required": true, "content": {"multipart/form-data": {"schema": {"$ref": "#/components/schemas/FileUpload"}}}},
       "CreateIntake": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateIntake"}}}},
+      "CreateIntakeBatch": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateIntakeBatch"}}}},
       "IntakeRevision": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IntakeRevision"}}}},
       "ManualIntakeCandidate": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualIntakeCandidate"}}}},
       "ManualGradeCandidate": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualGradeCandidate"}}}},
@@ -483,6 +523,7 @@
       "TaskAccepted": {"description": "任务已创建", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TaskAccepted"}}}},
       "Intake": {"description": "识别候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Intake"}}}},
       "IntakeBatch": {"description": "一个文件中识别出的逐题候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IntakeBatch"}}}},
+      "AsyncIntakeBatch": {"description": "可恢复的图片摄取与判题批次", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AsyncIntakeBatch"}}}},
       "GradeCandidate": {"description": "判题候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GradeCandidate"}}}},
       "ChatTurn": {"description": "本轮会话答复及可选的新候选", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChatTurnResponse"}}}},
       "ConversationHistory": {"description": "最近一次错题会话中的用户与助手消息", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConversationHistory"}}}},
@@ -520,6 +561,8 @@
       "FileUpload": {"type": "object", "required": ["purpose", "file"], "properties": {"purpose": {"enum": ["exam", "answer_photo", "question_image"]}, "file": {"type": "string", "contentMediaType": "application/octet-stream"}}},
       "File": {"type": "object", "required": ["file_id", "status", "content_sha256"], "properties": {"file_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["quarantined", "ready", "rejected"]}, "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
       "CreateIntake": {"type": "object", "additionalProperties": false, "required": ["file_id"], "properties": {"file_id": {"$ref": "#/components/schemas/Id"}}},
+      "CreateIntakeBatch": {"type": "object", "additionalProperties": false, "required": ["file_ids"], "properties": {"file_ids": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"$ref": "#/components/schemas/Id"}}}},
+      "AsyncIntakeBatch": {"type": "object", "additionalProperties": false, "required": ["schema", "batch_id", "status", "current_stage", "total_files", "completed_files", "total_items", "completed_items", "stage_completed_items", "terminal", "last_event_id", "error_code", "created_at", "updated_at", "events_url"], "properties": {"schema": {"const": "intake-batch/v1"}, "batch_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["pending", "slicing", "solving", "grading", "completed", "failed"]}, "current_stage": {"type": ["string", "null"], "enum": ["pending", "slicing", "solving", "grading", null]}, "total_files": {"type": "integer", "minimum": 1, "maximum": 8}, "completed_files": {"type": "integer", "minimum": 0, "maximum": 8}, "total_items": {"type": ["integer", "null"], "minimum": 1, "maximum": 160}, "completed_items": {"type": "integer", "minimum": 0, "maximum": 160}, "stage_completed_items": {"type": "integer", "minimum": 0, "maximum": 160}, "terminal": {"type": "boolean"}, "last_event_id": {"type": "integer", "minimum": 1}, "error_code": {"type": ["string", "null"], "maxLength": 64}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "events_url": {"type": "string", "pattern": "^/v1/intake/batches/[0-9a-f]{32}/events$"}}},
       "IntakeRevision": {"type": "object", "additionalProperties": false, "required": ["input_version", "question_text", "answer_text"], "properties": {"input_version": {"type": "integer", "minimum": 1}, "question_text": {"type": "string", "minLength": 1}, "answer_text": {"type": "string"}}},
       "ManualIntakeCandidate": {"type": "object", "additionalProperties": false, "required": ["question_text"], "properties": {"question_text": {"type": "string", "minLength": 1}, "answer_text": {"type": "string", "default": ""}}},
       "ModelCandidateRequest": {"type": "object", "additionalProperties": false, "properties": {"refresh": {"type": "boolean", "default": false}}},
@@ -562,7 +605,7 @@
       "PracticeJob": {"allOf": [{"$ref": "#/components/schemas/Task"}, {"type": "object", "properties": {"download_url": {"type": "string"}}}]},
       "ExportJob": {"type": "object", "additionalProperties": false, "required": ["job_id", "status", "expires_at"], "properties": {"job_id": {"$ref": "#/components/schemas/Id"}, "status": {"enum": ["queued", "running", "completed", "failed_final", "cancelled"]}, "expires_at": {"type": "string", "format": "date-time"}, "download_url": {"type": "string"}}},
       "ExportCreated": {"type": "object", "additionalProperties": false, "required": ["job_id", "download_url", "expires_at"], "properties": {"job_id": {"$ref": "#/components/schemas/Id"}, "download_url": {"type": "string"}, "expires_at": {"type": "string", "format": "date-time"}}},
-      "ErrorEnvelope": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["code", "message", "retryable", "request_id"], "properties": {"code": {"enum": ["invalid_request", "invalid_code", "code_expired", "too_many_attempts", "weak_password", "agreement_required", "phone_not_registered", "phone_already_registered", "request_too_large", "invalid_host", "https_required", "method_not_allowed", "authentication_required", "sensitive_verification_failed", "forbidden", "not_found", "conflict", "input_version_changed", "waiting_confirmation", "rate_limited", "daily_grade_limit", "daily_recommendation_limit", "captcha_required", "temporarily_unavailable", "model_unavailable", "model_network_error", "model_rate_limited", "model_authentication_error", "model_interrupted", "failed_retryable", "failed_final"]}, "message": {"type": "string"}, "retryable": {"type": "boolean"}, "request_id": {"type": "string"}, "retry_after_seconds": {"type": "integer", "minimum": 1}}}}}
+      "ErrorEnvelope": {"type": "object", "required": ["error"], "properties": {"error": {"type": "object", "required": ["code", "message", "retryable", "request_id"], "properties": {"code": {"enum": ["invalid_request", "invalid_event_cursor", "idempotency_conflict", "invalid_code", "code_expired", "too_many_attempts", "weak_password", "agreement_required", "phone_not_registered", "phone_already_registered", "request_too_large", "invalid_host", "https_required", "method_not_allowed", "authentication_required", "sensitive_verification_failed", "forbidden", "not_found", "conflict", "input_version_changed", "waiting_confirmation", "rate_limited", "batch_limit_reached", "batch_rate_limited", "daily_grade_limit", "daily_recommendation_limit", "captcha_required", "temporarily_unavailable", "model_unavailable", "model_network_error", "model_rate_limited", "model_authentication_error", "model_interrupted", "failed_retryable", "failed_final"]}, "message": {"type": "string"}, "retryable": {"type": "boolean"}, "request_id": {"type": "string"}, "retry_after_seconds": {"type": "integer", "minimum": 1}}}}}
     }
   }
 }
