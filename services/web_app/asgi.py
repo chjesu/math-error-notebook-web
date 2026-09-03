@@ -290,6 +290,12 @@ class NotebookAsgiApp:
                     self.notebook.read_intake_source, user_id=user.user_id, intake_id=intake_id,
                 )
                 await self._inline_bytes(send, 200, content, media_type)
+            elif path.startswith("/v1/question-assets/") and method == "GET":
+                filename = path.rsplit("/", 1)[1]
+                media_type, content = await self._sync(
+                    self.notebook.read_question_asset, user_id=user.user_id, filename=filename,
+                )
+                await self._inline_bytes(send, 200, content, media_type)
             elif path == "/v1/conversations/latest/messages" and method == "GET":
                 if self.model_runner is None:
                     raise ModelUnavailableError("local model processing is disabled")

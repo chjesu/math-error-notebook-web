@@ -11,6 +11,7 @@ from threading import RLock
 from io import BytesIO
 import hashlib
 import json
+import re
 import uuid
 
 from services.web_files import FileIntake, LocalFsStorageAdapter, StorageAdapter
@@ -1770,6 +1771,20 @@ class NotebookService:
         if hashlib.sha256(content).hexdigest() != record.content_sha256:
             raise RuntimeError("file_integrity_failed")
         return record.original_name, record.media_type, content
+
+    def read_question_asset(self, *, user_id: str, filename: str) -> tuple[str, bytes]:
+        """Read one content-addressed question diagram without exposing storage paths."""
+        match = re.fullmatch(r"([0-9a-f]{64})\.(png|jpg|jpeg)", filename)
+        if not match:
+            raise LookupError("question asset not found")
+        reference = f"bank-assets/{filename}"
+        if not any(reference in item.question_text for item in self.store.list_errors(user_id=user_id)):
+            raise LookupError("question asset not found")
+        content = self.storage.read_bytes(reference)
+        if hashlib.sha256(content).hexdigest() != match.group(1):
+            raise RuntimeError("question asset integrity check failed")
+        media_type = "image/png" if match.group(2) == "png" else "image/jpeg"
+        return media_type, content
 
     def create_export(self, *, user_id: str, idempotency_key: str, now: datetime | None = None) -> Job:
         created_at = now or _now()

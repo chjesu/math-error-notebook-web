@@ -175,6 +175,15 @@
         "responses": {"200": {"description": "当前用户上传的原始题目图片", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}, "image/jpeg": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
       }
     },
+    "/v1/question-assets/{filename}": {
+      "get": {
+        "operationId": "getOwnedQuestionAsset",
+        "description": "仅当当前账号的有效错题实际引用该内容寻址图片时返回原题图；不暴露存储路径。",
+        "security": [{"sessionCookie": []}],
+        "parameters": [{"name": "filename", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^[0-9a-f]{64}\\.(png|jpg|jpeg)$"}}],
+        "responses": {"200": {"description": "当前账号错题引用的原题图", "content": {"image/png": {"schema": {"type": "string", "contentEncoding": "binary"}}, "image/jpeg": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}
+      }
+    },
     "/v1/intakes/{intake_id}/confirm": {
       "post": {
         "operationId": "confirmIntake",

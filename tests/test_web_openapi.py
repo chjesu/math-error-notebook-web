@@ -134,6 +134,13 @@ class WebOpenApiContractTests(unittest.TestCase):
         self.assertTrue({"401", "404"}.issubset(operation["responses"]))
         self.assertEqual(set(operation["responses"]["200"]["content"]), {"image/png", "image/jpeg"})
 
+    def test_owned_question_asset_is_documented(self) -> None:
+        operation = self.operation("/v1/question-assets/{filename}", "get")
+        self.assertEqual(operation["operationId"], "getOwnedQuestionAsset")
+        self.assertEqual(operation["parameters"][0]["name"], "filename")
+        self.assertTrue({"401", "404", "409"}.issubset(operation["responses"]))
+        self.assertEqual(set(operation["responses"]["200"]["content"]), {"image/png", "image/jpeg"})
+
     def test_conversation_control_uses_owned_intake_routes(self) -> None:
         stop = self.operation("/v1/intakes/{intake_id}/conversation/stop", "post")
         compact = self.operation("/v1/intakes/{intake_id}/conversation/compact", "post")

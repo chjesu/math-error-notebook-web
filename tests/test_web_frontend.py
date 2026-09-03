@@ -10,6 +10,28 @@ WEB = ROOT / "web"
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_question_markup_renders_only_content_addressed_diagrams(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is needed for frontend behavior checks")
+        script = r"""
+const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+const source = fs.readFileSync('web/app.js', 'utf8');
+const escape = value => String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+const context = {document:{createElement:()=>{let value=''; return {set textContent(v){value=v},get innerHTML(){return escape(value)}}}}};
+vm.createContext(context);
+vm.runInContext(source.slice(source.indexOf('function escapeHtml('), source.indexOf('function wrapPlainMath(')), context);
+const digest = 'a'.repeat(64);
+const html = context.questionMarkup(`题目<script>坏</script>\n![示意图](bank-assets/${digest}.png)`);
+assert.ok(html.includes('题目&lt;script&gt;坏&lt;/script&gt;'));
+assert.ok(html.includes(`/v1/question-assets/${digest}.png`));
+assert.ok(html.includes('class="question-diagram"'));
+const rejected = context.questionMarkup('![图](bank-assets/../../secret.png)');
+assert.ok(!rejected.includes('<img'));
+"""
+        result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_notebook_cards_show_full_error_ids(self) -> None:
         node = shutil.which("node")
         if node is None:
@@ -21,7 +43,8 @@ const ids = ['0123456789abcdef0123456789abcdef', 'fedcba9876543210fedcba98765432
 const context = {$:()=>list, errors:ids.map((error_id,i)=>({error_id,status:i?'mastered':'open',
   created_at:'2026-08-31T00:00:00Z', question_text:'题目', first_error:'错因'})),
   selectedErrorIds:new Set([ids[0]]), selectionMode:'auto', causeLabels:{},
-  stageLabel:item=>item.status==='mastered'?'已掌握':'待安排', escapeHtml:s=>String(s??''), renderMath:()=>{}};
+  stageLabel:item=>item.status==='mastered'?'已掌握':'待安排', escapeHtml:s=>String(s??''),
+  questionMarkup:s=>String(s??''), renderMath:()=>{}};
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('  function renderErrors()'), source.indexOf('  async function showError(')),context);
 for (const mode of ['auto','manual','fixed']) {
@@ -82,7 +105,7 @@ let todayPlan = null, failPlanRead = false, beforeRecommendations = null;
 const context = {Intl, $, Date:class extends Date {constructor(...args) {super(...(args.length ? args : ['2026-08-30T16:30:00Z']));}},
   crypto:{randomUUID:()=>`key-${requests.length}`}, document:{createElement:tag=>({tag,setAttribute(){}})},
   sessionStorage:{getItem:k=>storage.get(k)??null, setItem:(k,v)=>storage.set(k,v)},
-  escapeHtml:s=>String(s??''), renderMath:()=>{}, authError:e=>String(e), status:(node,text,error=false)=>{node.textContent=text;node.error=error;},
+  escapeHtml:s=>String(s??''), questionMarkup:s=>String(s??''), renderMath:()=>{}, authError:e=>String(e), status:(node,text,error=false)=>{node.textContent=text;node.error=error;},
   api:async (path,options={})=>{requests.push({path,options}); if(path==='/v1/errors') return {items:errors,selection_scope:'a'.repeat(24)};
     if(path==='/v1/progress') return {today_completed_review_count:0};
     if(path==='/v1/practice-pdfs') {if(failPlanRead) throw new Error('unavailable');

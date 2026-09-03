@@ -109,6 +109,28 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(self.call("/web/vendor/katex/auto-render.min.js", cookie=cookie)[0], 200)
         self.assertEqual(self.call("/assets/branding/../README.md")[0], 401)
 
+    def test_question_assets_are_integrity_checked_and_account_scoped(self) -> None:
+        cookie = self.login("13600136011")
+        other_cookie = self.login("13600136012")
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        assert user is not None
+        content = self.png_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        filename = f"{digest}.png"
+        self.notebook.storage.save_bytes(f"bank-assets/{filename}", content, "image/png")
+        self.domain_store.errors["a" * 32] = ErrorEntry(
+            "a" * 32, user.user_id, "b" * 32, f"题目\n![原题图](bank-assets/{filename})",
+            "", None, "open", datetime.now(timezone.utc), None, None,
+        )
+
+        self.assertEqual(self.call(f"/v1/question-assets/{filename}")[0], 401)
+        own = self.call(f"/v1/question-assets/{filename}", cookie=cookie)
+        self.assertEqual((own[0], own[1]["content-type"], own[2]), (200, "image/png", content))
+        self.assertEqual(self.call(f"/v1/question-assets/{filename}", cookie=other_cookie)[0], 404)
+        self.assertEqual(self.call("/v1/question-assets/not-an-asset.png", cookie=cookie)[0], 404)
+        self.notebook.storage.resolve(f"bank-assets/{filename}").write_bytes(b"corrupted")
+        self.assertEqual(self.call(f"/v1/question-assets/{filename}", cookie=cookie)[0], 409)
+
     def test_retired_admin_routes_are_not_found_with_or_without_login(self) -> None:
         cookie = self.login("13600136010")
         for route in ("/admin", "/admin/", "/web/admin.html", "/web/admin.js", "/v1/admin", "/v1/admin/dashboard?limit=25"):

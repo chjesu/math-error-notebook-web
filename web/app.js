@@ -90,6 +90,18 @@ function escapeHtml(value) {
   return span.innerHTML;
 }
 
+function questionMarkup(value) {
+  const source = String(value ?? "");
+  const image = /!\[([^\]]*)\]\(bank-assets\/([0-9a-f]{64}\.(?:png|jpg|jpeg))\)/g;
+  let output = "", cursor = 0, match;
+  while ((match = image.exec(source)) !== null) {
+    output += escapeHtml(source.slice(cursor, match.index));
+    output += `<img class="question-diagram" src="/v1/question-assets/${match[2]}" alt="${escapeHtml(match[1] || "原题图")}" loading="lazy">`;
+    cursor = match.index + match[0].length;
+  }
+  return output + escapeHtml(source.slice(cursor));
+}
+
 function wrapPlainMath(value) {
   if (/\\[([]|\$/.test(value)) return value;
   const runs = /[A-Za-z0-9π√|([][\sA-Za-z0-9π√+\-−*/=^_(),.|\[\]{}⊥∥≠≤≥·×²³₀-₉]*[A-Za-z0-9π√|)\]²³₀-₉]/g;
@@ -1203,7 +1215,7 @@ function bindErrors() {
       const disabled = selectionMode === "fixed" ? " disabled" : "";
       const detailId = `error-detail-${escapeHtml(item.error_id)}`;
       const title = selectionMode === "fixed" ? "今日 PDF 已生成，计划已固定" : "加入今日复习";
-      return `<li class="error-card"><label class="error-select" title="${title}"><input name="today-error" type="checkbox" value="${escapeHtml(item.error_id)}"${checked}${disabled}><span class="sr-only">选择这道错题</span></label><article><div class="error-card-heading"><span class="badge">${escapeHtml(stageLabel(item))}</span><time datetime="${escapeHtml(item.created_at)}">${escapeHtml(new Date(item.created_at).toLocaleDateString("zh-CN"))}</time></div><p class="error-record-id">错题编号（error_id）：<code>${escapeHtml(item.error_id)}</code></p><h3>${escapeHtml(item.question_text)}</h3><dl><div><dt>错误原因</dt><dd><strong>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</strong>${escapeHtml(diagnosis.cause_evidence || item.first_error || "尚未记录")}</dd></div><div><dt>涉及知识点</dt><dd class="knowledge-tags">${points}</dd></div></dl><button class="text-button error-detail-trigger" type="button" data-error-id="${escapeHtml(item.error_id)}" aria-expanded="false" aria-controls="${detailId}">查看完整解析与操作</button><section id="${detailId}" class="error-detail" data-error-detail="${escapeHtml(item.error_id)}" hidden></section></article></li>`;
+      return `<li class="error-card"><label class="error-select" title="${title}"><input name="today-error" type="checkbox" value="${escapeHtml(item.error_id)}"${checked}${disabled}><span class="sr-only">选择这道错题</span></label><article><div class="error-card-heading"><span class="badge">${escapeHtml(stageLabel(item))}</span><time datetime="${escapeHtml(item.created_at)}">${escapeHtml(new Date(item.created_at).toLocaleDateString("zh-CN"))}</time></div><p class="error-record-id">错题编号（error_id）：<code>${escapeHtml(item.error_id)}</code></p><h3>${questionMarkup(item.question_text)}</h3><dl><div><dt>错误原因</dt><dd><strong>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</strong>${escapeHtml(diagnosis.cause_evidence || item.first_error || "尚未记录")}</dd></div><div><dt>涉及知识点</dt><dd class="knowledge-tags">${points}</dd></div></dl><button class="text-button error-detail-trigger" type="button" data-error-id="${escapeHtml(item.error_id)}" aria-expanded="false" aria-controls="${detailId}">查看完整解析与操作</button><section id="${detailId}" class="error-detail" data-error-detail="${escapeHtml(item.error_id)}" hidden></section></article></li>`;
     }).join("") : '<li class="empty">还没有错题。</li>';
     renderMath($("#all-errors"));
   }
@@ -1216,7 +1228,7 @@ function bindErrors() {
     $("#pending-review-links").innerHTML = pendingReviewLinks.map(item => {
       const verdict = {correct: "正确", partial: "部分正确", incorrect: "错误", unclear: "待核对"}[item.verdict] || "已判题";
       const options = item.options.length ? item.options.map(option => `<button type="button" class="ghost" data-review-link-candidate="${escapeHtml(item.candidate_id)}" data-review-link-version="${item.input_version}" data-review-link-code="${escapeHtml(option.code)}">关联到 ${escapeHtml(option.pdf_name)} · 第 ${option.stage} 阶段 · ${option.kind === "recommendation" ? "推荐题" : "原题"}</button>`).join("") : '<small>当前 PDF 清单中没有可靠候选，请在会话中补充图片上的复习码。</small>';
-      return `<li><div><span class="badge">${verdict}</span><p>${escapeHtml(item.question_text)}</p></div><div class="pending-review-options">${options}</div></li>`;
+      return `<li><div><span class="badge">${verdict}</span><p>${questionMarkup(item.question_text)}</p></div><div class="pending-review-options">${options}</div></li>`;
     }).join("");
     renderMath($("#pending-review-links"));
   }
@@ -1246,7 +1258,7 @@ function bindErrors() {
       return `<li><strong>练习 ${index + 1}</strong><p>${escapeHtml(recommendation.stem_text)}</p>${optionsHtml}<small>${escapeHtml(recommendation.source)} · ${escapeHtml(recommendation.reason)}</small></li>`;
     }).join("") : '<li class="empty">还没有匹配练习。</li>';
     detail.hidden = false;
-    detail.innerHTML = `<h2>错题详情</h2><dl class="diagnosis-list"><dt>原题</dt><dd>${escapeHtml(item.question_text)}</dd><dt>你的作答</dt><dd>${escapeHtml(item.answer_text || "未填写")}</dd><dt>第一处实质错误</dt><dd>${escapeHtml(item.first_error || "待整理")}</dd><dt>主要错因</dt><dd>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</dd><dt>判断依据</dt><dd>${escapeHtml(diagnosis.cause_evidence || "待整理")}</dd><dt>知识点梳理</dt><dd>${escapeHtml(diagnosis.knowledge_points?.join("\n") || "待整理")}</dd><dt>完整正确过程</dt><dd>${escapeHtml(diagnosis.correct_solution || "待整理")}</dd><dt>最终答案</dt><dd>${escapeHtml(diagnosis.final_answer || "待整理")}</dd><dt>防错提示</dt><dd>${escapeHtml(diagnosis.prevention_cue || "待整理")}</dd></dl><h3>已验证练习</h3><ol class="recommendation-list">${recommendationHtml}</ol><div class="actions"><button type="button" data-error-action="recommend" class="ghost">匹配练习</button><button type="button" data-error-action="master" class="ghost">标记已掌握</button><button type="button" data-error-action="remove" class="danger">移除错题</button></div>`;
+    detail.innerHTML = `<h2>错题详情</h2><dl class="diagnosis-list"><dt>原题</dt><dd>${questionMarkup(item.question_text)}</dd><dt>你的作答</dt><dd>${escapeHtml(item.answer_text || "未填写")}</dd><dt>第一处实质错误</dt><dd>${escapeHtml(item.first_error || "待整理")}</dd><dt>主要错因</dt><dd>${escapeHtml(causeLabels[diagnosis.cause_code] || "待整理")}</dd><dt>判断依据</dt><dd>${escapeHtml(diagnosis.cause_evidence || "待整理")}</dd><dt>知识点梳理</dt><dd>${escapeHtml(diagnosis.knowledge_points?.join("\n") || "待整理")}</dd><dt>完整正确过程</dt><dd>${escapeHtml(diagnosis.correct_solution || "待整理")}</dd><dt>最终答案</dt><dd>${escapeHtml(diagnosis.final_answer || "待整理")}</dd><dt>防错提示</dt><dd>${escapeHtml(diagnosis.prevention_cue || "待整理")}</dd></dl><h3>已验证练习</h3><ol class="recommendation-list">${recommendationHtml}</ol><div class="actions"><button type="button" data-error-action="recommend" class="ghost">匹配练习</button><button type="button" data-error-action="master" class="ghost">标记已掌握</button><button type="button" data-error-action="remove" class="danger">移除错题</button></div>`;
     renderMath(detail);
     const trigger = $(`[data-error-id="${CSS.escape(id)}"]`);
     trigger.textContent = "收起完整解析与操作";
@@ -1559,7 +1571,7 @@ function bindProgress() {
     if (fixedPlan) $("#calendar-pdf-status").innerHTML = fixedPlan.download_url ? `今日计划已固定：<a href="${escapeHtml(fixedPlan.download_url)}" target="_top">下载 PDF</a>` : "今日计划已固定。";
     const kind = selectedMetric || activeFilter;
     const paperHtml = ["all", "due", "completed", "papers"].includes(kind) ? (day.practice_plans || []).map(paper => `<article class="calendar-detail-item"><h4>${escapeHtml(paper.filename)}</h4>${practiceProgressMarkup(paper)}<a href="/v1/practice-pdfs/${encodeURIComponent(paper.task_id)}/download" target="_top">下载 PDF</a></article>`).join("") : "";
-    const activityHtml = ["all", "completed", "answered", "correction"].includes(kind) ? (day.practice_activity || []).filter(row => kind !== "correction" || row.status === "needs_correction").map(row => `<article class="calendar-detail-item"><div class="calendar-event-labels"><span>${row.kind === "original" ? "原题重做" : "推荐训练"} · ${practiceVerdictLabel(row)}</span><span>实际提交 ${escapeHtml(new Date(row.submitted_at).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"}))}</span></div><p data-math-text>${escapeHtml(row.question_text)}</p><small>来源：${escapeHtml(row.filename)} · 错题 ${escapeHtml(row.error_id.slice(0, 8))}</small></article>`).join("") : "";
+    const activityHtml = ["all", "completed", "answered", "correction"].includes(kind) ? (day.practice_activity || []).filter(row => kind !== "correction" || row.status === "needs_correction").map(row => `<article class="calendar-detail-item"><div class="calendar-event-labels"><span>${row.kind === "original" ? "原题重做" : "推荐训练"} · ${practiceVerdictLabel(row)}</span><span>实际提交 ${escapeHtml(new Date(row.submitted_at).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"}))}</span></div><p data-math-text>${questionMarkup(row.question_text)}</p><small>来源：${escapeHtml(row.filename)} · 错题 ${escapeHtml(row.error_id.slice(0, 8))}</small></article>`).join("") : "";
     $("#calendar-day-items").innerHTML = paperHtml + activityHtml + [...groups.values()].map(group => {
       const labels = [...group.labels].map(label => `<span>${escapeHtml(label)}</span>`).join("");
       const cause = group.item.first_error ? `<p data-math-text><strong>错误原因：</strong>${escapeHtml(group.item.first_error)}</p>` : "";
@@ -1571,7 +1583,7 @@ function bindProgress() {
         : review && chinaDate(review.due_at) <= todaySnapshot.date
           ? `<div class="review-defer-actions"><label>暂缓至 <select data-review-defer-days><option value="1">1 天后</option><option value="3">3 天后</option><option value="7">7 天后</option></select></label><button type="button" class="ghost" data-review-defer="${escapeHtml(review.review_id)}">待补知识</button></div>`
           : "";
-      return `<article class="calendar-detail-item">${checkbox}<div class="calendar-event-labels">${labels}</div><h4 data-math-text>${escapeHtml(group.item.question_text)}</h4>${cause}${knowledge}${reviewAction}</article>`;
+      return `<article class="calendar-detail-item">${checkbox}<div class="calendar-event-labels">${labels}</div><h4 data-math-text>${questionMarkup(group.item.question_text)}</h4>${cause}${knowledge}${reviewAction}</article>`;
     }).join("") || '<p class="empty">当前没有符合筛选条件的题目。</p>';
     detail.hidden = false;
     $("#calendar-day-items").querySelectorAll("[data-math-text]").forEach(renderMath);
@@ -1737,7 +1749,7 @@ function practiceProgressMarkup(paper) {
   const progress = paper.progress;
   if (!progress?.available) return '<p class="pdf-progress-note">旧 PDF 的题目清单尚未完整核对，暂不推测完成数量。</p>';
   const groups = progress.groups.filter(group => group.answered_count > 0).map(group => `<span>错题 ${escapeHtml(group.error_id.slice(0, 8))} · 第 ${group.stage} 阶段 · 已答 ${group.answered_count}/${group.required_count}${group.completed ? " · 本组已记录" : ""}</span>`).join("");
-  const items = progress.items.map(row => `<li><strong>${row.kind === "original" ? "原题" : "推荐题"} · ${practiceVerdictLabel(row)}</strong><p data-math-text>${escapeHtml(row.question_text)}</p>${row.submitted_at ? `<small>提交于 ${escapeHtml(new Date(row.submitted_at).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"}))}</small>` : ""}</li>`).join("");
+  const items = progress.items.map(row => `<li><strong>${row.kind === "original" ? "原题" : "推荐题"} · ${practiceVerdictLabel(row)}</strong><p data-math-text>${questionMarkup(row.question_text)}</p>${row.submitted_at ? `<small>提交于 ${escapeHtml(new Date(row.submitted_at).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"}))}</small>` : ""}</li>`).join("");
   return `<div class="pdf-progress"><p>必做题已答 <strong>${progress.answered_count}/${progress.required_count}</strong> · 待答 ${progress.pending_count} · 需订正 ${progress.needs_correction_count}</p><div class="pdf-progress-groups">${groups}</div><details><summary>查看逐题作答状态</summary><ol>${items}</ol></details><small>截至当前的进度，重印共享作答；全部必做题完成后才汇总复习阶段。</small></div>`;
 }
 
