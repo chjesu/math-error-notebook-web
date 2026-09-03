@@ -13,6 +13,19 @@ const reviewLocatorSchema = {
 const transcriptionByAgent = new WeakMap();
 const pendingAdjudicationByAgent = new WeakMap();
 const pendingReviewAssociationByAgent = new WeakMap();
+const reviewAssociationReceiptsByAgent = new WeakMap();
+
+function saveReviewQueue(agent, items, resetReceipts = false) {
+  const queue = [...new Map(items.map((item) => [`${item.candidate_id}:${item.input_version}`, item])).values()];
+  if (queue.length) pendingReviewAssociationByAgent.set(agent, queue);
+  else pendingReviewAssociationByAgent.delete(agent);
+  if (resetReceipts) reviewAssociationReceiptsByAgent.delete(agent);
+  return queue.length > 0;
+}
+
+function reviewQueuePage(agent) {
+  return JSON.stringify((pendingReviewAssociationByAgent.get(agent) || []).slice(0, 20));
+}
 
 function rememberPendingAdjudication(agent, results) {
   const items = results.filter((item) => item.reference_review).map((item) => ({candidate_id: item.candidate_id, input_version: item.input_version}));
@@ -27,11 +40,11 @@ function rememberPendingReviewAssociations(agent, results) {
     .map((item) => ({
       candidate_id: item.candidate_id,
       input_version: item.input_version,
+      question_text: item.question_text,
+      options: item.review_match_candidates,
       codes: item.review_match_candidates.map((candidate) => candidate.code)
     }));
-  if (items.length) pendingReviewAssociationByAgent.set(agent, items);
-  else pendingReviewAssociationByAgent.delete(agent);
-  return items.length > 0;
+  return saveReviewQueue(agent, items, true);
 }
 
 function refreshPendingReviewAssociations(agent, adjudicated, results) {
@@ -48,14 +61,14 @@ function refreshPendingReviewAssociations(agent, adjudicated, results) {
       refreshed.set(key, {
         candidate_id: item.candidate_id,
         input_version: item.input_version,
+        question_text: item.question_text,
+        options: item.review_match_candidates,
         codes: item.review_match_candidates.map((candidate) => candidate.code)
       });
     }
   }
   const items = [...refreshed.values()];
-  if (items.length) pendingReviewAssociationByAgent.set(agent, items);
-  else pendingReviewAssociationByAgent.delete(agent);
-  return items.length > 0;
+  return saveReviewQueue(agent, items);
 }
 
 function rememberInspectedPendingReviewAssociations(agent, context) {
@@ -64,11 +77,11 @@ function rememberInspectedPendingReviewAssociations(agent, context) {
     .map((item) => ({
       candidate_id: item.candidate_id,
       input_version: item.input_version,
+      question_text: item.question_text,
+      options: item.options,
       codes: item.options.map((candidate) => candidate.code)
     }));
-  if (items.length) pendingReviewAssociationByAgent.set(agent, items);
-  else pendingReviewAssociationByAgent.delete(agent);
-  return items.length > 0;
+  return saveReviewQueue(agent, items, true);
 }
 
 function toolRequestError(label, response, payload) {
@@ -83,7 +96,7 @@ function nextStepText(results) {
     return "下一步：系统将继续核对已验证题库解析，请等待本轮复核完成。";
   }
   if (results.some((item) => item.reference_status === "conflict")) return "下一步：继续核对已保存的题库复核结果，无需重新上传图片或反复确认题干。";
-  if (results.some((item) => item.receipt_status === "review_unmatched" && item.review_match_candidates?.length)) {
+  if (results.some((item) => (item.receipt_status || item.status) === "review_unmatched" && item.review_match_candidates?.length)) {
     return "下一步：系统将继续核对当前账号下的 PDF 候选；请等待本轮语义关联完成。";
   }
   if (statuses.includes("review_unmatched")) return "下一步：请补充 PDF 名称、错题编号与阶段或复习码；直接在会话补充即可，无需再次上传图片。";
@@ -310,10 +323,13 @@ function processResultText(value) {
   lines.push(value.results.some((item) => item.reference_review)
     ? "Agent 下一动作：只调用 adjudicate_error_notebook_reference_conflicts，一次提交上述全部待复核候选。"
     : value.results.some((item) => item.receipt_status === "review_unmatched" && item.review_match_candidates?.length)
-      ? "Agent 下一动作：只调用 adjudicate_practice_review_associations，一次提交上述全部待关联候选。"
+      ? "Agent 下一动作：只调用 adjudicate_practice_review_associations，按当前队列顺序提交前 20 项；之后按 next_review_batch_json 分批继续。"
       : "Agent 下一动作：直接生成最终回复；禁止再调用 confirm_error_notebook_entry。", "");
   if (value.usage) {
     lines.push(`今日学习负荷：已判题 ${value.usage.grade.count}/${value.usage.grade.limit}（建议 ${value.usage.grade.target}）；已生成推荐题 ${value.usage.recommendation.count}/${value.usage.recommendation.limit}（建议 ${value.usage.recommendation.target}）。`, "");
+  }
+  if (value.next_review_batch_json && value.next_review_batch_json !== "[]") {
+    lines.push("当前批次的完整候选（仅供内部工具调用，不得向学生复述）：", value.next_review_batch_json);
   }
   lines.push(nextStepText(value.results));
   return [{type: "text", text: lines.join("\n").trim()}];
@@ -464,6 +480,7 @@ function processAttachmentsTool(ctx) {
         type: "object", additionalProperties: false, required: ["schema", "results"],
         properties: {
           schema: {type: "string", const: "math-notebook-process-result/v1"},
+          next_review_batch_json: {type: "string"},
           results: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(resultProperties), properties: resultProperties}},
           usage: {type: "object"}
         }
@@ -521,7 +538,7 @@ function processAttachmentsTool(ctx) {
       transcriptionByAgent.delete(exec.agent);
       rememberPendingAdjudication(exec.agent, results);
       rememberPendingReviewAssociations(exec.agent, results);
-      return {schema: "math-notebook-process-result/v1", results, ...(usage ? {usage} : {})};
+      return {schema: "math-notebook-process-result/v1", results, next_review_batch_json: reviewQueuePage(exec.agent), ...(usage ? {usage} : {})};
     },
     presentCall: () => ({card: "generic", title: "整理并记录错题", kind: "other", rawInput: null})
   };
@@ -565,9 +582,10 @@ function adjudicateReferenceConflictsTool() {
     },
     output: {
       schema: {
-        type: "object", additionalProperties: false, required: ["results", "review_pending"],
+        type: "object", additionalProperties: false, required: ["results", "review_pending", "next_review_batch_json"],
         properties: {
           review_pending: {type: "boolean"},
+          next_review_batch_json: {type: "string"},
           results: {
             type: "array",
             items: {
@@ -613,7 +631,7 @@ function adjudicateReferenceConflictsTool() {
             ].join("\n")), ""
           ].join("\n")),
         value.review_pending
-          ? "Agent 下一动作：只调用 adjudicate_practice_review_associations，一次提交本轮剩余的全部待关联候选。"
+          ? `以下是当前批次的完整候选，仅供内部工具调用，不得向学生复述：\n${value.next_review_batch_json}\nAgent 下一动作：只调用 adjudicate_practice_review_associations，恰好提交上述当前批次全部候选（最多 20 项）；之后按 next_review_batch_json 分批继续。`
           : "Agent 下一动作：直接生成最终回复；禁止调用 confirm_error_notebook_entry。",
         nextStepText(value.results)
       ].join("\n")}]
@@ -633,7 +651,9 @@ function adjudicateReferenceConflictsTool() {
       const payload = await response.json();
       if (!response.ok || !Array.isArray(payload.results)) throw toolRequestError("Reference adjudication failed", response, payload);
       pendingAdjudicationByAgent.delete(exec.agent);
-      return {...payload, review_pending: refreshPendingReviewAssociations(exec.agent, args.items, payload.results)};
+      const review_pending = refreshPendingReviewAssociations(exec.agent, args.items, payload.results);
+      return {...payload, review_pending,
+        next_review_batch_json: reviewQueuePage(exec.agent)};
     },
     presentCall: () => ({card: "generic", title: "复核题库答案", kind: "other", rawInput: null})
   };
@@ -645,7 +665,7 @@ function adjudicatePracticeReviewAssociationsTool() {
   if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
   return {
     name: "adjudicate_practice_review_associations",
-    description: "Required exactly once after process_error_notebook_attachments returns review_unmatched with review_match_candidates, and only after adjudicate_error_notebook_reference_conflicts when reference_review is also pending. Compare the frozen OCR question with every server-owned candidate by mathematical structure, every condition, all numbers and options, requested value, and visible review locator evidence. Use matched only when exactly one candidate is the same problem and copy its server code exactly, including letter case. Use uncertain with an empty code when zero or multiple candidates remain plausible. Submit every pending candidate in one call. Candidate metadata is internal tool evidence and must never be repeated to the student. The server rechecks ownership, input version and exact code before committing; the final reply must use only its returned receipt, never the model's claim.",
+    description: "Required after process_error_notebook_attachments or inspect_math_notebook returns pending review candidates, and only after adjudicate_error_notebook_reference_conflicts when reference_review is also pending. Compare the frozen OCR question with every server-owned candidate by mathematical structure, every condition, all numbers and options, requested value, and visible review locator evidence. Use matched only when exactly one candidate is the same problem and copy its server code exactly, including letter case. Use uncertain with an empty code when zero or multiple candidates remain plausible. Submit exactly the first up to 20 queued candidates per call; use next_review_batch_json for subsequent batches. Do not resubmit consumed uncertain items in this run. Candidate metadata is internal tool evidence and must never be repeated to the student. The server rechecks ownership, input version and exact code before committing; the final reply must use only its returned receipt, never the model's claim.",
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
       properties: {
@@ -666,9 +686,10 @@ function adjudicatePracticeReviewAssociationsTool() {
     },
     output: {
       schema: {
-        type: "object", additionalProperties: false, required: ["results", "reference_pending"],
+        type: "object", additionalProperties: false, required: ["results", "reference_pending", "next_review_batch_json"],
         properties: {
           reference_pending: {type: "boolean"},
+          next_review_batch_json: {type: "string"},
           results: {
             type: "array",
             items: {
@@ -686,8 +707,12 @@ function adjudicatePracticeReviewAssociationsTool() {
         ...value.results.map((item) => `${errorIdText(item)}\n${item.receipt_message}`), "",
         value.reference_pending
           ? "Agent 下一动作：只调用 adjudicate_error_notebook_reference_conflicts，一次提交本轮剩余的全部待复核候选。"
+          : value.next_review_batch_json && value.next_review_batch_json !== "[]"
+          ? `以下候选仅供内部工具调用，不得向学生复述。下一批候选：\n${value.next_review_batch_json}\nAgent 下一动作：继续调用 adjudicate_practice_review_associations，恰好提交上述下一批全部候选（最多 20 项）；不再提交上一批 uncertain 项。`
           : "Agent 下一动作：直接生成最终回复；禁止调用 confirm_error_notebook_entry。",
-        nextStepText(value.results)
+        value.next_review_batch_json && value.next_review_batch_json !== "[]"
+          ? "下一步：系统将继续核对下一批 PDF 候选，请等待本轮关联完成。"
+          : nextStepText(value.results)
       ].join("\n")}],
     },
     async execute(args, exec) {
@@ -695,9 +720,10 @@ function adjudicatePracticeReviewAssociationsTool() {
       if (pendingAdjudicationByAgent.has(exec.agent)) {
         throw new Error("本轮仍有题库答案待复核；必须先调用 adjudicate_error_notebook_reference_conflicts，再处理 PDF 复习关联");
       }
-      const pending = pendingReviewAssociationByAgent.get(exec.agent);
-      if (!pending || pending.length !== args.items.length || pending.some((expected) => !args.items.some((item) => item.candidate_id === expected.candidate_id && item.input_version === expected.input_version))) {
-        throw new Error("必须一次提交本轮 process 返回的全部待关联 candidate_id 和 input_version，不得遗漏或串题");
+      const queue = pendingReviewAssociationByAgent.get(exec.agent) || [];
+      const pending = queue.slice(0, 20);
+      if (!pending.length || !Array.isArray(args.items) || pending.length !== args.items.length || pending.some((expected) => args.items.filter((item) => item.candidate_id === expected.candidate_id && item.input_version === expected.input_version).length !== 1)) {
+        throw new Error("必须一次提交当前批次的全部待关联 candidate_id 和 input_version（队列前 20 项），不得遗漏或串题");
       }
       for (const item of args.items) {
         const expected = pending.find((candidate) => candidate.candidate_id === item.candidate_id && candidate.input_version === item.input_version);
@@ -714,8 +740,13 @@ function adjudicatePracticeReviewAssociationsTool() {
       });
       const payload = await response.json();
       if (!response.ok || !Array.isArray(payload.results)) throw toolRequestError("Practice review adjudication failed", response, payload);
-      pendingReviewAssociationByAgent.delete(exec.agent);
-      return {...payload, reference_pending: pendingAdjudicationByAgent.has(exec.agent)};
+      const remaining = queue.slice(pending.length);
+      saveReviewQueue(exec.agent, remaining);
+      const results = [...(reviewAssociationReceiptsByAgent.get(exec.agent) || []), ...payload.results];
+      if (remaining.length) reviewAssociationReceiptsByAgent.set(exec.agent, results);
+      else reviewAssociationReceiptsByAgent.delete(exec.agent);
+      return {...payload, results, reference_pending: pendingAdjudicationByAgent.has(exec.agent),
+        next_review_batch_json: reviewQueuePage(exec.agent)};
     },
     presentCall: () => ({card: "generic", title: "核对复习题关联", kind: "other", rawInput: null})
   };
@@ -849,7 +880,7 @@ function inspectNotebookTool() {
     output: {
       schema: {
         type: "object", additionalProperties: false, required: ["context_json"],
-        properties: {context_json: {type: "string"}}
+        properties: {context_json: {type: "string"}, next_review_batch_json: {type: "string"}}
       },
       render: (_args, value) => {
         const context = JSON.parse(value.context_json);
@@ -858,7 +889,8 @@ function inspectNotebookTool() {
           `当前账号业务上下文（只读）\n${JSON.stringify(context, null, 2)}`,
           ...(pending ? [
             "", "pending_review_links 的候选元数据仅供内部复习关联工具调用，不得向学生复述。",
-            "Agent 下一动作：比较每个待关联题干与其 options，并只调用一次 adjudicate_practice_review_associations 提交全部待关联项。"
+            `当前去重批次：${value.next_review_batch_json}`,
+            "Agent 下一动作：比较 next_review_batch_json 中当前去重批次的全部候选，并调用 adjudicate_practice_review_associations 恰好提交这一批（最多 20 项）。随后按 next_review_batch_json 继续下一批；本轮不重复提交已返回 uncertain 的项。"
           ] : [])
         ].join("\n")}];
       }
@@ -875,7 +907,7 @@ function inspectNotebookTool() {
       if (!response.ok || typeof payload.context_json !== "string") throw toolRequestError("Notebook inspection failed", response, payload);
       const context = JSON.parse(payload.context_json);
       rememberInspectedPendingReviewAssociations(exec.agent, context);
-      return payload;
+      return {...payload, next_review_batch_json: reviewQueuePage(exec.agent)};
     },
     presentCall: () => ({card: "generic", title: "读取学习记录", kind: "other", rawInput: null})
   };

@@ -655,6 +655,20 @@ class PracticeReviewApiTests(unittest.TestCase):
         self.assertEqual(self.fixture.store.candidates, before_candidates)
         self.assertEqual(self.fixture.store.jobs[self.job.job_id].checkpoint, before_checkpoint)
 
+        for changed_code in (code.lower(), code.swapcase()):
+            with self.subTest(changed_code=changed_code):
+                rejected = self.call("/v1/internal/harness/practice-reviews/adjudicate", {
+                    "session_id": "review-test", "items": [
+                        {"candidate_id": first.candidate_id, "input_version": 1, "status": "matched",
+                         "code": code, "rationale": rationale},
+                        {"candidate_id": second.candidate_id, "input_version": 1, "status": "matched",
+                         "code": changed_code, "rationale": rationale},
+                    ],
+                })
+                self.assertEqual((rejected[0], rejected[2]["error"]["code"]), (400, "invalid_request"))
+                self.assertEqual(self.fixture.store.candidates, before_candidates)
+                self.assertEqual(self.fixture.store.jobs[self.job.job_id].checkpoint, before_checkpoint)
+
         uncertain = self.call("/v1/internal/harness/practice-reviews/adjudicate", {
             "session_id": "review-test", "items": [
                 {"candidate_id": first.candidate_id, "input_version": 1, "status": "uncertain",
@@ -667,6 +681,24 @@ class PracticeReviewApiTests(unittest.TestCase):
                          ["review_unmatched", "review_unmatched"])
         self.assertEqual(self.fixture.store.candidates, before_candidates)
         self.assertEqual(self.fixture.store.jobs[self.job.job_id].checkpoint, before_checkpoint)
+
+        # A session may submit its own active page, not all account pending rows.
+        accepted = self.call("/v1/internal/harness/practice-reviews/adjudicate", {
+            "session_id": "review-test", "items": [
+                {"candidate_id": first.candidate_id, "input_version": 1, "status": "matched",
+                 "code": code, "rationale": rationale},
+            ],
+        })
+        self.assertEqual(accepted[0], 200, accepted)
+        self.assertEqual(accepted[2]["results"][0]["status"], "review_waiting")
+
+    def test_inspection_preserves_bounded_pending_context(self):
+        pending = [{"candidate_id": f"{index:032x}", "input_version": 1, "options": []}
+                   for index in range(25)]
+        with patch.object(self.fixture.service, "list_pending_practice_review_links", return_value=pending):
+            response = self.call("/v1/internal/harness/context", {"session_id": "review-test"})
+        self.assertEqual(response[0], 200, response)
+        self.assertEqual(json.loads(response[2]["context_json"])["pending_review_links"], pending[:20])
 
     def test_legacy_review_code_links_latex_stem_to_ocr_text_without_image(self):
         checkpoint = deepcopy(self.job.checkpoint)

@@ -126,6 +126,15 @@ const reference = await referenceTool.execute({items:[{candidate_id:ids.old,inpu
   rationale:'独立答案与题库答案在数学上完全一致，可以继续复习关联。'}]},exec);
 if (!reference.review_pending || reference.results[0].candidate_id !== ids.fresh ||
     reference.results[0].review_match_candidates[0].code !== codes.fresh) throw new Error('fresh pending evidence lost');
+const refreshedPage = JSON.parse(reference.next_review_batch_json);
+if (refreshedPage.length !== 2 || refreshedPage[0].candidate_id !== ids.other ||
+    refreshedPage[1].candidate_id !== ids.fresh ||
+    refreshedPage[0].options[0].stem_text !== 'q-other' || refreshedPage[1].options[0].code !== codes.fresh) {
+  throw new Error('reference output must expose exact retained-plus-refreshed active page');
+}
+const refreshedText = referenceTool.output.render({},reference)[0].text;
+if (!refreshedText.includes(ids.other) || !refreshedText.includes(codes.other) ||
+    !refreshedText.includes('当前批次全部候选')) throw new Error('active page evidence/order missing from reference render');
 const practiceTool = tools.find(tool=>tool.name==='adjudicate_practice_review_associations');
 const item = (candidate_id,code) => ({candidate_id,input_version:1,status:'matched',code,
   rationale:'题干的全部条件、数值、选项与所求量均一致，可以唯一确认。'});
@@ -223,6 +232,142 @@ if (!cleared || practiceCalls !== 1) throw new Error('empty inspect context did 
         completed = subprocess.run([node, "--input-type=module", "-e", script], cwd=root,
                                    env=environment, capture_output=True, text=True, timeout=15, check=False)
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_restored_review_queue_batches_and_mixed_status_next_steps(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is required by the Harness runtime")
+        root = Path(__file__).parents[1]
+        script = """
+const extension = await import(__MODULE__);
+const links = Array.from({length:25}, (_, index) => ({
+  candidate_id:index.toString(16).padStart(32,'0'), input_version:1, question_text:'question-'+index,
+  options:[{code:'R111111111111-'+String(index+1).padStart(2,'0')+'-ABCDEF',
+    stem_text:'frozen-'+index, pdf_name:'owned.pdf'}]
+}));
+let calls = 0;
+let failedOnce = false;
+globalThis.fetch = async (url, options) => {
+  if (url.endsWith('/context')) return {ok:true,json:async()=>({context_json:JSON.stringify({pending_review_links:[links[0],...links]})})};
+  if (!url.endsWith('/practice-reviews/adjudicate')) throw new Error('unexpected request');
+  const body = JSON.parse(options.body);
+  const expected = calls === 0 ? links.slice(0,20) : links.slice(20);
+  if (body.items.length !== expected.length || body.items.some((item,index)=>item.candidate_id !== expected[index].candidate_id)) {
+    throw new Error('wrong active page');
+  }
+  if (!failedOnce) {
+    failedOnce = true;
+    return {ok:false,status:503,json:async()=>({error:{code:'temporary_failure'}})};
+  }
+  calls++;
+  return {ok:true,json:async()=>({results:body.items.map(item=>({
+    candidate_id:item.candidate_id,input_version:1,status:item.status === 'uncertain' ? 'review_unmatched' : 'review_completed',
+    receipt_message:'authoritative receipt',error_id:''
+  }))})};
+};
+const tools=[];
+await extension.apply({workspaceRegistry:{create:async()=>{}},attachments:{},tools:{register:tool=>tools.push(tool)}});
+const inspect=tools.find(tool=>tool.name === 'inspect_math_notebook');
+const practice=tools.find(tool=>tool.name === 'adjudicate_practice_review_associations');
+const reference=tools.find(tool=>tool.name === 'adjudicate_error_notebook_reference_conflicts');
+const exec={agent:{id:'restored-queue'},signal:new AbortController().signal};
+const item=row=>({candidate_id:row.candidate_id,input_version:1,status:'matched',code:row.options[0].code,rationale:'All conditions and quantities match this exact frozen candidate.'});
+const batch=links.slice(0,20).map(item);
+await inspect.execute({},exec);
+for (const bad of [links.map(item),batch.slice(0,19),[...batch.slice(0,19),batch[0]],
+  [...batch.slice(0,19),item(links[20])],[{...batch[0],code:batch[0].code.toLowerCase()},...batch.slice(1)]]) {
+  let blocked=false;
+  try { await practice.execute({items:bad},exec); } catch { blocked=true; }
+  if (!blocked || calls) throw new Error('invalid page reached server');
+}
+batch[0]={...batch[0],status:'uncertain',code:''};
+let failed=false;
+try { await practice.execute({items:batch},exec); } catch { failed=true; }
+if (!failed || calls) throw new Error('failed response must not consume the active page');
+const first=await practice.execute({items:batch},exec);
+const next=JSON.parse(first.next_review_batch_json);
+if (next.length !== 5 || next[0].candidate_id !== links[20].candidate_id ||
+    next[0].options[0].stem_text !== 'frozen-20') throw new Error('next page evidence lost');
+const firstText=practice.output.render({},first)[0].text;
+if (!firstText.includes('继续调用 adjudicate_practice_review_associations') ||
+    !firstText.includes('frozen-20') || !firstText.includes('不得向学生复述')) throw new Error('next page instruction/evidence missing');
+const last=await practice.execute({items:next.map(item)},exec);
+if (calls !== 2 || last.next_review_batch_json !== '[]') throw new Error('queue not drained');
+if (last.results.length !== 25 || last.results[0].status !== 'review_unmatched' ||
+    !practice.output.render({},last)[0].text.includes('下一步：请补充 PDF')) {
+  throw new Error('final page lost an earlier uncertain receipt');
+}
+let drained=false;
+try { await practice.execute({items:[batch[0]]},exec); } catch { drained=true; }
+if (!drained || calls !== 2) throw new Error('uncertain was resubmitted automatically');
+for (const field of ['status','receipt_status']) {
+  const text=reference.output.render({}, {review_pending:true,results:[
+    {candidate_id:'saved',input_version:1,status:'saved',receipt_message:'saved'},
+    {candidate_id:'pending',input_version:1,[field]:'review_unmatched',receipt_message:'pending',
+      question_text:'question',review_match_candidates:[{code:'code',stem_text:'stem'}]}
+  ]})[0].text;
+  if (!text.includes('系统将继续核对当前账号下的 PDF 候选') || text.includes('下一步：请补充 PDF')) {
+    throw new Error('mixed status unmatched candidate was not normalized');
+  }
+}
+const mixed=practice.output.render({}, {reference_pending:false,next_review_batch_json:'[]',results:[
+  {status:'review_completed',receipt_message:'done'},
+  {receipt_status:'review_waiting',receipt_message:'waiting'}
+]})[0].text;
+if (!mixed.includes('下一步：按复习回执补齐')) throw new Error('existing mixed status priority regressed');
+
+// Real two-image process aggregation: 20 + 1 results must become two pages.
+let processCalls=0;
+let processedPages=0;
+globalThis.fetch = async (url, options) => {
+  const body=JSON.parse(options.body);
+  if (url.endsWith('/intakes/process')) {
+    processCalls++;
+    return {ok:true,json:async()=>({results:body.items.map(item=>{
+      const row=links[Number(item.question_text)];
+      return {candidate_id:row.candidate_id,input_version:1,question_text:row.question_text,
+        receipt_status:'review_unmatched',review_match_candidates:row.options,reference_review:null};
+    })})};
+  }
+  if (!url.endsWith('/practice-reviews/adjudicate')) throw new Error('unexpected process request');
+  const expected=processedPages === 0 ? links.slice(0,20) : links.slice(20,21);
+  if (body.items.length !== expected.length || body.items.some((item,index)=>item.candidate_id !== expected[index].candidate_id)) {
+    throw new Error('multi-image page mismatch');
+  }
+  processedPages++;
+  return {ok:true,json:async()=>({results:body.items.map(item=>({candidate_id:item.candidate_id,input_version:1,
+    status:'review_completed',receipt_message:'saved',error_id:''}))})};
+};
+const imageTools=[];
+await extension.apply({workspaceRegistry:{create:async()=>{}},tools:{register:tool=>imageTools.push(tool)},
+  attachments:{readImage:async()=>({ref:{attachmentId:'sha256:'+'1'.repeat(64),mediaType:'image/png',name:'q.png'},data:new Uint8Array([1])})}});
+const imageExec={agent:{id:'multi-image',session:{events:[{type:'turn/start',data:{turn:1}}],deriveMessages:()=>[
+  {role:'user',content:[{type:'text',text:'PDF'},{type:'image',attachment:'one'},{type:'image',attachment:'two'}]}
+]}},signal:new AbortController().signal};
+const review={code:'',pdf_id:'',error_id:'',question_id:'',stage:0,kind:''};
+const frozen=links.slice(0,21).map((row,index)=>({attachment_index:index<20?1:2,item_no:index<20?index+1:1,
+  question_text:String(index),answer_text:'1',review}));
+await imageTools.find(tool=>tool.name==='transcribe_error_notebook_attachments').execute({items:frozen},imageExec);
+const processed=await imageTools.find(tool=>tool.name==='process_error_notebook_attachments').execute({items:frozen.map(row=>({
+  ...row,verdict:'correct',first_error:'',cause_code:'',cause_evidence:'',knowledge_points:[],
+  correct_solution:'1',final_answer:'1',prevention_cue:'',confidence:1
+}))},imageExec);
+const imagePractice=imageTools.find(tool=>tool.name==='adjudicate_practice_review_associations');
+if (processCalls !== 2 || processed.results.length !== 21 || JSON.parse(processed.next_review_batch_json).length !== 20) {
+  throw new Error('multi-image aggregation was not bounded into first page');
+}
+const pageOne=await imagePractice.execute({items:JSON.parse(processed.next_review_batch_json).map(item)},imageExec);
+const pageTwo=await imagePractice.execute({items:JSON.parse(pageOne.next_review_batch_json).map(item)},imageExec);
+if (processedPages !== 2 || pageTwo.results.length !== 21 || pageTwo.next_review_batch_json !== '[]') {
+  throw new Error('multi-image 20+1 queue did not finish');
+}
+""".replace("__MODULE__", json.dumps((root / "extensions/dsh-math-notebook-ui/lib/index.js").as_uri()))
+        environment = dict(os.environ, LZLM_PRODUCT_ORIGIN="http://127.0.0.1:8000",
+                           LZLM_HARNESS_INTERNAL_TOKEN="synthetic-test-token",
+                           LZLM_HARNESS_WORKSPACE_ROOT=str(root))
+        result = subprocess.run([node, "--input-type=module", "-e", script], cwd=root,
+                                env=environment, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def config(self, root: Path) -> HarnessRuntimeConfig:
         return HarnessRuntimeConfig(

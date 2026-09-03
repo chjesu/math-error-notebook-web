@@ -2148,7 +2148,7 @@ class NotebookAsgiApp:
                     or len(code) > 180
                     or not isinstance(rationale, str)
                     or not 20 <= len(rationale.strip()) <= 4000
-                    or (status == "matched" and re.fullmatch(r"R[0-9a-f]{12}-\d{2}(?:-[0-9A-F]{6})?", code, re.IGNORECASE) is None)
+                    or (status == "matched" and re.fullmatch(r"R[0-9a-f]{12}-\d{2}(?:-[0-9A-F]{6})?", code) is None)
                     or (status == "uncertain" and code != "")
                 ):
                     raise ValueError("invalid practice review adjudication item")
@@ -2162,7 +2162,7 @@ class NotebookAsgiApp:
                 current = pending.get(candidate_id)
                 if current is None:
                     raise RuntimeError("conflict")
-                if status == "matched" and not any(option["code"].lower() == code.lower() for option in current["options"]):
+                if status == "matched" and not any(option["code"] == code for option in current["options"]):
                     raise ValueError("invalid practice review selection")
                 validated.append((candidate_id, input_version, status, code))
 
