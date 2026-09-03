@@ -217,6 +217,7 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .math-content { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .math-content math { display: inline-block; max-width: 100%; overflow-x: auto; overflow-y: hidden; vertical-align: -.15em; white-space: normal; }
 .math-content .katex-display { display: block; margin: .7em 0; overflow-x: auto; text-align: center; }
+.question-diagram { display: block; width: auto; max-width: min(100%, 520px); height: auto; max-height: 360px; margin: 12px 0; object-fit: contain; }
 .intake-batch { width: min(100%, 760px); }
 .intake-batch-heading { margin-bottom: 12px; }
 .intake-batch-heading > strong { font-size: 17px; }

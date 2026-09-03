@@ -31,6 +31,9 @@ assert.ok(!rejected.includes('<img'));
 """
         result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        diagram_rule = (WEB / "app.css").read_text(encoding="utf-8").split(".question-diagram {", 1)[1].split("}", 1)[0]
+        self.assertIn("max-width: min(100%, 520px)", diagram_rule)
+        self.assertIn("max-height: 360px", diagram_rule)
 
     def test_notebook_cards_show_full_error_ids(self) -> None:
         node = shutil.which("node")
