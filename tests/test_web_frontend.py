@@ -118,7 +118,7 @@ vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('function chinaDate('), source.indexOf('function bindPractice(')), context);
 const tick = () => new Promise(resolve=>setImmediate(resolve));
 (async()=>{
-  context.bindProgress(); await tick();
+  const reload = context.bindProgress(); await tick();
   assert.equal($('#progress-status').textContent,'数据已更新。');
   const grid = $('#review-calendar').innerHTML;
   assert.ok(grid.includes('今日到期<strong>0</strong>'));
@@ -150,7 +150,7 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   assert.equal(requests.filter(row=>row.path==='/v1/practice-pdfs'&&row.options.method==='POST').length,1);
   assert.equal($('#calendar-pdf-status').children[1].href,'/v1/practice-pdfs/paper/download');
   assert.equal($('#calendar-pdf-status').children[1].target,'_top');
-  await $('#refresh-progress').handlers.click();
+  await reload();
   assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,12);
   assert.equal(JSON.stringify(history),before);
   // A plan created by another page after loading must be reused without writes.
@@ -165,7 +165,7 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   change('12',false);
   await generate();
   assert.equal(writes(),writesBefore);
-  todayPlan = null; await $('#refresh-progress').handlers.click();
+  todayPlan = null; await reload();
   failPlanRead = true; await generate();
   assert.equal(writes(),writesBefore);
   assert.equal($('#calendar-pdf-status').error,true);
@@ -176,7 +176,7 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   await generate();
   assert.equal(requests.filter(row=>row.path==='/v1/practice-pdfs'&&row.options.method==='POST').length,1);
   assert.equal($('#calendar-generate-pdf').disabled,true);
-  todayPlan = null; beforeRecommendations = null; await $('#refresh-progress').handlers.click();
+  todayPlan = null; beforeRecommendations = null; await reload();
   context.sessionStorage.setItem=()=>{throw new Error('blocked');}; change('12',false);
   assert.equal($('#calendar-selection-status').error,true);
   assert.ok($('#calendar-selection-status').textContent.includes('无法保存选题'));
@@ -185,7 +185,7 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   history.backlog_items = [recorded('0'),recorded('finished')];
   history.days[0].backlog_indices = [0,1];
   history.days[0].history_complete = false;
-  await $('#refresh-progress').handlers.click();
+  await reload();
   const clickDay = (date,kind='') => $('#review-calendar').handlers.click({target:{closest:()=>({dataset:{calendarDate:date,calendarKind:kind}})}});
   clickDay('2026-08-24','backlog');
   assert.ok($('#calendar-history-note').textContent.includes('记录不完整'));
@@ -206,7 +206,7 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   history.days.push({date:'2026-08-29',items:[],practice_plans:[paper],paper_answered_count:1,paper_required_count:3},
     {date:'2026-08-31',items:[],practice_activity:[{...row,filename:paper.filename}],submitted_question_count:1});
   history.summary.submitted_question_count=1;
-  await $('#refresh-progress').handlers.click();
+  await reload();
   assert.ok($('#review-calendar').innerHTML.includes('PDF已答<strong>1/3</strong>'));
   assert.ok($('#review-calendar').innerHTML.includes('当日已答题<strong>1</strong>'));
   assert.equal($('#calendar-stat-answered').textContent,1);
@@ -241,7 +241,7 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
     ...errors.map(error=>({...recorded(error.error_id),original_due_date:'2026-08-31'})),
     {...recorded('0'),original_due_date:'2026-08-31'},
     {...recorded('finished'),original_due_date:'2026-08-31'}]}];
-  todayPlan=null; await $('#refresh-progress').handlers.click();
+  todayPlan=null; await reload();
   const writesBeforeDefaults=writes();
   clickDay('2026-08-31','due');
   assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,12);
@@ -253,14 +253,14 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   change('0',false);
   clickDay('2026-08-31','due');
   assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,11);
-  await $('#refresh-progress').handlers.click();
+  await reload();
   assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,11);
   for(let i=1;i<12;i++) change(String(i),false);
   clickDay('2026-08-31','due');
   assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,0);
   assert.equal($('#calendar-generate-pdf').disabled,true); // Keep deliberate deselect-all.
   todayPlan={available:true,items:errors.slice(0,2),download_url:'/fixed'};
-  storage.clear(); await $('#refresh-progress').handlers.click();
+  storage.clear(); await reload();
   clickDay('2026-08-31','due');
   assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,2);
   assert.equal(($('#calendar-day-items').innerHTML.match(/ disabled/g)||[]).length,13);
@@ -411,8 +411,10 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "错题与复习日历", "新增错题", "应复习", "需改错", "待补知识", "逾期", "复习正确率"):
             self.assertIn(text, html)
         self.assertNotIn("各复习阶段", html)
-        for marker in ("review-calendar", "calendar-month", "calendar-prev", "calendar-next", "calendar-summary", "calendar-stats", "calendar-filters", "calendar-day-detail", "calendar-day-items", "calendar-generate-pdf", "calendar-pdf-status", "refresh-progress"):
+        for marker in ("review-calendar", "calendar-month", "calendar-prev", "calendar-next", "calendar-summary", "calendar-stats", "calendar-filters", "calendar-day-detail", "calendar-day-items", "calendar-generate-pdf", "calendar-pdf-status"):
             self.assertIn(f'id="{marker}"', html)
+        self.assertNotIn('id="refresh-progress"', html)
+        self.assertNotIn('$("#refresh-progress")', script)
         self.assertNotIn('id="stage-count-1"', html)
         self.assertIn('function bindProgress()', script)
         self.assertIn('api(`/v1/progress/calendar?month=${monthKey()}`)', script)

@@ -1736,8 +1736,8 @@ function bindProgress() {
     }
   });
   $("#calendar-day-close").addEventListener("click", () => { selectedDate = ""; renderCalendar(); });
-  $("#refresh-progress").addEventListener("click", loadProgress);
   loadProgress();
+  return loadProgress;
 }
 
 function practiceVerdictLabel(row) {
