@@ -1294,7 +1294,6 @@ function bindErrors() {
     })();
     return dashboardPromise;
   }
-  $("#refresh-errors").addEventListener("click", loadDashboard);
   $("#all-errors").addEventListener("change", event => {
     if (event.target.name !== "today-error") return;
     if (selectionMode === "fixed") return;
