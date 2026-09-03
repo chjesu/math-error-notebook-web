@@ -315,7 +315,7 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .memory-principles span { color: var(--muted); font-size: 12px; }
 .calendar-controls { display: flex; align-items: center; gap: 8px; }
 .calendar-controls strong { min-width: 112px; text-align: center; }
-.calendar-stats { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; margin: 12px 0 10px; }
+.calendar-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 6px; margin: 12px 0 10px; }
 .calendar-stats p { display: grid; gap: 2px; margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--brand-soft); }
 .calendar-stats strong { color: var(--ink); font-size: 18px; line-height: 1.2; }
 .calendar-stats span { color: var(--muted); font-size: 11px; }
@@ -347,6 +347,7 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .calendar-day-metrics .is-completed strong { color: #067647; }
 .calendar-day-metrics .is-correction strong,
 .calendar-day-metrics .is-overdue strong { color: #b54708; }
+.calendar-day-metrics .is-deferred strong { color: #9a6700; }
 .calendar-day .calendar-date-open,
 .calendar-day-metrics .calendar-metric { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; min-height: 24px; margin: 0; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--muted); text-align: left; font-size: 11px; font-weight: 500; }
 .calendar-day .calendar-date-open strong { color: var(--ink); font-size: 14px; }
@@ -368,6 +369,10 @@ input[type=file] { position: absolute; width: 1px; height: 1px; overflow: hidden
 .calendar-pdf-actions .status { margin: 0; }
 .calendar-detail-item { display: grid; gap: 7px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
 .calendar-detail-item h4 { margin: 0; font-size: 14px; line-height: 1.55; }
+.review-defer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: #7a4d00; font-size: 12px; }
+.review-defer-actions label { display: inline-flex; align-items: center; gap: 6px; }
+.review-defer-actions select { min-height: 34px; padding: 5px 28px 5px 9px; }
+.review-defer-actions button { min-height: 34px; padding: 6px 11px; }
 .calendar-event-labels { display: flex; flex-wrap: wrap; gap: 5px; }
 .calendar-event-labels span { padding: 2px 7px; border-radius: 999px; background: var(--brand-soft); color: var(--muted); font-size: 11px; }
 .calendar-event-labels .is-correction { background: #fffaeb; color: #b54708; }

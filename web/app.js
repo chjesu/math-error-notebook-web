@@ -1468,7 +1468,7 @@ function bindProgress() {
   let currentReviews = new Map();
   let fixedPlan = null;
   let generatingPdf = false;
-  const filterLabels = {all: "全部活动", new: "新增错题", due: "待复习", completed: "作答与完成", correction: "需改错", papers: "PDF 当前进度", answered: "当日已答题"};
+  const filterLabels = {all: "全部活动", new: "新增错题", due: "待复习", completed: "作答与完成", correction: "需改错", deferred: "待补知识", papers: "PDF 当前进度", answered: "当日已答题"};
 
   function monthKey() {
     return `${monthCursor.getFullYear()}-${String(monthCursor.getMonth() + 1).padStart(2, "0")}`;
@@ -1479,6 +1479,7 @@ function bindProgress() {
     if (activeFilter === "due") return day.items.filter(item => item.type === "due");
     if (activeFilter === "completed") return day.items.filter(item => item.type === "completed");
     if (activeFilter === "correction") return day.items.filter(item => item.needs_correction);
+    if (activeFilter === "deferred") return day.items.filter(item => item.deferred);
     return day.items;
   }
 
@@ -1494,7 +1495,7 @@ function bindProgress() {
 
   function selectable(item) {
     const review = currentReviews.get(item.error_id);
-    return item.type === "due" && review && item.stage === review.stage && item.original_due_date === chinaDate(review.due_at);
+    return item.type === "due" && review && !review.deferred && item.stage === review.stage && item.original_due_date === chinaDate(review.due_at);
   }
 
   function detailItems(day) {
@@ -1508,6 +1509,7 @@ function bindProgress() {
     if (kind === "new") return day.items.filter(item => item.type === "new");
     if (kind === "completed") return day.items.filter(item => item.type === "completed");
     if (kind === "correction") return day.items.filter(item => item.needs_correction);
+    if (kind === "deferred") return day.items.filter(item => item.deferred);
     return future ? due : [...day.items, ...backlog];
   }
 
@@ -1518,6 +1520,7 @@ function bindProgress() {
     $("#calendar-stat-completed").textContent = summary.completed_review_count || 0;
     $("#calendar-stat-answered").textContent = summary.submitted_question_count || 0;
     $("#calendar-stat-correction").textContent = summary.needs_correction_count || 0;
+    $("#calendar-stat-deferred").textContent = summary.deferred_review_count || 0;
     $("#calendar-stat-overdue").textContent = summary.overdue_review_count || 0;
     $("#calendar-stat-rate").textContent = `${summary.planned_completion_percent || 0}%`;
     $("#calendar-stat-accuracy").textContent = `${summary.review_accuracy_percent || 0}%`;
@@ -1538,7 +1541,7 @@ function bindProgress() {
       group.selectable ||= Boolean(selectable(item));
       (item.knowledge_points || []).forEach(point => group.knowledge.add(point));
       if (item.type === "new") group.labels.add("新增错题");
-      else if (item.type === "due") group.labels.add(`第 ${item.stage} 阶段 · 原定 ${item.original_due_date || selectedDate}`);
+      else if (item.type === "due") group.labels.add(item.deferred ? `第 ${item.stage} 阶段 · 待补知识至 ${item.original_due_date || selectedDate}` : `第 ${item.stage} 阶段 · 原定 ${item.original_due_date || selectedDate}`);
       else {
         const result = {correct: "正确", partial: "部分掌握", wrong: "错误"}[item.result] || "已完成";
         group.labels.add(`第 ${item.stage} 阶段 · 复习${result}`);
@@ -1562,7 +1565,13 @@ function bindProgress() {
       const cause = group.item.first_error ? `<p data-math-text><strong>错误原因：</strong>${escapeHtml(group.item.first_error)}</p>` : "";
       const knowledge = group.knowledge.size ? `<p data-math-text><strong>知识点：</strong>${[...group.knowledge].map(escapeHtml).join("、")}</p>` : "";
       const checkbox = group.selectable ? `<label class="calendar-backlog-select"><input type="checkbox" name="calendar-error" value="${escapeHtml(group.item.error_id)}"${selectedErrorIds.has(group.item.error_id) ? " checked" : ""}${fixedPlan || generatingPdf ? " disabled" : ""}><span>加入今日复习</span></label>` : "";
-      return `<article class="calendar-detail-item">${checkbox}<div class="calendar-event-labels">${labels}</div><h4 data-math-text>${escapeHtml(group.item.question_text)}</h4>${cause}${knowledge}</article>`;
+      const review = currentReviews.get(group.item.error_id);
+      const reviewAction = review?.deferred
+        ? `<div class="review-defer-actions"><span>待补知识，计划 ${escapeHtml(chinaDate(review.due_at))} 恢复</span><button type="button" class="ghost" data-review-resume="${escapeHtml(review.review_id)}">恢复学习</button></div>`
+        : review && chinaDate(review.due_at) <= todaySnapshot.date
+          ? `<div class="review-defer-actions"><label>暂缓至 <select data-review-defer-days><option value="1">1 天后</option><option value="3">3 天后</option><option value="7">7 天后</option></select></label><button type="button" class="ghost" data-review-defer="${escapeHtml(review.review_id)}">待补知识</button></div>`
+          : "";
+      return `<article class="calendar-detail-item">${checkbox}<div class="calendar-event-labels">${labels}</div><h4 data-math-text>${escapeHtml(group.item.question_text)}</h4>${cause}${knowledge}${reviewAction}</article>`;
     }).join("") || '<p class="empty">当前没有符合筛选条件的题目。</p>';
     detail.hidden = false;
     $("#calendar-day-items").querySelectorAll("[data-math-text]").forEach(renderMath);
@@ -1591,6 +1600,7 @@ function bindProgress() {
         ["all", "due", "completed"].includes(activeFilter) && record.practice_plans?.length ? metric(dateKey, "papers", "PDF已答", record.paper_required_count ? `${record.paper_answered_count}/${record.paper_required_count}` : "待核对", "is-completed") : "",
         !isFuture && (activeFilter === "new" || activeFilter === "all" && record.new_error_count) ? metric(dateKey, "new", "新增错题", record.new_error_count || 0, "is-new") : "",
         !isFuture && (activeFilter === "correction" || activeFilter === "all" && record.needs_correction_count) ? metric(dateKey, "correction", "需改错", record.needs_correction_count || 0, "is-correction") : "",
+        (activeFilter === "deferred" || activeFilter === "all" && record.deferred_review_count) ? metric(dateKey, "deferred", "待补知识", record.deferred_review_count || 0, "is-deferred") : "",
       ].join("");
       const stageCounts = {};
       plans.forEach(item => {stageCounts[item.stage] = (stageCounts[item.stage] || 0) + 1;});
@@ -1649,6 +1659,28 @@ function bindProgress() {
     renderCalendar();
     if (!selectionSaved) status($("#calendar-selection-status"), "当前浏览器无法保存选题，离开页面后需重新选择。", true);
     $("#calendar-day-detail").scrollIntoView({block: "nearest"});
+  });
+  $("#calendar-day-items").addEventListener("click", async event => {
+    const deferButton = event.target.closest("[data-review-defer]");
+    const resumeButton = event.target.closest("[data-review-resume]");
+    const button = deferButton || resumeButton;
+    if (!button || button.disabled) return;
+    button.disabled = true;
+    status($("#progress-status"), deferButton ? "正在延后复习任务…" : "正在恢复复习任务…");
+    try {
+      if (deferButton) {
+        const days = Number(button.closest(".review-defer-actions").querySelector("[data-review-defer-days]").value);
+        await api(`/v1/reviews/${encodeURIComponent(button.dataset.reviewDefer)}/defer`, {method: "POST",
+          body: JSON.stringify({days, reason: "prerequisite_not_learned"}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+      } else {
+        await api(`/v1/reviews/${encodeURIComponent(button.dataset.reviewResume)}/resume`, {method: "POST",
+          body: JSON.stringify({}), headers: {"Idempotency-Key": crypto.randomUUID()}});
+      }
+      await loadProgress();
+    } catch (error) {
+      button.disabled = false;
+      status($("#progress-status"), authError(error), true);
+    }
   });
   $("#calendar-day-items").addEventListener("change", event => {
     const input = event.target;

@@ -382,7 +382,7 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         html = (WEB / "progress.html").read_text(encoding="utf-8")
         script = (WEB / "app.js").read_text(encoding="utf-8")
         style = (WEB / "app.css").read_text(encoding="utf-8")
-        for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "错题与复习日历", "新增错题", "应复习", "需改错", "逾期", "复习正确率"):
+        for text in ("六阶段复习规则", "主动提取", "间隔效应", "即时反馈", "错题与复习日历", "新增错题", "应复习", "需改错", "待补知识", "逾期", "复习正确率"):
             self.assertIn(text, html)
         self.assertNotIn("各复习阶段", html)
         for marker in ("review-calendar", "calendar-month", "calendar-prev", "calendar-next", "calendar-summary", "calendar-stats", "calendar-filters", "calendar-day-detail", "calendar-day-items", "calendar-generate-pdf", "calendar-pdf-status", "refresh-progress"):
@@ -394,9 +394,11 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertIn('data-calendar-date', script)
         self.assertIn('knowledge_points', script)
         self.assertGreater(html.index('id="review-rule-heading"'), html.index('id="progress-status"'))
-        self.assertIn('.calendar-stats { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));', style)
+        self.assertIn('.calendar-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));', style)
         self.assertIn('.calendar-filters { display: inline-flex; gap: 2px; padding: 4px;', style)
         self.assertIn('.calendar-filters button[aria-pressed="true"] { background: var(--paper); color: var(--brand);', style)
+        self.assertIn('/defer`', script)
+        self.assertIn('/resume`', script)
 
     def test_workbench_is_the_official_deepseek_harness_surface(self) -> None:
         html = (WEB / "index.html").read_text(encoding="utf-8")
@@ -557,6 +559,8 @@ assert.ok(!source.includes('plan_kind: "practice"'));
             self.assertIn('每张图片的 item_no 从 1 连续编号', prompt)
             self.assertIn('review_item.recommended_action', prompt)
             self.assertNotIn('最终答案及小建议', prompt)
+        self.assertIn('defer_math_review', preset)
+        self.assertIn('resume_math_review', preset)
         self.assertIn("apiKeyEnv: !!js process.env.HARNESS_API_KEY_ENV ?? 'DASHSCOPE_API_KEY'", runtime_config)
         self.assertIn("model: !!js process.env.HARNESS_MODEL ?? 'qwen3.8-flash'", runtime_config)
         self.assertIn("requestImagePixelBudget: 4194304", runtime_config)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesParser
 import hashlib
@@ -165,6 +166,12 @@ class NotebookAsgiApp:
         if path == "/v1/internal/harness/practice-reviews/retry" and method == "POST":
             await self._internal_harness_retry_practice_review(scope, receive, send, headers)
             return
+        if path == "/v1/internal/harness/reviews/defer" and method == "POST":
+            await self._internal_harness_defer_review(scope, receive, send, headers)
+            return
+        if path == "/v1/internal/harness/reviews/resume" and method == "POST":
+            await self._internal_harness_resume_review(scope, receive, send, headers)
+            return
         if path.startswith("/v1/internal/harness/practice-pdfs/") and path.endswith("/reflow") and method == "POST":
             await self._internal_harness_reflow_practice_pdf(scope, receive, send, headers)
             return
@@ -298,7 +305,8 @@ class NotebookAsgiApp:
                     "scope": hashlib.sha256(f"navigation-status:{user.user_id}".encode("utf-8")).hexdigest()[:24],
                     "errors": {"count": len(items), "revision": hashlib.sha256(json.dumps(error_state, separators=(",", ":")).encode("utf-8")).hexdigest()[:24]},
                     "practice": {"count": len(papers), "revision": hashlib.sha256(json.dumps(paper_state, separators=(",", ":")).encode("utf-8")).hexdigest()[:24]},
-                    "progress": {"due_count": int(progress["due_review_count"]), "needs_correction_count": int(progress["today_needs_correction_count"])},
+                    "progress": {"due_count": int(progress["due_review_count"]), "needs_correction_count": int(progress["today_needs_correction_count"]),
+                                 "deferred_count": int(progress["deferred_review_count"])},
                 }, extra_headers=self._harness_cors(harness_origin))
             elif path == "/v1/workbench" and method == "GET":
                 items = await self._sync(self.notebook.store.list_errors, user_id=user.user_id)
@@ -655,6 +663,19 @@ class NotebookAsgiApp:
                 payload = await self._json_body(receive)
                 next_task = await self._sync(self.notebook.store.complete_review, user_id=user.user_id, task_id=path.split("/")[-2], result=str(payload["result"]), idempotency_key=self._key(headers))
                 await self._json(send, 200, {"completed": True, "next_review": self._review(next_task) if next_task else None, "mastered": next_task is None})
+            elif path.startswith("/v1/reviews/") and path.endswith("/defer") and method == "POST":
+                payload = await self._json_body(receive)
+                if set(payload) != {"days", "reason"}:
+                    raise ValueError("invalid review deferral")
+                task = await self._sync(self.notebook.store.defer_review, user_id=user.user_id, task_id=path.split("/")[-2],
+                                        days=payload["days"], reason=payload["reason"], idempotency_key=self._key(headers))
+                await self._json(send, 200, {"review": self._review(task), "message": "已标记为待补知识；延期期间不计完成，也不推进复习阶段。"})
+            elif path.startswith("/v1/reviews/") and path.endswith("/resume") and method == "POST":
+                payload = await self._json_body(receive)
+                if payload:
+                    raise ValueError("invalid review resume")
+                task = await self._sync(self.notebook.store.resume_review, user_id=user.user_id, task_id=path.split("/")[-2], idempotency_key=self._key(headers))
+                await self._json(send, 200, {"review": self._review(task), "message": "已恢复学习，该题重新进入当前待复习任务。"})
             elif path == "/v1/progress/calendar" and method == "GET":
                 month = self._query(scope, allowed={"month"}).get("month", "")
                 calendar = await self._sync(self.notebook.review_calendar, user_id=user.user_id, month=month)
@@ -1837,6 +1858,14 @@ class NotebookAsgiApp:
                     "question_text": entry.question_text if entry else "",
                     "first_error": entry.first_error if entry else None,
                 })
+            active_tasks = await self._sync(self.notebook.store.list_active_reviews, user_id=user_id)
+            active_reviews = []
+            for task in active_tasks[:20]:
+                entry = await self._sync(self.notebook.store.get_error, user_id=user_id, error_id=task.error_id)
+                active_reviews.append(self._review(task) | {
+                    "question_text": entry.question_text if entry else "",
+                    "first_error": entry.first_error if entry else None,
+                })
             papers = await self._sync(self.notebook.list_practice_pdfs, user_id=user_id)
             plan = await self._sync(self.notebook.today_practice_plan, user_id=user_id, papers=papers)
             pending = await self._sync(self.notebook.list_pending_practice_review_links, user_id=user_id)
@@ -1848,6 +1877,7 @@ class NotebookAsgiApp:
                 "progress": await self._sync(self.notebook.progress, user_id=user_id),
                 "errors": [self._error_entry(item) for item in errors[:20]],
                 "due_reviews": due_reviews,
+                "active_reviews": active_reviews,
                 "practice_pdfs": [item | {"download_url": f"/v1/practice-pdfs/{item['task_id']}/download"} for item in papers[:20]],
                 "today_plan": plan,
                 "pending_review_links": pending[:20],
@@ -1904,6 +1934,74 @@ class NotebookAsgiApp:
             await self._error(send, 403, "forbidden")
         except RuntimeError:
             await self._error(send, 409, "review_retry_not_needed")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    async def _internal_harness_defer_review(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive)
+            if set(payload) != {"session_id", "task_id", "days", "reason", "idempotency_key"}:
+                raise ValueError("invalid review deferral")
+            session_id = self._harness_session_id(payload)
+            task_id = payload["task_id"]
+            if not isinstance(task_id, str) or re.fullmatch(r"[0-9a-f]{32}", task_id) is None:
+                raise ValueError("invalid review deferral")
+            user_id = await self._harness_user_id(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            task = await self._sync(self.notebook.store.defer_review, user_id=user_id, task_id=task_id,
+                                    days=payload["days"], reason=payload["reason"], idempotency_key=payload["idempotency_key"])
+            await self._json(send, 200, {"receipt": {"status": "deferred", "review": self._review(task),
+                "message": "已标记为待补知识；延期期间不计完成、不推进阶段，到期后自动恢复为待复习。"}})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except RuntimeError:
+            await self._error(send, 409, "conflict")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
+    async def _internal_harness_resume_review(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive)
+            if set(payload) != {"session_id", "task_id", "idempotency_key"}:
+                raise ValueError("invalid review resume")
+            session_id = self._harness_session_id(payload)
+            task_id = payload["task_id"]
+            if not isinstance(task_id, str) or re.fullmatch(r"[0-9a-f]{32}", task_id) is None:
+                raise ValueError("invalid review resume")
+            user_id = await self._harness_user_id(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            task = await self._sync(self.notebook.store.resume_review, user_id=user_id, task_id=task_id,
+                                    idempotency_key=payload["idempotency_key"])
+            await self._json(send, 200, {"receipt": {"status": "resumed", "review": self._review(task),
+                "message": "已恢复学习，该题重新进入当前待复习任务。"}})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except RuntimeError:
+            await self._error(send, 409, "conflict")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             await self._error(send, 400, "invalid_request")
 
@@ -2204,7 +2302,10 @@ class NotebookAsgiApp:
 
     @staticmethod
     def _review(value: ReviewTask) -> dict[str, Any]:
-        return {"review_id": value.task_id, "error_id": value.error_id, "stage": value.stage, "due_at": value.due_at.isoformat(), "status": value.status}
+        deferred = value.deferred_from is not None and value.due_at > datetime.now(timezone.utc)
+        return {"review_id": value.task_id, "error_id": value.error_id, "stage": value.stage, "due_at": value.due_at.isoformat(), "status": value.status,
+                "deferred": deferred, "original_due_at": value.deferred_from.isoformat() if value.deferred_from else None,
+                "defer_reason": value.defer_reason}
 
     def _practice_job(self, value: Job) -> dict[str, Any]:
         payload = self._job(value)

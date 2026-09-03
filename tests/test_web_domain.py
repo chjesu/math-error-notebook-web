@@ -52,7 +52,7 @@ class DomainContractTests(unittest.TestCase):
     def test_calendar_reads_cross_month_history_with_account_scope_and_no_writes(self) -> None:
         owner = "a" * 32
         due, completed = datetime(2026, 7, 31), datetime(2026, 8, 3)
-        connection = FakeConnection([(1,), [], [("e" * 32, "题目", "错因", '{"knowledge_points":["向量"]}', 1, due, "completed", "t" * 32, due)],
+        connection = FakeConnection([(1,), [], [("e" * 32, "题目", "错因", '{"knowledge_points":["向量"]}', 1, due, "completed", "t" * 32, due, None, None)],
                                      [("e" * 32, "题目", "错因", None, 1, "correct", completed, "t" * 32)]])
         result = MySqlDomainStore(lambda: connection).review_calendar(user_id=owner, month="2026-08", now=datetime(2026, 8, 4, tzinfo=timezone.utc))
         days = {day["date"]: day for day in result["days"]}
@@ -77,6 +77,9 @@ class DomainContractTests(unittest.TestCase):
         learning_sql = (Path(__file__).resolve().parents[1] / "services" / "web_domain" / "migrations" / "0004_learning_loop.sql").read_text(encoding="utf-8").lower()
         self.assertIn("create table if not exists review_attempts", learning_sql)
         self.assertIn("unique key uq_review_attempts_request (user_id, idempotency_key)", learning_sql)
+        deferral_sql = (Path(__file__).resolve().parents[1] / "services" / "web_domain" / "migrations" / "0015_review_deferrals.sql").read_text(encoding="utf-8").lower()
+        self.assertIn("deferred_from", deferral_sql)
+        self.assertIn("defer_reason", deferral_sql)
 
     def test_personal_reads_match_id_and_server_user(self) -> None:
         connection = FakeConnection()

@@ -915,6 +915,44 @@ function retryPracticeReviewTool() {
   };
 }
 
+function reviewDeferralTool(action) {
+  const origin = process.env.LZLM_PRODUCT_ORIGIN;
+  const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
+  if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
+  const defer = action === "defer";
+  return {
+    name: defer ? "defer_math_review" : "resume_math_review",
+    description: defer
+      ? "Postpone one due review because prerequisite knowledge has not been learned. Call only after inspect_math_notebook identifies the exact active review_id and the student explicitly asks or agrees to postpone it. This does not complete the review or advance its stage."
+      : "Resume one currently deferred review immediately. Call only after inspect_math_notebook identifies the exact deferred review_id and the student explicitly asks to resume it.",
+    parameters: {
+      type: "object", additionalProperties: false, required: defer ? ["review_id", "days"] : ["review_id"],
+      properties: {
+        review_id: {type: "string", pattern: "^[0-9a-f]{32}$"},
+        ...(defer ? {days: {type: "integer", enum: [1, 3, 7]}} : {})
+      }
+    },
+    output: {
+      schema: {type: "object", additionalProperties: false, required: ["receipt_json"], properties: {receipt_json: {type: "string"}}},
+      render: (_args, value) => [{type: "text", text: `复习任务状态回执（权威）\n${JSON.stringify(JSON.parse(value.receipt_json), null, 2)}`}]
+    },
+    async execute(args, exec) {
+      if (!exec.agent) throw new Error("Review deferral requires an owning Harness session");
+      const response = await fetch(`${origin}/v1/internal/harness/reviews/${action}`, {
+        method: "POST",
+        headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
+        body: JSON.stringify({session_id: exec.agent.id, task_id: args.review_id,
+          ...(defer ? {days: args.days, reason: "prerequisite_not_learned"} : {}), idempotency_key: crypto.randomUUID()}),
+        signal: exec.signal
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.receipt) throw toolRequestError("Review deferral update failed", response, payload);
+      return {receipt_json: JSON.stringify(payload.receipt)};
+    },
+    presentCall: () => ({card: "generic", title: defer ? "延后复习" : "恢复学习", kind: "other", rawInput: null})
+  };
+}
+
 function reflowPracticePdfTool() {
   const origin = process.env.LZLM_PRODUCT_ORIGIN;
   const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
@@ -967,6 +1005,8 @@ export async function apply(ctx) {
   ctx.tools.register(processAttachmentsTool(ctx));
   ctx.tools.register(inspectNotebookTool());
   ctx.tools.register(retryPracticeReviewTool());
+  ctx.tools.register(reviewDeferralTool("defer"));
+  ctx.tools.register(reviewDeferralTool("resume"));
   ctx.tools.register(reflowPracticePdfTool());
   ctx.tools.register(lookupQuestionBankReferenceTool());
   ctx.tools.register(recheckReferenceConflictTool());

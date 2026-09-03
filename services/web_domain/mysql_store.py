@@ -1223,9 +1223,10 @@ class MySqlDomainStore:
         connection = self._connect()
         cursor = connection.cursor()
         try:
-            cursor.execute("SELECT id,error_id,stage,due_at FROM review_tasks WHERE user_id=%s AND status IN ('pending','ready') AND due_at<=%s ORDER BY due_at,error_id", (user_id, current))
+            cursor.execute("SELECT id,error_id,stage,due_at,deferred_from,defer_reason FROM review_tasks WHERE user_id=%s AND status IN ('pending','ready') AND due_at<=%s ORDER BY due_at,error_id", (user_id, current))
             rows = cursor.fetchall()
-            return [ReviewTask(str(row[0]), user_id, str(row[1]), int(row[2]), row[3].replace(tzinfo=timezone.utc), "ready") for row in rows]
+            return [ReviewTask(str(row[0]), user_id, str(row[1]), int(row[2]), row[3].replace(tzinfo=timezone.utc), "ready",
+                               row[4].replace(tzinfo=timezone.utc) if row[4] else None, str(row[5]) if row[5] else None) for row in rows]
         finally:
             cursor.close()
             connection.close()
@@ -1234,8 +1235,9 @@ class MySqlDomainStore:
         connection = self._connect()
         cursor = connection.cursor()
         try:
-            cursor.execute("SELECT id,error_id,stage,due_at,status FROM review_tasks WHERE user_id=%s AND status IN ('pending','ready') ORDER BY due_at,error_id", (user_id,))
-            return [ReviewTask(str(row[0]), user_id, str(row[1]), int(row[2]), row[3].replace(tzinfo=timezone.utc), str(row[4])) for row in cursor.fetchall()]
+            cursor.execute("SELECT id,error_id,stage,due_at,status,deferred_from,defer_reason FROM review_tasks WHERE user_id=%s AND status IN ('pending','ready') ORDER BY due_at,error_id", (user_id,))
+            return [ReviewTask(str(row[0]), user_id, str(row[1]), int(row[2]), row[3].replace(tzinfo=timezone.utc), str(row[4]),
+                               row[5].replace(tzinfo=timezone.utc) if row[5] else None, str(row[6]) if row[6] else None) for row in cursor.fetchall()]
         finally:
             cursor.close()
             connection.close()
@@ -1250,6 +1252,70 @@ class MySqlDomainStore:
             next_task = self._complete_review_tx(cursor, user_id, task_id, result, key, completed_at)
             connection.commit()
             return next_task
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def defer_review(self, *, user_id: str, task_id: str, days: int, reason: str, idempotency_key: str, now: datetime | None = None) -> ReviewTask:
+        if not isinstance(days, int) or isinstance(days, bool) or days not in {1, 3, 7} or reason != "prerequisite_not_learned":
+            raise ValueError("invalid review deferral")
+        key = _required(idempotency_key, "idempotency_key")
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute("SELECT error_id,stage,due_at,status,deferred_from,defer_reason FROM review_tasks WHERE id=%s AND user_id=%s FOR UPDATE", (task_id, user_id))
+            row = cursor.fetchone()
+            if not row:
+                raise LookupError("review task not found")
+            cursor.execute("SELECT metadata_json FROM domain_audit_events WHERE user_id=%s AND event_type='review.deferred' AND resource_type='review' AND resource_id=%s ORDER BY id", (user_id, task_id))
+            if any((self._json(item[0]) or {}).get("idempotency_key") == key for item in cursor.fetchall()):
+                connection.commit()
+                return self._review_task_row(task_id, user_id, row)
+            if str(row[3]) not in {"pending", "ready"} or row[2] > current:
+                raise RuntimeError("conflict")
+            deferred_until = current + timedelta(days=days)
+            deferred_from = row[4] or row[2]
+            cursor.execute("UPDATE review_tasks SET due_at=%s,deferred_from=%s,defer_reason=%s,status='pending' WHERE id=%s AND user_id=%s", (deferred_until, deferred_from, reason, task_id, user_id))
+            metadata = {"idempotency_key": key, "error_id": str(row[0]), "stage": int(row[1]), "days": days,
+                        "reason": reason, "original_due_at": row[2].isoformat(), "deferred_until": deferred_until.isoformat()}
+            cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'review.deferred','review',%s,%s,%s)", (user_id, task_id, json.dumps(metadata), current))
+            connection.commit()
+            return ReviewTask(task_id, user_id, str(row[0]), int(row[1]), deferred_until.replace(tzinfo=timezone.utc), "pending",
+                              deferred_from.replace(tzinfo=timezone.utc), reason)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def resume_review(self, *, user_id: str, task_id: str, idempotency_key: str, now: datetime | None = None) -> ReviewTask:
+        key = _required(idempotency_key, "idempotency_key")
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
+        connection = self._connect()
+        cursor = connection.cursor()
+        try:
+            connection.begin()
+            cursor.execute("SELECT error_id,stage,due_at,status,deferred_from,defer_reason FROM review_tasks WHERE id=%s AND user_id=%s FOR UPDATE", (task_id, user_id))
+            row = cursor.fetchone()
+            if not row:
+                raise LookupError("review task not found")
+            cursor.execute("SELECT metadata_json FROM domain_audit_events WHERE user_id=%s AND event_type='review.resumed' AND resource_type='review' AND resource_id=%s ORDER BY id", (user_id, task_id))
+            if any((self._json(item[0]) or {}).get("idempotency_key") == key for item in cursor.fetchall()):
+                connection.commit()
+                return self._review_task_row(task_id, user_id, row)
+            if str(row[3]) not in {"pending", "ready"} or row[4] is None or row[2] <= current:
+                raise RuntimeError("conflict")
+            cursor.execute("UPDATE review_tasks SET due_at=%s,deferred_from=NULL,defer_reason=NULL,status='ready' WHERE id=%s AND user_id=%s", (current, task_id, user_id))
+            metadata = {"idempotency_key": key, "error_id": str(row[0]), "stage": int(row[1]), "deferred_until": row[2].isoformat()}
+            cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'review.resumed','review',%s,%s,%s)", (user_id, task_id, json.dumps(metadata), current))
+            connection.commit()
+            return ReviewTask(task_id, user_id, str(row[0]), int(row[1]), current.replace(tzinfo=timezone.utc), "ready")
         except Exception:
             connection.rollback()
             raise
@@ -1302,9 +1368,10 @@ class MySqlDomainStore:
                 "ON DUPLICATE KEY UPDATE due_at=VALUES(due_at),status='pending'",
                 (next_id, user_id, error_id, target_stage, target_due, completed_at),
             )
-            cursor.execute("SELECT id,error_id,stage,due_at,status FROM review_tasks WHERE user_id=%s AND error_id=%s AND stage=%s", (user_id, error_id, target_stage))
+            cursor.execute("SELECT id,error_id,stage,due_at,status,deferred_from,defer_reason FROM review_tasks WHERE user_id=%s AND error_id=%s AND stage=%s", (user_id, error_id, target_stage))
             next_row = cursor.fetchone()
-            next_task = ReviewTask(str(next_row[0]), user_id, str(next_row[1]), int(next_row[2]), next_row[3].replace(tzinfo=timezone.utc), str(next_row[4]))
+            next_task = ReviewTask(str(next_row[0]), user_id, str(next_row[1]), int(next_row[2]), next_row[3].replace(tzinfo=timezone.utc), str(next_row[4]),
+                                   next_row[5].replace(tzinfo=timezone.utc) if next_row[5] else None, str(next_row[6]) if next_row[6] else None)
         cursor.execute("INSERT INTO domain_audit_events (user_id,event_type,resource_type,resource_id,metadata_json,occurred_at) VALUES (%s,'review.completed','error',%s,%s,%s)", (user_id, error_id, json.dumps({"stage": stage, "result": result}), completed_at))
         return next_task
 
@@ -1332,9 +1399,10 @@ class MySqlDomainStore:
                 checkpoint = shared_review_checkpoints(checkpoints)[job_id]
 
             def get_task(task_id):
-                cursor.execute("SELECT t.id,t.error_id,t.stage,t.due_at,t.status FROM review_tasks t JOIN error_notebook_entries e ON e.id=t.error_id AND e.user_id=t.user_id WHERE t.id=%s AND t.user_id=%s AND e.status='open' FOR UPDATE", (task_id, user_id))
+                cursor.execute("SELECT t.id,t.error_id,t.stage,t.due_at,t.status,t.deferred_from,t.defer_reason FROM review_tasks t JOIN error_notebook_entries e ON e.id=t.error_id AND e.user_id=t.user_id WHERE t.id=%s AND t.user_id=%s AND e.status='open' FOR UPDATE", (task_id, user_id))
                 task = cursor.fetchone()
-                return ReviewTask(str(task[0]), user_id, str(task[1]), int(task[2]), task[3].replace(tzinfo=timezone.utc), str(task[4])) if task else None
+                return ReviewTask(str(task[0]), user_id, str(task[1]), int(task[2]), task[3].replace(tzinfo=timezone.utc), str(task[4]),
+                                  task[5].replace(tzinfo=timezone.utc) if task[5] else None, str(task[6]) if task[6] else None) if task else None
 
             def complete(task_id, result, key, now):
                 return self._complete_review_tx(cursor, user_id, task_id, result, key, now.astimezone(timezone.utc).replace(tzinfo=None))
@@ -1362,6 +1430,8 @@ class MySqlDomainStore:
             totals = cursor.fetchone() or (0, 0)
             cursor.execute("SELECT COUNT(*) FROM review_tasks WHERE user_id=%s AND status IN ('pending','ready') AND due_at<=%s", (user_id, current))
             due = cursor.fetchone() or (0,)
+            cursor.execute("SELECT COUNT(*) FROM review_tasks WHERE user_id=%s AND status IN ('pending','ready') AND deferred_from IS NOT NULL AND due_at>%s", (user_id, current))
+            deferred = cursor.fetchone() or (0,)
             cursor.execute("SELECT COUNT(*) FROM error_notebook_entries e WHERE e.user_id=%s AND e.status<>'removed' AND NOT EXISTS (SELECT 1 FROM recommendations r WHERE r.user_id=e.user_id AND r.error_id=e.id AND r.status='assigned')", (user_id,))
             gaps = cursor.fetchone() or (0,)
             cursor.execute("SELECT COUNT(*),SUM(result='correct'),SUM(result='partial'),SUM(result='wrong') FROM review_attempts WHERE user_id=%s", (user_id,))
@@ -1375,7 +1445,7 @@ class MySqlDomainStore:
             count = int(totals[0] or 0)
             completed = int(reviews[0] or 0)
             correct = int(reviews[1] or 0)
-            return {"error_count": count, "mastered_count": int(totals[1] or 0), "due_review_count": int(due[0]), "recommendation_gap_count": int(gaps[0]), "completed_review_count": completed, "correct_review_count": correct, "partial_review_count": int(reviews[2] or 0), "wrong_review_count": int(reviews[3] or 0), "review_accuracy_percent": round(correct * 100 / completed) if completed else 0, "review_stage_counts": stage_counts, "today_completed_review_count": int(today_reviews[0] or 0), "today_needs_correction_count": int(today_reviews[1] or 0), "sample_sufficient": count >= 3}
+            return {"error_count": count, "mastered_count": int(totals[1] or 0), "due_review_count": int(due[0]), "deferred_review_count": int(deferred[0]), "recommendation_gap_count": int(gaps[0]), "completed_review_count": completed, "correct_review_count": correct, "partial_review_count": int(reviews[2] or 0), "wrong_review_count": int(reviews[3] or 0), "review_accuracy_percent": round(correct * 100 / completed) if completed else 0, "review_stage_counts": stage_counts, "today_completed_review_count": int(today_reviews[0] or 0), "today_needs_correction_count": int(today_reviews[1] or 0), "sample_sufficient": count >= 3}
         finally:
             cursor.close()
             connection.close()
@@ -1399,14 +1469,14 @@ class MySqlDomainStore:
                 for row in cursor.fetchall()
             ]
             cursor.execute(
-                "SELECT t.error_id,e.question_text,e.first_error,c.evidence_text,t.stage,t.due_at,t.status,t.id,e.created_at "
+                "SELECT t.error_id,e.question_text,e.first_error,c.evidence_text,t.stage,t.due_at,t.status,t.id,e.created_at,t.deferred_from,t.defer_reason "
                 "FROM review_tasks t JOIN error_notebook_entries e ON e.id=t.error_id AND e.user_id=t.user_id "
                 "JOIN grade_candidates c ON c.id=e.grade_candidate_id AND c.user_id=e.user_id "
                 "WHERE t.user_id=%s AND e.status<>'removed' ORDER BY t.due_at,t.id",
                 (user_id,),
             )
             tasks = [
-                {"error_id": str(row[0]), "question_text": str(row[1]), "first_error": row[2], "evidence": row[3], "stage": int(row[4]), "due_at": row[5], "status": str(row[6]), "task_id": str(row[7]), "error_created_at": row[8]}
+                {"error_id": str(row[0]), "question_text": str(row[1]), "first_error": row[2], "evidence": row[3], "stage": int(row[4]), "due_at": row[5], "status": str(row[6]), "task_id": str(row[7]), "error_created_at": row[8], "deferred_from": row[9], "defer_reason": row[10]}
                 for row in cursor.fetchall()
             ]
             cursor.execute(
@@ -1678,8 +1748,8 @@ class MySqlDomainStore:
                 {"date": row[0].isoformat(), "kind": str(row[1]), "resource_id": str(row[2]), "status": str(row[3]), "created_at": row[4]}
                 for row in cursor.fetchall()
             ]
-            cursor.execute("SELECT id,error_id,stage,due_at,status,created_at FROM review_tasks WHERE user_id=%s ORDER BY created_at,id", (user_id,))
-            reviews = [dict(zip(("review_id", "error_id", "stage", "due_at", "status", "created_at"), row)) for row in cursor.fetchall()]
+            cursor.execute("SELECT id,error_id,stage,due_at,status,created_at,deferred_from,defer_reason FROM review_tasks WHERE user_id=%s ORDER BY created_at,id", (user_id,))
+            reviews = [dict(zip(("review_id", "error_id", "stage", "due_at", "status", "created_at", "deferred_from", "defer_reason"), row)) for row in cursor.fetchall()]
             cursor.execute("SELECT id,review_task_id,error_id,stage,result,completed_at FROM review_attempts WHERE user_id=%s ORDER BY completed_at,id", (user_id,))
             review_attempts = [dict(zip(("review_attempt_id", "review_id", "error_id", "stage", "result", "completed_at"), row)) for row in cursor.fetchall()]
             cursor.execute("SELECT id,job_type,resource_type,resource_id,status,created_at,updated_at FROM web_jobs WHERE user_id=%s AND job_type<>'export' ORDER BY created_at,id", (user_id,))
@@ -1821,9 +1891,15 @@ class MySqlDomainStore:
 
     @staticmethod
     def _active_review_tx(cursor: Cursor, user_id: str, error_id: str) -> ReviewTask | None:
-        cursor.execute("SELECT id,error_id,stage,due_at,status FROM review_tasks WHERE user_id=%s AND error_id=%s AND status IN ('pending','ready') ORDER BY due_at LIMIT 1", (user_id, error_id))
+        cursor.execute("SELECT id,error_id,stage,due_at,status,deferred_from,defer_reason FROM review_tasks WHERE user_id=%s AND error_id=%s AND status IN ('pending','ready') ORDER BY due_at LIMIT 1", (user_id, error_id))
         row = cursor.fetchone()
-        return ReviewTask(str(row[0]), user_id, str(row[1]), int(row[2]), row[3].replace(tzinfo=timezone.utc), str(row[4])) if row else None
+        return ReviewTask(str(row[0]), user_id, str(row[1]), int(row[2]), row[3].replace(tzinfo=timezone.utc), str(row[4]),
+                          row[5].replace(tzinfo=timezone.utc) if row[5] else None, str(row[6]) if row[6] else None) if row else None
+
+    @staticmethod
+    def _review_task_row(task_id: str, user_id: str, row: tuple[Any, ...]) -> ReviewTask:
+        return ReviewTask(task_id, user_id, str(row[0]), int(row[1]), row[2].replace(tzinfo=timezone.utc), str(row[3]),
+                          row[4].replace(tzinfo=timezone.utc) if row[4] else None, str(row[5]) if row[5] else None)
 
     @staticmethod
     def _json(value: Any) -> dict[str, Any] | None:

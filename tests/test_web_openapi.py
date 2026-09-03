@@ -48,6 +48,8 @@ class WebOpenApiContractTests(unittest.TestCase):
             ("/v1/errors/{error_id}/master", "post"),
             ("/v1/errors/{error_id}", "delete"),
             ("/v1/reviews/{review_id}/complete", "post"),
+            ("/v1/reviews/{review_id}/defer", "post"),
+            ("/v1/reviews/{review_id}/resume", "post"),
             ("/v1/practice-review-links/{candidate_id}", "post"),
             ("/v1/practice-pdfs", "post"),
             ("/v1/exports", "post"),
@@ -80,6 +82,13 @@ class WebOpenApiContractTests(unittest.TestCase):
         schema = self.document["components"]["schemas"]["ReviewCalendar"]
         self.assertEqual(set(schema["required"]), {"month", "total_error_count", "summary", "days", "backlog_items"})
         self.assertIn("history_complete", schema["properties"]["days"]["items"]["required"])
+        self.assertIn("deferred_review_count", schema["properties"]["summary"]["required"])
+
+    def test_review_deferral_is_bounded_and_does_not_complete_a_stage(self) -> None:
+        request = self.document["components"]["schemas"]["ReviewDeferral"]
+        self.assertEqual(request["properties"]["days"]["enum"], [1, 3, 7])
+        self.assertEqual(request["properties"]["reason"]["const"], "prerequisite_not_learned")
+        self.assertEqual(self.operation("/v1/reviews/{review_id}/defer", "post")["responses"]["200"]["$ref"], "#/components/responses/ReviewStateChanged")
 
     def test_daily_learning_usage_documents_targets_and_hard_limits(self) -> None:
         operation = self.operation("/v1/learning-usage", "get")

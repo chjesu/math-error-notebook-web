@@ -53,6 +53,7 @@ MIGRATIONS = (
     ROOT / "services" / "web_auth" / "migrations" / "0012_operations_admin.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0013_model_usage_sessions.sql",
     ROOT / "services" / "web_domain" / "migrations" / "0014_question_options.sql",
+    ROOT / "services" / "web_domain" / "migrations" / "0015_review_deferrals.sql",
 )
 HARNESS_WEB_HOME = ROOT / "data" / "runtime" / "deepseek-harness-web-home"
 HARNESS_PRODUCT_WORKSPACE = HARNESS_WEB_HOME / "math-notebook-workspace"

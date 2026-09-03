@@ -107,6 +107,7 @@ class LocalEnvironmentTests(unittest.TestCase):
                 "0012_operations_admin.sql",
                 "0013_model_usage_sessions.sql",
                 "0014_question_options.sql",
+                "0015_review_deferrals.sql",
             ],
         )
         self.assertTrue(all(path.is_file() for path in local_env.MIGRATIONS))

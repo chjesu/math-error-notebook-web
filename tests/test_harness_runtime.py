@@ -28,6 +28,9 @@ await apply({workspaceRegistry: {create: async () => {}}, attachments: {}, tools
   definitions.push(tool);
 }}});
 const tool = definitions.find(tool => tool.name === 'confirm_error_notebook_entry');
+for (const name of ['inspect_math_notebook', 'defer_math_review', 'resume_math_review']) {
+  if (!definitions.some(tool => tool.name === name)) throw new Error(`missing ${name}`);
+}
 let imageTurnBlocked = false;
 try {
   await tool.execute({candidate_id:'a'.repeat(32),input_version:1}, {agent:{id:'s',session:{deriveMessages:()=>[{role:'user',content:[{type:'image'}]}]}},signal:new AbortController().signal});

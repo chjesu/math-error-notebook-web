@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -79,6 +79,7 @@ class InMemoryNotebookStore:
         self._job_keys: dict[tuple[str, str, str], str] = {}
         self._attempt_keys: dict[tuple[str, str], str] = {}
         self._review_keys: dict[tuple[str, str, int], str] = {}
+        self._review_action_keys: dict[tuple[str, str], str] = {}
         self._practice_inputs: dict[tuple[str, str, str], str] = {}
         self.learning_usage_events: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         self.model_usage_sessions: dict[str, dict[str, Any]] = {}
@@ -582,7 +583,7 @@ class InMemoryNotebookStore:
     def list_due_reviews(self, *, user_id: str, now: datetime | None = None) -> list[ReviewTask]:
         current = now or _now()
         return sorted(
-            (ReviewTask(item.task_id, item.user_id, item.error_id, item.stage, item.due_at, "ready") for item in self.review_tasks.values() if item.user_id == user_id and item.status in {"pending", "ready"} and item.due_at <= current),
+            (replace(item, status="ready") for item in self.review_tasks.values() if item.user_id == user_id and item.status in {"pending", "ready"} and item.due_at <= current),
             key=lambda item: (item.due_at, item.error_id),
         )
 
@@ -610,10 +611,10 @@ class InMemoryNotebookStore:
         if task.status not in {"pending", "ready"} or task.due_at > completed_at:
             raise RuntimeError("conflict")
         target = next_review(task.stage, result, completed_at)
-        self.review_tasks[task_id] = ReviewTask(task.task_id, user_id, task.error_id, task.stage, task.due_at, "completed")
+        self.review_tasks[task_id] = replace(task, status="completed")
         for existing_id, existing in list(self.review_tasks.items()):
             if existing.user_id == user_id and existing.error_id == task.error_id and existing.status in {"pending", "ready"}:
-                self.review_tasks[existing_id] = ReviewTask(existing.task_id, user_id, existing.error_id, existing.stage, existing.due_at, "cancelled")
+                self.review_tasks[existing_id] = replace(existing, status="cancelled")
         next_task = None
         if target is None:
             error = self.errors[task.error_id]
@@ -628,6 +629,46 @@ class InMemoryNotebookStore:
         self.review_attempts[key] = {"task_id": task_id, "result": result, "next_task_id": next_task.task_id if next_task else None, "completed_at": completed_at}
         return next_task
 
+    def defer_review(self, *, user_id: str, task_id: str, days: int, reason: str, idempotency_key: str, now: datetime | None = None) -> ReviewTask:
+        if not isinstance(days, int) or isinstance(days, bool) or days not in {1, 3, 7} or reason != "prerequisite_not_learned":
+            raise ValueError("invalid review deferral")
+        key = (user_id, idempotency_key)
+        if key in self._review_action_keys:
+            return self.review_tasks[self._review_action_keys[key]]
+        task = self.review_tasks.get(task_id)
+        current = now or _now()
+        if not task or task.user_id != user_id:
+            raise LookupError("review task not found")
+        if task.status not in {"pending", "ready"} or task.due_at > current:
+            raise RuntimeError("conflict")
+        updated = replace(task, due_at=current + timedelta(days=days), status="pending",
+                          deferred_from=task.deferred_from or task.due_at, defer_reason=reason)
+        self.review_tasks[task_id] = updated
+        self._review_action_keys[key] = task_id
+        self.audit_events.append({"user_id": user_id, "event_type": "review.deferred", "resource_type": "review",
+                                  "resource_id": task_id, "error_id": task.error_id, "days": days,
+                                  "reason": reason, "idempotency_key": idempotency_key,
+                                  "original_due_at": task.due_at, "deferred_until": updated.due_at})
+        return updated
+
+    def resume_review(self, *, user_id: str, task_id: str, idempotency_key: str, now: datetime | None = None) -> ReviewTask:
+        key = (user_id, idempotency_key)
+        if key in self._review_action_keys:
+            return self.review_tasks[self._review_action_keys[key]]
+        task = self.review_tasks.get(task_id)
+        current = now or _now()
+        if not task or task.user_id != user_id:
+            raise LookupError("review task not found")
+        if task.status not in {"pending", "ready"} or task.deferred_from is None or task.due_at <= current:
+            raise RuntimeError("conflict")
+        updated = replace(task, due_at=current, status="ready", deferred_from=None, defer_reason=None)
+        self.review_tasks[task_id] = updated
+        self._review_action_keys[key] = task_id
+        self.audit_events.append({"user_id": user_id, "event_type": "review.resumed", "resource_type": "review",
+                                  "resource_id": task_id, "error_id": task.error_id,
+                                  "idempotency_key": idempotency_key, "resumed_at": current})
+        return updated
+
     def progress(self, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
         current = now or _now()
         errors = [item for item in self.errors.values() if item.user_id == user_id and item.status != "removed"]
@@ -638,7 +679,8 @@ class InMemoryNotebookStore:
         reviews = [item for (owner, _), item in self.review_attempts.items() if owner == user_id]
         today_reviews = [item for item in reviews if item.get("completed_at") and learning_day(item["completed_at"]) == learning_day(current)]
         correct = sum(item["result"] == "correct" for item in reviews)
-        return {"error_count": len(errors), "mastered_count": sum(item.status == "mastered" for item in errors), "due_review_count": len(due), "recommendation_gap_count": gaps, "completed_review_count": len(reviews), "correct_review_count": correct, "partial_review_count": sum(item["result"] == "partial" for item in reviews), "wrong_review_count": sum(item["result"] == "wrong" for item in reviews), "review_accuracy_percent": round(correct * 100 / len(reviews)) if reviews else 0, "review_stage_counts": stage_counts, "today_completed_review_count": len(today_reviews), "today_needs_correction_count": sum(item["result"] in {"partial", "wrong"} for item in today_reviews), "sample_sufficient": len(errors) >= 3}
+        deferred = sum(item.deferred_from is not None and item.due_at > current for item in active_reviews)
+        return {"error_count": len(errors), "mastered_count": sum(item.status == "mastered" for item in errors), "due_review_count": len(due), "deferred_review_count": deferred, "recommendation_gap_count": gaps, "completed_review_count": len(reviews), "correct_review_count": correct, "partial_review_count": sum(item["result"] == "partial" for item in reviews), "wrong_review_count": sum(item["result"] == "wrong" for item in reviews), "review_accuracy_percent": round(correct * 100 / len(reviews)) if reviews else 0, "review_stage_counts": stage_counts, "today_completed_review_count": len(today_reviews), "today_needs_correction_count": sum(item["result"] in {"partial", "wrong"} for item in today_reviews), "sample_sufficient": len(errors) >= 3}
 
     def review_calendar(self, *, user_id: str, month: str, now: datetime | None = None) -> dict[str, object]:
         errors = [item for item in self.errors.values() if item.user_id == user_id and item.status != "removed"]
@@ -654,6 +696,7 @@ class InMemoryNotebookStore:
         error_by_id = {item.error_id: item for item in errors}
         tasks = [
             details(error_by_id[item.error_id]) | {"stage": item.stage, "due_at": item.due_at, "status": item.status,
+                "deferred_from": item.deferred_from, "defer_reason": item.defer_reason,
                 "task_id": item.task_id, "error_created_at": error_by_id[item.error_id].created_at}
             for item in self.review_tasks.values()
             if item.user_id == user_id and item.error_id in error_by_id
@@ -694,7 +737,7 @@ class InMemoryNotebookStore:
         self.errors[error_id] = updated
         for task_id, task in list(self.review_tasks.items()):
             if task.user_id == user_id and task.error_id == error_id and task.status in {"pending", "ready"}:
-                self.review_tasks[task_id] = ReviewTask(task.task_id, user_id, error_id, task.stage, task.due_at, "cancelled")
+                self.review_tasks[task_id] = replace(task, status="cancelled")
         if status == "removed":
             for recommendation_id, item in list(self.recommendations.items()):
                 if item.user_id == user_id and item.error_id == error_id and item.status in {"candidate", "assigned"}:
@@ -883,7 +926,7 @@ class InMemoryNotebookStore:
                 self.attempts[attempt_id] = Attempt(item.attempt_id, item.user_id, item.intake_id, item.input_version, item.question_text, item.answer_text, "cancelled", item.question_id)
         for task_id, item in list(self.review_tasks.items()):
             if item.user_id == user_id and item.status in {"pending", "ready"}:
-                self.review_tasks[task_id] = ReviewTask(item.task_id, item.user_id, item.error_id, item.stage, item.due_at, "cancelled")
+                self.review_tasks[task_id] = replace(item, status="cancelled")
         for recommendation_id, item in list(self.recommendations.items()):
             if item.user_id == user_id and item.status in {"candidate", "assigned", "completed"}:
                 self.recommendations[recommendation_id] = Recommendation(item.recommendation_id, item.user_id, item.error_id, item.question, item.reason, "withdrawn")
@@ -917,7 +960,8 @@ class InMemoryNotebookStore:
 
     @staticmethod
     def _review_export(item: ReviewTask) -> dict[str, Any]:
-        return {"review_id": item.task_id, "error_id": item.error_id, "stage": item.stage, "due_at": item.due_at, "status": item.status}
+        return {"review_id": item.task_id, "error_id": item.error_id, "stage": item.stage, "due_at": item.due_at, "status": item.status,
+                "deferred_from": item.deferred_from, "defer_reason": item.defer_reason}
 
     @staticmethod
     def _job_export(item: Job) -> dict[str, Any]:
@@ -1058,7 +1102,10 @@ class NotebookService:
         today = learning_day(current)
         calendar = self.review_calendar(user_id=user_id, month=today[:7], now=current)
         day = next(row for row in calendar["days"] if row["date"] == today)
-        return progress | {"today_needs_correction_count": day["needs_correction_count"]}
+        deferred = {item.error_id for item in self.store.list_active_reviews(user_id=user_id)
+                    if item.deferred_from is not None and item.due_at > current}
+        correction_count = sum(bool(item.get("needs_correction")) and item.get("error_id") not in deferred for item in day["items"])
+        return progress | {"deferred_review_count": len(deferred), "today_needs_correction_count": correction_count}
 
     def today_practice_plan(self, *, user_id: str, papers: list[dict], now: datetime | None = None) -> dict | None:
         today = learning_day(now or _now())

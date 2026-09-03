@@ -56,6 +56,8 @@ class ReviewTask:
     stage: int
     due_at: datetime
     status: str
+    deferred_from: datetime | None = None
+    defer_reason: str | None = None
 
 
 _STOP_HAN = set("的一是了在和与或若求已知则为中有其")
@@ -322,6 +324,7 @@ def build_review_calendar(
         "correct_review_count": 0,
         "needs_correction_count": 0,
         "overdue_review_count": 0,
+        "deferred_review_count": 0,
     }
 
     def day_record(day_key: str) -> dict[str, object]:
@@ -332,12 +335,14 @@ def build_review_calendar(
             "completed_review_count": 0,
             "needs_correction_count": 0,
             "overdue_review_count": 0,
+            "deferred_review_count": 0,
             "stage_counts": {str(stage): 0 for stage in range(1, 7)},
             "items": [],
         })
 
     def event(kind: str, when: datetime, record: dict[str, object]) -> dict[str, object]:
         moment = _aware_utc(when)
+        deferred = kind == "due" and record.get("deferred_from") is not None and moment > current
         return {
             "type": kind,
             "task_id": record.get("task_id"),
@@ -351,6 +356,9 @@ def build_review_calendar(
             "stage": record.get("stage"),
             "result": record.get("result"),
             "status": record.get("status"),
+            "deferred": deferred,
+            "deferred_from": _aware_utc(record["deferred_from"]).isoformat() if record.get("deferred_from") else None,
+            "defer_reason": record.get("defer_reason"),
             "overdue": kind == "due" and record.get("status") in {"pending", "ready"} and moment < current,
             "original_due_date": moment.astimezone(_CHINA_TIMEZONE).date().isoformat() if kind == "due" else None,
         }
@@ -375,6 +383,9 @@ def build_review_calendar(
             if record.get("status") in {"pending", "ready"} and moment < current:
                 day["overdue_review_count"] += 1
                 summary["overdue_review_count"] += 1
+            if record.get("deferred_from") is not None and moment > current:
+                day["deferred_review_count"] += 1
+                summary["deferred_review_count"] += 1
         else:
             day["completed_review_count"] += 1
             summary["completed_review_count"] += 1

@@ -160,6 +160,40 @@ class LearningLoopTests(unittest.TestCase):
         self.assertEqual((next_task.stage, progress["review_stage_counts"]["1"]), (1, 1))
         self.assertEqual((progress["today_completed_review_count"], progress["today_needs_correction_count"]), (1, 1))
 
+    def test_review_deferral_preserves_stage_and_restores_when_due(self) -> None:
+        now = datetime(2026, 8, 23, 8, tzinfo=timezone.utc)
+        task = next(iter(self.store.review_tasks.values()))
+        self.store.review_tasks[task.task_id] = type(task)(task.task_id, task.user_id, task.error_id, 2, now, "ready")
+
+        deferred = self.store.defer_review(user_id=self.user_id, task_id=task.task_id, days=3,
+                                           reason="prerequisite_not_learned", idempotency_key="defer-1", now=now)
+        repeated = self.store.defer_review(user_id=self.user_id, task_id=task.task_id, days=3,
+                                           reason="prerequisite_not_learned", idempotency_key="defer-1", now=now)
+
+        self.assertEqual((deferred.stage, deferred.due_at, deferred.deferred_from, deferred.defer_reason),
+                         (2, datetime(2026, 8, 26, 8, tzinfo=timezone.utc), now, "prerequisite_not_learned"))
+        self.assertEqual(repeated, deferred)
+        self.assertEqual(self.store.list_due_reviews(user_id=self.user_id, now=now), [])
+        self.assertEqual(self.store.progress(user_id=self.user_id, now=now)["deferred_review_count"], 1)
+        with self.assertRaisesRegex(RuntimeError, "conflict"):
+            self.store.defer_review(user_id=self.user_id, task_id=task.task_id, days=1,
+                                    reason="prerequisite_not_learned", idempotency_key="defer-2", now=now)
+        restored = self.store.list_due_reviews(user_id=self.user_id, now=deferred.due_at)[0]
+        self.assertEqual((restored.stage, restored.status), (2, "ready"))
+        self.assertEqual(len([event for event in self.store.audit_events if event["event_type"] == "review.deferred"]), 1)
+
+    def test_deferred_review_can_be_resumed_early(self) -> None:
+        now = datetime(2026, 8, 23, 8, tzinfo=timezone.utc)
+        task = next(iter(self.store.review_tasks.values()))
+        self.store.review_tasks[task.task_id] = type(task)(task.task_id, task.user_id, task.error_id, 1, now, "ready")
+        self.store.defer_review(user_id=self.user_id, task_id=task.task_id, days=7,
+                               reason="prerequisite_not_learned", idempotency_key="defer", now=now)
+        resumed = self.store.resume_review(user_id=self.user_id, task_id=task.task_id, idempotency_key="resume", now=now)
+        repeated = self.store.resume_review(user_id=self.user_id, task_id=task.task_id, idempotency_key="resume", now=now)
+        self.assertEqual((resumed.due_at, resumed.status, resumed.deferred_from), (now, "ready", None))
+        self.assertEqual(repeated, resumed)
+        self.assertEqual(self.store.progress(user_id=self.user_id, now=now)["deferred_review_count"], 0)
+
     def test_review_calendar_combines_new_due_completed_and_knowledge_events(self) -> None:
         created_at = datetime(2026, 8, 22, 20, tzinfo=timezone.utc)
         now = datetime(2026, 8, 23, 8, tzinfo=timezone.utc)
