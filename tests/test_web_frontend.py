@@ -10,6 +10,10 @@ WEB = ROOT / "web"
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_all_browser_titles_use_product_name(self) -> None:
+        for page in WEB.glob("*.html"):
+            self.assertIn("<title>李兆霖数学错题本</title>", page.read_text(encoding="utf-8"), page.name)
+
     def test_question_markup_renders_only_content_addressed_diagrams(self) -> None:
         node = shutil.which("node")
         if node is None:
