@@ -286,7 +286,7 @@ def build_practice_pdf(
     meta = ParagraphStyle("MetaCN", parent=body, fontSize=8.5, leading=15, textColor=colors.HexColor("#667085"), spaceAfter=4 * mm)
 
     def answer_space() -> Spacer:
-        return Spacer(1, 28 * mm)
+        return Spacer(1, 50 * mm)
 
     def review_marker(code: str) -> Table:
         size = 24 * mm
@@ -394,7 +394,7 @@ def build_practice_pdf(
             story.extend([
                 Paragraph(f"推荐理由：{escape(str(item['reason']))}<br/>来源：{escape(str(item['source_title']))}", meta),
                 Paragraph("推荐题作答区", meta),
-                Spacer(1, 22 * mm),
+                answer_space(),
             ])
     if include_answers:
         story.extend([PageBreak(), Paragraph("答案", title), Spacer(1, 5 * mm)])
