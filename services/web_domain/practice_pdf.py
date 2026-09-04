@@ -284,24 +284,28 @@ def build_practice_pdf(
     # still wraps Chinese correctly with the normal line breaker.
     body = ParagraphStyle("BodyCN", parent=styles["BodyText"], fontName=font, fontSize=11, leading=22, textColor=colors.HexColor("#101828"), spaceAfter=3 * mm)
     meta = ParagraphStyle("MetaCN", parent=body, fontSize=8.5, leading=15, textColor=colors.HexColor("#667085"), spaceAfter=4 * mm)
+    compact_heading = ParagraphStyle("CompactHeadingCN", parent=heading, spaceBefore=0, spaceAfter=0)
 
     def answer_space() -> Spacer:
         return Spacer(1, 50 * mm)
 
-    def review_marker(code: str) -> Table:
-        size = 24 * mm
+    def question_heading(text: str, code: str | None = None) -> Any:
+        if not code:
+            return Paragraph(text, heading)
+        size = 20 * mm
         qr = QrCodeWidget(review_qr_payload(code), barLevel="Q", barBorder=4,
                           barWidth=size, barHeight=size)
         drawing = Drawing(size, size)
         drawing.add(qr)
-        label = Paragraph(
-            f"<b>扫码关联</b><br/>复习码 {escape(code)}<br/>拍照时请保留二维码、完整题目和作答。",
-            meta,
+        table = Table(
+            [[Paragraph(text, compact_heading), drawing]],
+            colWidths=[doc.width - 22 * mm, 22 * mm],
+            rowHeights=[size],
+            hAlign="LEFT",
         )
-        table = Table([[drawing, label]], colWidths=[27 * mm, doc.width - 27 * mm],
-                      rowHeights=[size], hAlign="LEFT")
         table.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
             ("LEFTPADDING", (0, 0), (-1, -1), 0),
             ("RIGHTPADDING", (0, 0), (-1, -1), 0),
             ("TOPPADDING", (0, 0), (-1, -1), 0),
@@ -356,7 +360,7 @@ def build_practice_pdf(
     story: list[Any] = [
         header,
         *header_gap,
-        Paragraph("姓名：____________　日期：____________　先独立完成，全部做完后拍照判题。", body),
+        Paragraph("姓名：____________　日期：____________　先独立完成，全部做完后拍照判题；拍照时保留题目右侧二维码。", body),
         HRFlowable(width="100%", thickness=1, color=colors.HexColor("#84ADFF")),
     ]
     for group_no, (error_id, group) in enumerate(groups.items(), 1):
@@ -367,11 +371,9 @@ def build_practice_pdf(
         status_text = "需重做" if requires_original else "仅作推荐依据"
         if not recommendations and not original.get("requires_original"):
             status_text = "推荐缺口，改为重做"
-        original_block: list[Any] = [Paragraph(f"{group_no}　错题编号 {escape(error_id[:8])}（第 {stage} 阶段 · {status_text}）", heading)]
-        if original.get("review_code") and requires_original:
-            original_block.append(review_marker(str(original["review_code"])))
-        elif original.get("review_code"):
-            original_block.append(Paragraph(f"复习码 {escape(original['review_code'])} · 拍照时请保留复习码与完整题目", meta))
+        original_title = f"{group_no}　原错题（第 {stage} 阶段 · {status_text}）"
+        original_code = str(original["review_code"]) if original.get("review_code") and requires_original else None
+        original_block: list[Any] = [question_heading(original_title, original_code)]
         original_block.extend(question_content(original["stem_text"], prefix="<b>错题回顾：</b>"))
         original_block.append(Paragraph(f"<b>错题原因：</b>{_formatted_text(original.get('error_reason') or '未记录', body.fontSize)}", body))
         if requires_original:
@@ -381,9 +383,11 @@ def build_practice_pdf(
         story.append(KeepTogether(original_block))
         for index, item in enumerate(recommendations, 1):
             difficulty = "未标注" if item.get("difficulty") is None else str(item["difficulty"])
-            recommendation_block: list[Any] = [Paragraph(f"同类型推荐题 {index}　题库编号 {escape(str(item['question_id']))}（难度 {escape(difficulty)}/5）", heading)]
-            if item.get("review_code"):
-                recommendation_block.append(review_marker(str(item["review_code"])))
+            recommendation_title = f"同类型推荐题 {index}（难度 {escape(difficulty)}/5）"
+            recommendation_block: list[Any] = [question_heading(
+                recommendation_title,
+                str(item["review_code"]) if item.get("review_code") else None,
+            )]
             recommendation_block.extend(question_content(item["stem_text"]))
             options = item.get("options")
             if options:
@@ -403,7 +407,7 @@ def build_practice_pdf(
                 continue
             answer_no += 1
             answer = item.get("answer_text") or "题库未提供答案"
-            story.append(Paragraph(f"{answer_no}. 题库编号 {escape(str(item['question_id']))}", heading))
+            story.append(Paragraph(f"{answer_no}. 推荐题参考答案", heading))
             story.extend(question_content(answer))
 
     def footer(canvas, document) -> None:

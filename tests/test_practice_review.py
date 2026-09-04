@@ -474,8 +474,12 @@ class PracticeReviewTests(unittest.TestCase):
     def test_old_pdf_is_read_and_matched_without_changing_generation_date(self):
         self.job = self.paper(legacy=True)
         created = self.job.checkpoint["generated_at"]
-        context = self.service.resolve_practice_review(user_id=self.owner, question_text=self.error.question_text,
-            locator={"pdf_id": self.job.job_id, "error_id": self.error.error_id[:8], "stage": 1, "kind": "original"})
+        legacy_page = type("LegacyPage", (), {"extract_text": lambda _self:
+            f"错题编号 {self.error.error_id[:8]}（第 1 阶段 · 需重做）\n题库编号 {self.question.question_id}"})()
+        with patch("pypdf.PdfReader") as reader:
+            reader.return_value.pages = [legacy_page]
+            context = self.service.resolve_practice_review(user_id=self.owner, question_text=self.error.question_text,
+                locator={"pdf_id": self.job.job_id, "error_id": self.error.error_id[:8], "stage": 1, "kind": "original"})
         self.assertEqual(context["status"], "matched")
         self.assertEqual(self.store.jobs[self.job.job_id].checkpoint["generated_at"], created)
         self.assertEqual(len(self.store.jobs[self.job.job_id].checkpoint["review_manifest"]), 2)
@@ -489,12 +493,15 @@ class PracticeReviewTests(unittest.TestCase):
         del self.store.jobs[self.job.job_id]
         self.assertEqual(self.service.resolve_practice_review(user_id=self.owner, question_text=self.error.question_text, review_mode=True)["status"], "unmatched")
 
-    def test_pdf_code_is_printed_and_legacy_skill_identifiers_map(self):
+    def test_pdf_hides_machine_identifiers_and_legacy_skill_identifiers_map(self):
         self.job = self.paper()
         _, content = self.service.download_practice_pdf(user_id=self.owner, job_id=self.job.job_id)
         text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(content)).pages)
         for item in self.job.checkpoint["review_manifest"]:
-            self.assertIn(item["code"], text)
+            self.assertNotIn(item["code"], text)
+        self.assertNotIn("复习码", text)
+        self.assertNotIn("错题编号", text)
+        self.assertNotIn("题库编号", text)
         source = "ERR-20260829-abcdef12"
         migrated = hashlib.sha256(f"desktop-error:error:{self.owner}:{source}".encode()).hexdigest()[:32]
         error = replace(self.error, error_id=migrated)
