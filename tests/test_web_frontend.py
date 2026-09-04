@@ -465,6 +465,9 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertNotIn('/web/app.js', html)
         self.assertNotIn('id="upload-form"', html)
         self.assertIn('李兆霖数学错题本', plugin)
+        self.assertIn('document.title = productTitle', plugin)
+        self.assertIn('new MutationObserver', plugin)
+        self.assertIn('/assets/branding/favicon-v1.ico', plugin)
         self.assertIn('id: "math-notebook-navigation"', plugin)
         self.assertIn('sidebar.footer.action', plugin)
         for label, route in (("错题本", "/errors"), ("练习 PDF", "/practice"), ("学习进度", "/progress")):

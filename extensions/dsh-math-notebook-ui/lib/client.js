@@ -5,6 +5,7 @@ window.__ModuleLoader__.load({
     const exports = module.exports;
     const {jsx} = require("react/jsx-runtime");
     const productOrigin = window.location.origin;
+    const productTitle = "李兆霖数学错题本";
     const productWorkspaceTitle = "错题会话";
     const modelEpoch = "qwen3.8-flash-v2";
     const navigationItems = [
@@ -137,6 +138,17 @@ window.__ModuleLoader__.load({
     }
 
     function installStudentSurface(ctx) {
+      ctx.effect(() => {
+        const title = document.querySelector("title");
+        const observer = new MutationObserver(() => {
+          if (document.title !== productTitle) document.title = productTitle;
+        });
+        document.title = productTitle;
+        if (title) observer.observe(title, {childList: true});
+        const icon = document.querySelector('link[rel~="icon"]');
+        if (icon) icon.href = `${productOrigin}/assets/branding/favicon-v1.ico`;
+        return () => observer.disconnect();
+      }, "math-notebook: product title");
       ctx.effect(() => {
         const style = document.createElement("style");
         style.dataset.pluginCss = "@lizhaolin/dsh-math-notebook-ui/student-surface";
