@@ -1443,10 +1443,43 @@ function writeReviewSelection(scope, ids, reviews = new Map(), now = new Date())
   } catch { return false; }
 }
 
+function reviewQuestionType(item) {
+  const recommendation = item?.recommendations?.[0];
+  const text = String(recommendation?.stem_text || item?.question_text || "");
+  if (Array.isArray(recommendation?.options) && recommendation.options.length >= 2) return "choice";
+  const optionMarkers = text.match(/(?:^|[\s；;。])[A-FＡ-Ｆ]\s*[.．、:：)]/gi) || [];
+  if (/(?:多选题|单选题|选择题|[（(]\s*(?:多选|单选)\s*[)）])/.test(text) || optionMarkers.length >= 2) return "choice";
+  if (/(?:填空题|_{3,}|＿{2,}|…{2,})/.test(text)) return "fill";
+  return "written";
+}
+
+function defaultReviewSelection(items, limit = 12, writtenLimit = 3) {
+  const buckets = {choice: [], fill: [], written: []};
+  const seen = new Set();
+  for (const item of items) {
+    if (!item?.error_id || seen.has(item.error_id)) continue;
+    seen.add(item.error_id);
+    buckets[reviewQuestionType(item)].push(item);
+  }
+  const selected = [];
+  let writtenCount = 0;
+  while (selected.length < limit) {
+    let added = false;
+    for (const type of ["choice", "fill", "written"]) {
+      if (selected.length >= limit || type === "written" && writtenCount >= writtenLimit || !buckets[type].length) continue;
+      selected.push(buckets[type].shift());
+      if (type === "written") writtenCount += 1;
+      added = true;
+    }
+    if (!added) break;
+  }
+  return selected;
+}
+
 function resolveReviewSelection({fixedPlan, dueReviews, saved, mode, currentIds}) {
   if (fixedPlan) return {mode: "fixed", ids: fixedPlan.available ? [...new Set(fixedPlan.items.map(item => item.error_id))].slice(0, 12) : []};
   if (mode === "manual" || saved !== null) return {mode: "manual", ids: saved === null ? [...currentIds] : saved};
-  return {mode: "auto", ids: dueReviews.slice(0, 12).map(item => item.error_id)};
+  return {mode: "auto", ids: defaultReviewSelection(dueReviews).map(item => item.error_id)};
 }
 
 function ensureReviewRecommendations(ids) {
@@ -1664,7 +1697,7 @@ function bindProgress() {
     if (selectedDate === todaySnapshot.date && selectedMetric === "due" && !fixedPlan && !generatingPdf
         && readReviewSelection(selectionScope, currentReviews) === null) {
       const day = calendar.days.find(item => item.date === selectedDate) || {date: selectedDate, items: []};
-      selectedErrorIds = new Set([...new Set(detailItems(day).filter(selectable).map(item => item.error_id))].slice(0, 12));
+      selectedErrorIds = new Set(defaultReviewSelection(detailItems(day).filter(selectable)).map(item => item.error_id));
       selectionSaved = writeReviewSelection(selectionScope, selectedErrorIds, currentReviews);
     }
     renderCalendar();
