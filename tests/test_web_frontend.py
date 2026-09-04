@@ -236,7 +236,7 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   assert.equal($('#calendar-day-detail').hidden,true);
   $('#calendar-prev').handlers.click(); await tick();
   assert.equal($('#calendar-month').textContent,'2026 年 8 月');
-  // Opening today's due list selects only eligible items, once, up to 12.
+  // Opening today's due list selects only eligible items, once, up to 8 by default.
   context.sessionStorage.setItem=(k,v)=>storage.set(k,v);
   storage.clear();
   errors.splice(0,errors.length,...Array.from({length:13},(_,i)=>({error_id:String(i),status:'open',
@@ -248,18 +248,18 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
   todayPlan=null; await reload();
   const writesBeforeDefaults=writes();
   clickDay('2026-08-31','due');
-  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,12);
+  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,8);
   assert.equal(($('#calendar-day-items').innerHTML.match(/name="calendar-error"/g)||[]).length,13);
   assert.equal($('#calendar-generate-pdf').disabled,false);
   const reviews=new Map(errors.map(error=>[error.error_id,error.review]));
-  assert.deepEqual([...context.readReviewSelection('a'.repeat(24),reviews)],errors.slice(0,12).map(error=>error.error_id));
+  assert.deepEqual([...context.readReviewSelection('a'.repeat(24),reviews)],errors.slice(0,8).map(error=>error.error_id));
   assert.equal(writes(),writesBeforeDefaults); // Selecting never generates a PDF.
   change('0',false);
   clickDay('2026-08-31','due');
-  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,11);
+  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,7);
   await reload();
-  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,11);
-  for(let i=1;i<12;i++) change(String(i),false);
+  assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,7);
+  for(let i=1;i<8;i++) change(String(i),false);
   clickDay('2026-08-31','due');
   assert.equal(($('#calendar-day-items').innerHTML.match(/ checked/g)||[]).length,0);
   assert.equal($('#calendar-generate-pdf').disabled,true); // Keep deliberate deselect-all.
@@ -317,14 +317,14 @@ data.clear();
 context.writeReviewSelection('a'.repeat(24),new Set(['old']),ids,now);
 assert.equal(context.readReviewSelection('a'.repeat(24),new Map([['old',{review_id:'new-round'}]]),now).length,0);
 const due = Array.from({length:14},(_,i)=>({error_id:`e${i}`,question_text:'选择正确答案：A.1；B.2；C.3；D.4'}));
-assert.equal(JSON.stringify(context.resolveReviewSelection({fixedPlan:null,dueReviews:due,saved:null,mode:'auto',currentIds:new Set()}).ids),JSON.stringify(due.slice(0,12).map(x=>x.error_id)));
-assert.equal(JSON.stringify(context.resolveReviewSelection({fixedPlan:null,dueReviews:due.slice(2),saved:null,mode:'auto',currentIds:new Set()}).ids),JSON.stringify(due.slice(2,14).map(x=>x.error_id)));
+assert.equal(JSON.stringify(context.resolveReviewSelection({fixedPlan:null,dueReviews:due,saved:null,mode:'auto',currentIds:new Set()}).ids),JSON.stringify(due.slice(0,8).map(x=>x.error_id)));
+assert.equal(JSON.stringify(context.resolveReviewSelection({fixedPlan:null,dueReviews:due.slice(2),saved:null,mode:'auto',currentIds:new Set()}).ids),JSON.stringify(due.slice(2,10).map(x=>x.error_id)));
 const written = Array.from({length:8},(_,i)=>({error_id:`w${i}`,question_text:`（1）求值；（2）证明结论 ${i}`}));
 const choices = Array.from({length:8},(_,i)=>({error_id:`c${i}`,question_text:'题目',recommendations:[{stem_text:'题目',options:['A.1','B.2','C.3','D.4']}]}));
 const fills = Array.from({length:4},(_,i)=>({error_id:`f${i}`,question_text:`答案为________${i}`}));
 const balanced = context.defaultReviewSelection([...written,...choices,...fills]);
-assert.equal(balanced.length,12);
-assert.equal(balanced.filter(item=>context.reviewQuestionType(item)==='written').length,3);
+assert.equal(balanced.length,8);
+assert.equal(balanced.filter(item=>context.reviewQuestionType(item)==='written').length,2);
 assert.deepEqual([...new Set(balanced.map(item=>context.reviewQuestionType(item)))],['choice','fill','written']);
 assert.equal(context.defaultReviewSelection(written).length,3);
 assert.equal(JSON.stringify(context.resolveReviewSelection({fixedPlan:null,dueReviews:due,saved:['e7'],mode:'manual',currentIds:new Set()}).ids),'["e7"]');

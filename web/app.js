@@ -1453,7 +1453,7 @@ function reviewQuestionType(item) {
   return "written";
 }
 
-function defaultReviewSelection(items, limit = 12, writtenLimit = 3) {
+function defaultReviewSelection(items, limit = 8, writtenLimit = 3) {
   const buckets = {choice: [], fill: [], written: []};
   const seen = new Set();
   for (const item of items) {
