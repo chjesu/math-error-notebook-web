@@ -192,6 +192,18 @@ class PracticePdfMathTests(unittest.TestCase):
             "LZLM1:RAAAAAAAAAAAA-04-DDDDDD",
         ])
 
+    def test_each_review_code_stays_on_the_page_with_its_answer_area(self) -> None:
+        items = [
+            {"kind": "original", "error_id": "e" * 32, "question_id": None, "stem_text": "已知函数，求参数。", "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "错题回顾", "error_reason": "计算错误", "review_stage": 1, "requires_original": True, "review_code": "Raaaaaaaaaaaa-01-AAAAAA"},
+            {"kind": "recommendation", "error_id": "e" * 32, "question_id": "q" * 32, "stem_text": "已知函数条件一，条件二，条件三。" * 12, "answer_text": "答案", "difficulty": 3, "source_title": "测试题库", "reason": "同类练习", "review_code": "Raaaaaaaaaaaa-02-BBBBBB"},
+        ]
+        pages = [page.extract_text() or "" for page in pypdf.PdfReader(io.BytesIO(
+            build_practice_pdf(items, include_answers=False)
+        )).pages]
+
+        self.assertTrue(any("Raaaaaaaaaaaa-01-AAAAAA" in page and "原题作答区" in page for page in pages))
+        self.assertTrue(any("Raaaaaaaaaaaa-02-BBBBBB" in page and "推荐题作答区" in page for page in pages))
+
     def test_recommendation_options_are_printed_in_the_pdf(self) -> None:
         items = [
             {"kind": "original", "error_id": "options-original", "question_id": None, "stem_text": "原题", "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "第 1 阶段", "review_stage": 1, "requires_original": True},

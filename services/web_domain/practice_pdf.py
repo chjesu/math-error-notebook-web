@@ -263,7 +263,7 @@ def build_practice_pdf(
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.platypus import CondPageBreak, HRFlowable, Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import HRFlowable, Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     try:
         pdfmetrics.registerFont(TTFont("PracticeCN", str(Path(r"C:\Windows\Fonts\msyh.ttc")), subfontIndex=0))
@@ -367,35 +367,34 @@ def build_practice_pdf(
         status_text = "需重做" if requires_original else "仅作推荐依据"
         if not recommendations and not original.get("requires_original"):
             status_text = "推荐缺口，改为重做"
-        if group_no > 1:
-            story.append(CondPageBreak((150 if _MARKDOWN_IMAGE_RE.search(str(original["stem_text"])) else 80) * mm))
-        story.append(Paragraph(f"{group_no}　错题编号 {escape(error_id[:8])}（第 {stage} 阶段 · {status_text}）", heading))
+        original_block: list[Any] = [Paragraph(f"{group_no}　错题编号 {escape(error_id[:8])}（第 {stage} 阶段 · {status_text}）", heading)]
         if original.get("review_code") and requires_original:
-            story.append(review_marker(str(original["review_code"])))
+            original_block.append(review_marker(str(original["review_code"])))
         elif original.get("review_code"):
-            story.append(Paragraph(f"复习码 {escape(original['review_code'])} · 拍照时请保留复习码与完整题目", meta))
-        story.extend(question_content(original["stem_text"], prefix="<b>错题回顾：</b>"))
-        story.append(Paragraph(f"<b>错题原因：</b>{_formatted_text(original.get('error_reason') or '未记录', body.fontSize)}", body))
+            original_block.append(Paragraph(f"复习码 {escape(original['review_code'])} · 拍照时请保留复习码与完整题目", meta))
+        original_block.extend(question_content(original["stem_text"], prefix="<b>错题回顾：</b>"))
+        original_block.append(Paragraph(f"<b>错题原因：</b>{_formatted_text(original.get('error_reason') or '未记录', body.fontSize)}", body))
         if requires_original:
-            story.extend([Paragraph("原题作答区", meta), answer_space()])
+            original_block.extend([Paragraph("原题作答区", meta), answer_space()])
         if not recommendations:
-            story.append(Paragraph("暂无符合验证与授权要求的推荐题，本次改为重做原题。", meta))
+            original_block.append(Paragraph("暂无符合验证与授权要求的推荐题，本次改为重做原题。", meta))
+        story.append(KeepTogether(original_block))
         for index, item in enumerate(recommendations, 1):
             difficulty = "未标注" if item.get("difficulty") is None else str(item["difficulty"])
-            story.append(CondPageBreak((145 if _MARKDOWN_IMAGE_RE.search(str(item["stem_text"])) else 70) * mm))
-            story.append(Paragraph(f"同类型推荐题 {index}　题库编号 {escape(str(item['question_id']))}（难度 {escape(difficulty)}/5）", heading))
+            recommendation_block: list[Any] = [Paragraph(f"同类型推荐题 {index}　题库编号 {escape(str(item['question_id']))}（难度 {escape(difficulty)}/5）", heading)]
             if item.get("review_code"):
-                story.append(review_marker(str(item["review_code"])))
-            story.extend(question_content(item["stem_text"]))
+                recommendation_block.append(review_marker(str(item["review_code"])))
+            recommendation_block.extend(question_content(item["stem_text"]))
             options = item.get("options")
             if options:
                 option_line = "　　".join(str(option) for option in options)
-                story.append(Paragraph("<b>选项：</b>" + _formatted_text(option_line, body.fontSize), body))
-            story.extend([
+                recommendation_block.append(Paragraph("<b>选项：</b>" + _formatted_text(option_line, body.fontSize), body))
+            recommendation_block.extend([
                 Paragraph(f"推荐理由：{escape(str(item['reason']))}<br/>来源：{escape(str(item['source_title']))}", meta),
                 Paragraph("推荐题作答区", meta),
                 answer_space(),
             ])
+            story.append(KeepTogether(recommendation_block))
     if include_answers:
         story.extend([PageBreak(), Paragraph("答案", title), Spacer(1, 5 * mm)])
         answer_no = 0
