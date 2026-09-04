@@ -1110,6 +1110,50 @@ class NotebookE2ETests(unittest.TestCase):
         )
         self.assertEqual(forbidden_reference[0], 404)
 
+    def test_harness_prepares_only_exact_verified_references_for_fast_grading(self) -> None:
+        cookie = self.login("13500135008")
+        self.call(
+            "/v1/harness/sessions/bind", method="POST",
+            payload={"session_id": "session-fast-reference"}, cookie=cookie, origin="https://example.test",
+        )
+        question = Question(
+            "1" * 32, "若 x+5=10，求 x。", "x=5", 10, 2.0, "授权题库",
+            solution_text="等式两边同时减去 5，得到 x=5。", version_id="2" * 32, version_no=4,
+        )
+        self.domain_store.add_question(question, license_status="user_authorized")
+        content = self.png_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        attachment = {
+            "attachment_id": f"sha256:{digest}", "name": "question.png", "media_type": "image/png",
+            "data": base64.b64encode(content).decode("ascii"),
+        }
+        blank_review = {"code": "", "pdf_id": "", "error_id": "", "question_id": "", "stage": 0, "kind": ""}
+        internal = {
+            "origin": None,
+            "client": ("127.0.0.1", 3080),
+            "extra_headers": {"authorization": "Bearer test-internal-token"},
+        }
+        fuzzy_only = self.call(
+            "/v1/internal/harness/grading-references", method="POST",
+            payload={"session_id": "session-fast-reference", "attachment": attachment, "items": [
+                {"item_no": 1, "question_text": question.stem_text, "review": blank_review},
+            ]}, **internal,
+        )
+        self.assertEqual((fuzzy_only[0], fuzzy_only[2]["items"][0]["grading_strategy"]), (200, "independent"))
+        exact_review = blank_review | {"question_id": question.question_id}
+        exact = self.call(
+            "/v1/internal/harness/grading-references", method="POST",
+            payload={"session_id": "session-fast-reference", "attachment": attachment, "items": [
+                {"item_no": 1, "question_text": "OCR 可有轻微误差", "review": exact_review},
+            ]}, **internal,
+        )
+        prepared = exact[2]["items"][0]
+        self.assertEqual((exact[0], prepared["grading_strategy"]), (200, "verified_reference"))
+        self.assertEqual(
+            (prepared["reference"]["question_id"], prepared["reference"]["version_no"], prepared["reference"]["reference_answer"]),
+            (question.question_id, 4, "x=5"),
+        )
+
     def test_deletion_keeps_durable_pending_state_when_domain_cleanup_fails(self) -> None:
         phone = "13400134000"
         cookie = self.login(phone)

@@ -348,12 +348,27 @@ function referenceReviewText(item) {
 }
 
 function transcribeAttachmentsTool(ctx) {
+  const origin = process.env.LZLM_PRODUCT_ORIGIN;
+  const token = process.env.LZLM_HARNESS_INTERNAL_TOKEN;
+  if (!origin || !token) throw new Error("Harness notebook bridge is not configured");
   const itemProperties = {
     attachment_index: {type: "integer"},
     item_no: {type: "integer"},
     question_text: {type: "string"},
     answer_text: {type: "string"},
     review: reviewLocatorSchema
+  };
+  const referenceProperties = {
+    question_id: {type: "string"}, version_no: {type: "integer"}, question_text: {type: "string"},
+    reference_answer: {type: "string"}, reference_solution: {type: "string"}, source_title: {type: "string"}
+  };
+  const resolvedItemProperties = {
+    ...itemProperties,
+    grading_strategy: {type: "string", enum: ["verified_reference", "independent"]},
+    reference: {oneOf: [
+      {type: "null"},
+      {type: "object", additionalProperties: false, required: Object.keys(referenceProperties), properties: referenceProperties}
+    ]}
   };
   return {
     name: "transcribe_error_notebook_attachments",
@@ -367,14 +382,23 @@ function transcribeAttachmentsTool(ctx) {
         type: "object", additionalProperties: false, required: ["schema", "items"],
         properties: {
           schema: {type: "string", const: "math-notebook-transcription/v1"},
-          items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}
+          items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(resolvedItemProperties), properties: resolvedItemProperties}}
         }
       },
       render: (_args, value) => value.items.length === 0 ? [{type: "text", text: missingImageMessage}] : [{type: "text", text: [
-        "题干与作答已经冻结。下一步只能基于以下文字独立解题和判题，不得重新识别或改写：",
-        ...value.items.flatMap((item) => [
+        "题干与作答已经冻结，不得重新识别或改写。严格按每题 grading_strategy 判题：",
+        ...value.items.flatMap((item) => item.grading_strategy === "verified_reference" ? [
           `图片 ${item.attachment_index} · 第 ${item.item_no} 题题干：${item.question_text}`,
-          `图片 ${item.attachment_index} · 第 ${item.item_no} 题学生作答：${item.answer_text || "未作答"}`
+          `图片 ${item.attachment_index} · 第 ${item.item_no} 题学生作答：${item.answer_text || "未作答"}`,
+          "判题策略：verified_reference。二维码或精确题库编号已关联到已验证当前版本；禁止重新完整解题，只核对学生作答与以下参考答案是否等价。提交时 final_answer 必须原样复制参考答案，correct_solution 使用参考解析，并原样复制 grading_strategy。",
+          `当前题库题干：${item.reference.question_text}`,
+          `当前题库参考答案：${item.reference.reference_answer}`,
+          `当前题库参考解析：${item.reference.reference_solution || "暂无解析"}`,
+          `题库版本：${item.reference.version_no}；来源：${item.reference.source_title}`
+        ] : [
+          `图片 ${item.attachment_index} · 第 ${item.item_no} 题题干：${item.question_text}`,
+          `图片 ${item.attachment_index} · 第 ${item.item_no} 题学生作答：${item.answer_text || "未作答"}`,
+          "判题策略：independent。没有取得精确且已验证的当前参考，必须独立解题并原样复制 grading_strategy。"
         ])
       ].join("\n")}]
     },
@@ -398,8 +422,42 @@ function transcribeAttachmentsTool(ctx) {
         answer_text: item.answer_text.trim()
       }));
       if (items.some((item) => item.question_text === "")) throw new Error("Every transcription item requires a question stem");
-      transcriptionByAgent.set(exec.agent, {images, items, userText: latestUserText(exec.agent), turn: currentTurn(exec.agent)});
-      return {schema: "math-notebook-transcription/v1", items};
+      const storedImages = [];
+      const references = new Map();
+      for (let attachmentIndex = 1; attachmentIndex <= images.length; attachmentIndex += 1) {
+        const stored = await ctx.attachments.readImage(images[attachmentIndex - 1].attachment, exec.signal);
+        storedImages.push(stored);
+        const attachmentItems = items.filter((item) => item.attachment_index === attachmentIndex);
+        const response = await fetch(`${origin}/v1/internal/harness/grading-references`, {
+          method: "POST",
+          headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
+          body: JSON.stringify({
+            session_id: exec.agent.id,
+            attachment: {
+              attachment_id: String(stored.ref.attachmentId),
+              name: stored.ref.name || `question-${attachmentIndex}.${stored.ref.mediaType === "image/png" ? "png" : "jpg"}`,
+              media_type: stored.ref.mediaType,
+              data: Buffer.from(stored.data).toString("base64")
+            },
+            items: attachmentItems.map((item) => ({item_no: item.item_no, question_text: item.question_text, review: item.review}))
+          }),
+          signal: exec.signal
+        });
+        const payload = await response.json();
+        if (!response.ok || !Array.isArray(payload.items) || payload.items.length !== attachmentItems.length) {
+          throw toolRequestError("Grading reference lookup failed", response, payload);
+        }
+        for (const item of payload.items) references.set(`${attachmentIndex}:${item.item_no}`, item);
+      }
+      const resolvedItems = items.map((item) => {
+        const resolved = references.get(`${item.attachment_index}:${item.item_no}`);
+        if (!resolved || !["verified_reference", "independent"].includes(resolved.grading_strategy)) {
+          throw new Error("Grading reference lookup returned an invalid item");
+        }
+        return {...item, grading_strategy: resolved.grading_strategy, reference: resolved.reference};
+      });
+      transcriptionByAgent.set(exec.agent, {images, storedImages, items: resolvedItems, userText: latestUserText(exec.agent), turn: currentTurn(exec.agent)});
+      return {schema: "math-notebook-transcription/v1", items: resolvedItems};
     },
     presentCall: () => ({card: "generic", title: "识别题干与作答", kind: "other", rawInput: null})
   };
@@ -423,6 +481,7 @@ function processAttachmentsTool(ctx) {
     final_answer: {type: "string"},
     prevention_cue: {type: "string"},
     confidence: {type: "number"},
+    grading_strategy: {type: "string", enum: ["verified_reference", "independent"], description: "Copy exactly from the frozen transcription."},
     review: reviewLocatorSchema
   };
   const resultProperties = {
@@ -470,7 +529,7 @@ function processAttachmentsTool(ctx) {
   };
   return {
     name: "process_error_notebook_attachments",
-    description: "Required once after transcribe_error_notebook_attachments freezes the latest 1-10 image transcription. Independently solve and grade only from that frozen question_text and answer_text, then submit all judgments in image order using the frozen attachment_index and per-image item_no. The two frozen text fields and review locator must be copied exactly. The tool queries the current account's frozen PDF records and returns the authoritative review_association for every item, then stores every image separately, freezes grades, cross-checks the bank, and either records new errors or accumulates PDF review results on their original tasks. A recognized review that cannot be linked must stay pending and must never become a new notebook error. Follow review_association and actual receipts; never infer PDF identity or stage completion. If reference_review is returned, submit the frozen independent/reference comparison through adjudicate_error_notebook_reference_conflicts. Never invent ids.",
+    description: "Required once after transcribe_error_notebook_attachments freezes the latest 1-10 image transcription and grading strategy. For verified_reference, do not solve the problem again: compare the student's answer with the returned verified current answer, copy that reference answer into final_answer and its solution into correct_solution. For independent, solve and grade only from the frozen question_text and answer_text. Submit all judgments in image order and copy question_text, answer_text, review, and grading_strategy exactly. The tool rechecks reference freshness, queries the current account's frozen PDF records, stores every image separately, freezes grades, and returns authoritative receipts. A recognized review that cannot be linked must stay pending and must never become a new notebook error. If reference_review is returned, submit it through adjudicate_error_notebook_reference_conflicts. Never invent ids.",
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
       properties: {items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
@@ -498,6 +557,7 @@ function processAttachmentsTool(ctx) {
           || item.item_no !== expected.item_no
           || item.question_text.trim() !== expected.question_text
           || item.answer_text.trim() !== expected.answer_text
+          || item.grading_strategy !== expected.grading_strategy
           || Object.keys(reviewLocatorSchema.properties).some((key) => item.review?.[key] !== expected.review?.[key]);
       })) throw new Error("判题提交必须原样使用已冻结的题干、作答和复习定位信息");
       if (args.items.some((item) => item.attachment_index < 1 || item.attachment_index > images.length)) {
@@ -508,7 +568,7 @@ function processAttachmentsTool(ctx) {
       for (let attachmentIndex = 1; attachmentIndex <= images.length; attachmentIndex += 1) {
         const items = args.items.filter((item) => item.attachment_index === attachmentIndex);
         if (items.length === 0) throw new Error(`No result supplied for attachment ${attachmentIndex}`);
-        const stored = await ctx.attachments.readImage(images[attachmentIndex - 1].attachment, exec.signal);
+        const stored = frozen.storedImages[attachmentIndex - 1];
         const response = await fetch(`${origin}/v1/internal/harness/intakes/process`, {
           method: "POST",
           headers: {"authorization": `Bearer ${token}`, "content-type": "application/json"},
@@ -530,6 +590,7 @@ function processAttachmentsTool(ctx) {
         if (!response.ok || !Array.isArray(payload.results)) {
           const code = payload.error?.code;
           if (code === "daily_grade_limit") throw new Error("今天已完成 40 道判题，请先复习和订正；新图片可明日继续处理。");
+          if (code === "reference_changed") throw new Error("题库参考答案状态已变化；请将本题 grading_strategy 改为 independent 后重新独立解题并提交。");
           throw toolRequestError("Notebook processing failed", response, payload);
         }
         usage = payload.usage || usage;

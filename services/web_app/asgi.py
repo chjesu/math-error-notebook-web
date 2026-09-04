@@ -164,6 +164,9 @@ class NotebookAsgiApp:
         if path == "/v1/internal/harness/intakes/process" and method == "POST":
             await self._internal_harness_process(scope, receive, send, headers)
             return
+        if path == "/v1/internal/harness/grading-references" and method == "POST":
+            await self._internal_harness_grading_references(scope, receive, send, headers)
+            return
         if path == "/v1/internal/harness/intake-batches" and method == "POST":
             await self._internal_harness_batch_create(scope, receive, send, headers)
             return
@@ -1470,6 +1473,83 @@ class NotebookAsgiApp:
             })
         return results
 
+    async def _internal_harness_grading_references(
+        self,
+        scope: dict[str, Any],
+        receive: Receive,
+        send: Send,
+        headers: dict[str, str],
+    ) -> None:
+        """Resolve only exact, current references before the model grades frozen OCR."""
+        if not self._internal_harness_allowed(scope, headers):
+            await self._error(send, 403, "forbidden")
+            return
+        try:
+            payload = await self._json_body(receive, max_bytes=self.max_upload_bytes * 2)
+            if set(payload) != {"session_id", "attachment", "items"}:
+                raise ValueError("invalid grading reference request")
+            session_id = self._harness_session_id(payload)
+            user_id = await self._harness_user_id(session_id)
+            if user_id is None:
+                raise PermissionError("unbound harness session")
+            _, _, _, content, _ = self._harness_attachment(payload["attachment"])
+            raw_items = payload["items"]
+            if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= 20:
+                raise ValueError("invalid grading reference items")
+            locators = []
+            for index, item in enumerate(raw_items, 1):
+                if (
+                    not isinstance(item, dict)
+                    or set(item) != {"item_no", "question_text", "review"}
+                    or item.get("item_no") != index
+                    or isinstance(item.get("item_no"), bool)
+                    or not isinstance(item.get("question_text"), str)
+                    or not 1 <= len(item["question_text"].strip()) <= 12000
+                ):
+                    raise ValueError("invalid grading reference items")
+                locators.append(review_locator(item.get("review")))
+            qr_codes = decode_review_qr_codes(content)
+            if len(qr_codes) == len(locators):
+                locators = [{"code": code} for code in qr_codes]
+            results = []
+            for item, locator in zip(raw_items, locators, strict=True):
+                context = None
+                if locator.get("code") or locator.get("question_id"):
+                    context = await self._sync(
+                        self.notebook.resolve_practice_review,
+                        user_id=user_id,
+                        question_text=item["question_text"].strip(),
+                        locator=locator,
+                        review_mode=True,
+                    )
+                question_id = str((context or {}).get("question_id") or "")
+                if not question_id and re.fullmatch(r"[0-9a-f]{32}", str(locator.get("question_id") or "")):
+                    question_id = str(locator["question_id"])
+                reference = await self._sync(
+                    self.notebook.store.get_verified_question,
+                    question_id=question_id,
+                ) if question_id else None
+                result = {"item_no": item["item_no"], "grading_strategy": "independent", "reference": None}
+                if reference is not None:
+                    result.update(grading_strategy="verified_reference", reference={
+                        "question_id": reference.question_id,
+                        "version_no": reference.version_no,
+                        "question_text": reference.stem_text,
+                        "reference_answer": reference.answer_text,
+                        "reference_solution": reference.solution_text or "",
+                        "source_title": reference.source_title,
+                    })
+                results.append(result)
+            await self._json(send, 200, {"items": results})
+        except LookupError:
+            await self._error(send, 404, "not_found")
+        except PermissionError:
+            await self._error(send, 403, "forbidden")
+        except RequestTooLarge:
+            await self._error(send, 413, "request_too_large")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self._error(send, 400, "invalid_request")
+
     async def _internal_harness_process(
         self,
         scope: dict[str, Any],
@@ -1495,23 +1575,7 @@ class NotebookAsgiApp:
             user_id = await self._harness_user_id(session_id)
             if user_id is None:
                 raise PermissionError("unbound harness session")
-            attachment = payload["attachment"]
-            if not isinstance(attachment, dict) or set(attachment) != {"attachment_id", "name", "media_type", "data"}:
-                raise ValueError("invalid Harness attachment")
-            if not all(isinstance(attachment[key], str) for key in ("attachment_id", "name", "media_type", "data")):
-                raise ValueError("invalid Harness attachment")
-            attachment_id = attachment["attachment_id"]
-            digest_match = re.fullmatch(r"sha256:([0-9a-f]{64})", attachment_id)
-            media_type = attachment["media_type"]
-            name = attachment["name"]
-            if digest_match is None or media_type not in {"image/png", "image/jpeg"} or not 1 <= len(name) <= 255:
-                raise ValueError("invalid Harness attachment")
-            try:
-                content = base64.b64decode(attachment["data"], validate=True)
-            except (ValueError, TypeError) as exc:
-                raise ValueError("invalid Harness attachment") from exc
-            if not content or len(content) > self.max_upload_bytes or hashlib.sha256(content).hexdigest() != digest_match.group(1):
-                raise ValueError("invalid Harness attachment")
+            attachment_id, name, media_type, content, digest = self._harness_attachment(payload["attachment"])
             raw_items = payload["items"]
             required = {
                 "item_no", "question_text", "answer_text", "verdict", "first_error", "cause_code",
@@ -1522,7 +1586,7 @@ class NotebookAsgiApp:
             for index, item in enumerate(raw_items, 1):
                 if (
                     not isinstance(item, dict)
-                    or not required <= set(item) or set(item) - required - {"review"}
+                    or not required <= set(item) or set(item) - required - {"review", "grading_strategy"}
                     or item.get("item_no") != index
                     or isinstance(item.get("item_no"), bool)
                 ):
@@ -1532,10 +1596,11 @@ class NotebookAsgiApp:
                     raise ValueError("invalid Harness result items")
                 confidence = item.get("confidence")
                 review_locator(item.get("review"))
+                if item.get("grading_strategy", "independent") not in {"verified_reference", "independent"}:
+                    raise ValueError("invalid grading strategy")
                 if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
                     raise ValueError("invalid Harness confidence")
 
-            digest = digest_match.group(1)
             process_key = (user_id, digest)
             with self._harness_processes_lock:
                 if process_key in self._harness_processes:
@@ -1643,6 +1708,8 @@ class NotebookAsgiApp:
             processing_items = [(intake, None, None, None) for intake in intakes] if frozen_candidates else zip(intakes, raw_items, exact_review_contexts, review_locators, strict=True)
             for intake, item, exact_context, exact_locator in processing_items:
                 exact_question_id = str((exact_context or {}).get("question_id") or "")
+                if not exact_question_id and re.fullmatch(r"[0-9a-f]{32}", str((exact_locator or {}).get("question_id") or "")):
+                    exact_question_id = str(exact_locator["question_id"])
                 reference = (
                     await self._sync(self.notebook.store.get_verified_question, question_id=exact_question_id)
                     if exact_question_id else
@@ -1653,6 +1720,9 @@ class NotebookAsgiApp:
                     final_answer = str(self._diagnosis(candidate.evidence).get("final_answer") or "")
                 else:
                     assert item is not None
+                    grading_strategy = item.get("grading_strategy", "independent")
+                    if grading_strategy == "verified_reference" and (not exact_question_id or reference is None):
+                        raise RuntimeError("reference_changed")
                     attempt_id, _ = await self._sync(
                         self.notebook.store.confirm_intake,
                         user_id=user_id,
@@ -1662,11 +1732,18 @@ class NotebookAsgiApp:
                     )
                     final_answer = str(item["final_answer"]).strip()
                     validation = cross_validate_reference(reference, final_answer) if reference is not None and final_answer else None
+                    if grading_strategy == "verified_reference" and (
+                        not isinstance(validation, dict) or validation.get("status") != "consistent"
+                    ):
+                        raise RuntimeError("reference_changed")
                     verdict, first_error, evidence = self._grade_values(
                         item,
                         evidence_key="cause_evidence",
                         cross_validation=validation,
                     )
+                    diagnosis = self._diagnosis(evidence)
+                    diagnosis["grading_strategy"] = grading_strategy
+                    evidence = json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":"))
                     context = exact_context or await self._sync(self.notebook.store.practice_review_context, user_id=user_id, attempt_id=attempt_id)
                     if not context or context.get("status") == "unmatched":
                         context = await self._sync(
@@ -1776,7 +1853,7 @@ class NotebookAsgiApp:
         except PermissionError:
             await self._error(send, 403, "forbidden")
         except RuntimeError as exc:
-            code = str(exc) if str(exc) in {"input_version_changed", "reference_conflict", "conflict", "daily_grade_limit"} else "conflict"
+            code = str(exc) if str(exc) in {"input_version_changed", "reference_conflict", "reference_changed", "conflict", "daily_grade_limit"} else "conflict"
             await self._error(send, 429 if code == "daily_grade_limit" else 409, code)
         except RequestTooLarge:
             await self._error(send, 413, "request_too_large")
@@ -2615,6 +2692,26 @@ class NotebookAsgiApp:
         if not isinstance(session_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", session_id) is None:
             raise ValueError("invalid harness session id")
         return session_id
+
+    def _harness_attachment(self, attachment: Any) -> tuple[str, str, str, bytes, str]:
+        if not isinstance(attachment, dict) or set(attachment) != {"attachment_id", "name", "media_type", "data"}:
+            raise ValueError("invalid Harness attachment")
+        if not all(isinstance(attachment.get(key), str) for key in ("attachment_id", "name", "media_type", "data")):
+            raise ValueError("invalid Harness attachment")
+        attachment_id = attachment["attachment_id"]
+        digest_match = re.fullmatch(r"sha256:([0-9a-f]{64})", attachment_id)
+        name = attachment["name"]
+        media_type = attachment["media_type"]
+        if digest_match is None or media_type not in {"image/png", "image/jpeg"} or not 1 <= len(name) <= 255:
+            raise ValueError("invalid Harness attachment")
+        try:
+            content = base64.b64decode(attachment["data"], validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("invalid Harness attachment") from exc
+        digest = digest_match.group(1)
+        if not content or len(content) > self.max_upload_bytes or hashlib.sha256(content).hexdigest() != digest:
+            raise ValueError("invalid Harness attachment")
+        return attachment_id, name, media_type, content, digest
 
     async def _websocket(self, scope: dict[str, Any], receive: Receive, send: Send) -> None:
         connection = await receive()

@@ -6,7 +6,7 @@ window.__ModuleLoader__.load({
     const {jsx} = require("react/jsx-runtime");
     const productOrigin = window.location.origin;
     const productWorkspaceTitle = "错题会话";
-    const modelEpoch = "qwen3.8-flash-v1";
+    const modelEpoch = "qwen3.8-flash-v2";
     const navigationItems = [
       {path: "/errors", label: "错题本", icon: "errors"},
       {path: "/practice", label: "练习 PDF", icon: "practice"},

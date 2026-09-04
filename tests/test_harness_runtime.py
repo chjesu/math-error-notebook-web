@@ -82,6 +82,8 @@ const result = (candidate_id, question_text, code, reference_review=null) => ({
 let practiceCalls = 0;
 globalThis.fetch = async (url, options) => {
   const body = JSON.parse(options.body);
+  if (url.endsWith('/v1/internal/harness/grading-references')) return {ok:true,status:200,json:async()=>({items:
+    body.items.map(item=>({item_no:item.item_no,grading_strategy:'independent',reference:null}))})};
   if (url.endsWith('/v1/internal/harness/intakes/process')) return {ok:true,status:200,json:async()=>({results:[
     result(ids.old, 'q-old', codes.old, {source_title:'题库',version_no:1,independent_answer:'1',reference_answer:'1',reference_solution:'解'}),
     result(ids.other, 'q-other', codes.other)
@@ -118,7 +120,7 @@ await tools.find(tool=>tool.name==='transcribe_error_notebook_attachments').exec
 const processTool = tools.find(tool=>tool.name==='process_error_notebook_attachments');
 const grade = (attachment_index,item_no,question_text) => ({attachment_index,item_no,question_text,answer_text:'x=1',
   verdict:'correct',first_error:'',cause_code:'',cause_evidence:'',knowledge_points:['方程'],correct_solution:'解答',
-  final_answer:'x=1',prevention_cue:'检查',confidence:0.99,review});
+  final_answer:'x=1',prevention_cue:'检查',confidence:0.99,grading_strategy:'independent',review});
 const processed = await processTool.execute({items:[grade(1,1,'q-old'),grade(1,2,'q-other')]},exec);
 if (processed.results[0].review_match_candidates[0].stem_text !== 'q-old') throw new Error('candidate evidence lost');
 const referenceTool = tools.find(tool=>tool.name==='adjudicate_error_notebook_reference_conflicts');
@@ -321,6 +323,8 @@ let processCalls=0;
 let processedPages=0;
 globalThis.fetch = async (url, options) => {
   const body=JSON.parse(options.body);
+  if (url.endsWith('/grading-references')) return {ok:true,json:async()=>({items:
+    body.items.map(item=>({item_no:item.item_no,grading_strategy:'independent',reference:null}))})};
   if (url.endsWith('/intakes/process')) {
     processCalls++;
     return {ok:true,json:async()=>({results:body.items.map(item=>{
@@ -350,7 +354,7 @@ const frozen=links.slice(0,21).map((row,index)=>({attachment_index:index<20?1:2,
 await imageTools.find(tool=>tool.name==='transcribe_error_notebook_attachments').execute({items:frozen},imageExec);
 const processed=await imageTools.find(tool=>tool.name==='process_error_notebook_attachments').execute({items:frozen.map(row=>({
   ...row,verdict:'correct',first_error:'',cause_code:'',cause_evidence:'',knowledge_points:[],
-  correct_solution:'1',final_answer:'1',prevention_cue:'',confidence:1
+  correct_solution:'1',final_answer:'1',prevention_cue:'',confidence:1,grading_strategy:'independent'
 }))},imageExec);
 const imagePractice=imageTools.find(tool=>tool.name==='adjudicate_practice_review_associations');
 if (processCalls !== 2 || processed.results.length !== 21 || JSON.parse(processed.next_review_batch_json).length !== 20) {
@@ -525,6 +529,13 @@ if (!rendered.includes('下一步：') || !rendered.includes('打开「错题本
         script = f"""
 globalThis.fetch = async (url, options) => {{
   const body = JSON.parse(options.body);
+  if (url.endsWith('/v1/internal/harness/grading-references')) {{
+    const verified = body.attachment.attachment_id === 'sha256:' + 'c'.repeat(64);
+    return {{ok: true, status: 200, json: async () => ({{items: body.items.map(item => ({{
+      item_no: item.item_no, grading_strategy: verified ? 'verified_reference' : 'independent',
+      reference: verified ? {{question_id:'9'.repeat(32),version_no:2,question_text:'q',reference_answer:'answer',reference_solution:'solution',source_title:'题库'}} : null
+    }}))}})}};
+  }}
   if (url.endsWith('/v1/internal/harness/reference-conflicts/recheck')) {{
     if (body.session_id !== 'session-process' || body.question_text !== 'historical q') throw new Error('wrong recheck');
     return {{ok: true, status: 200, json: async () => ({{result: {{
@@ -551,6 +562,7 @@ globalThis.fetch = async (url, options) => {{
   if (body.items.length !== 1 || body.items[0].item_no !== 1 || 'attachment_index' in body.items[0]) throw new Error('wrong items');
   if (body.correction_mode !== true) throw new Error('correction mode missing');
   const second = body.attachment.attachment_id === 'sha256:' + 'd'.repeat(64);
+  if (body.items[0].grading_strategy !== (second ? 'independent' : 'verified_reference')) throw new Error('grading strategy missing');
   return {{ok: true, status: 200, json: async () => ({{results: [{{
     item_no: 1, candidate_id: (second ? 'f' : 'a').repeat(32), input_version: 1, verdict: 'incorrect', question_text: second ? 'q2' : 'q', answer_text: 'a',
     first_error: 'e', cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'],
@@ -590,16 +602,19 @@ const transcription = await transcriber.execute({{items: [{{
   attachment_index: 2, item_no: 1, question_text: 'q2', answer_text: 'a', review
 }}]}}, {{agent, signal: new AbortController().signal}});
 if (transcription.schema !== 'math-notebook-transcription/v1' || transcription.items.length !== 2) throw new Error('wrong transcription');
+if (transcription.items[0].grading_strategy !== 'verified_reference' || transcription.items[1].grading_strategy !== 'independent') throw new Error('wrong strategies');
+const transcriptionText = transcriber.output.render({{}}, transcription)[0].text;
+if (!transcriptionText.includes('禁止重新完整解题') || !transcriptionText.includes('必须独立解题')) throw new Error('strategy instructions missing');
 afterTranscription = true;
 const tool = registered.find((value) => value.name === 'process_error_notebook_attachments');
 const result = await tool.execute({{items: [{{
   attachment_index: 1, item_no: 1, question_text: 'q', answer_text: 'a', verdict: 'incorrect', first_error: 'e',
   cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'], correct_solution: 'solution',
-  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9, review
+  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9, grading_strategy: 'verified_reference', review
 }}, {{
   attachment_index: 2, item_no: 1, question_text: 'q2', answer_text: 'a', verdict: 'incorrect', first_error: 'e',
   cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'], correct_solution: 'solution',
-  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9, review
+  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9, grading_strategy: 'independent', review
 }}]}}, {{
   agent, signal: new AbortController().signal
 }});
