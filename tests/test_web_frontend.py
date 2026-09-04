@@ -606,6 +606,9 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertIn("apiKeyEnv: !!js process.env.HARNESS_API_KEY_ENV ?? 'DASHSCOPE_API_KEY'", runtime_config)
         self.assertIn("model: !!js process.env.HARNESS_MODEL ?? 'qwen3.8-flash'", runtime_config)
         for model_config in (runtime_config, patch):
+            self.assertIn("cacheRetention: short", model_config)
+            self.assertIn("cacheControlFormat: anthropic", model_config)
+        for model_config in (runtime_config, patch):
             self.assertIn("process.env.HARNESS_CONTEXT_WINDOW ?? '1000000'", model_config)
             self.assertIn("process.env.HARNESS_MAX_TOKENS ?? '32768'", model_config)
             self.assertIn("defaultContextWindow: !!js Number.parseInt(process.env.HARNESS_CONTEXT_WINDOW ?? '1000000', 10)", model_config)

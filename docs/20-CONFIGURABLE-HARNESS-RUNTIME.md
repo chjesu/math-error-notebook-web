@@ -19,6 +19,8 @@ python -X utf8 -B scripts/local_env.py serve --host 127.0.0.1 --port 8000 --enab
 
 当前本地链路已分别完成一次真实文本会话和一次真实图片请求。图片请求先由 Harness 官方附件模块生成持久引用，再由 pi-ai 转换为供应商请求；未使用文件路径或自建视觉转写协议。
 
+Qwen 通道通过 pi-ai 的原生 `cacheRetention: short` 和 `cacheControlFormat: anthropic` 发送百炼支持的显式 `cache_control`。固定的系统提示词、工具定义和持续会话前缀可复用；题目、图片和工具结果继续作为动态后缀。没有启用 OpenAI 专用的 24 小时缓存参数。实际命中量以 Harness 上报的 `cacheReadTokens` 为准，供应商不保证每次都命中。
+
 ## 供应商配置
 
 | 变量 | 用途 | 默认值 |
