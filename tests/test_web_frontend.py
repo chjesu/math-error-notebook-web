@@ -605,6 +605,13 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         for model_config in (runtime_config, patch):
             self.assertIn("process.env.HARNESS_CONTEXT_WINDOW ?? '1000000'", model_config)
             self.assertIn("process.env.HARNESS_MAX_TOKENS ?? '32768'", model_config)
+            self.assertIn("defaultContextWindow: !!js Number.parseInt(process.env.HARNESS_CONTEXT_WINDOW ?? '1000000', 10)", model_config)
+            self.assertIn("defaultMaxTokens: !!js Number.parseInt(process.env.HARNESS_MAX_TOKENS ?? '32768', 10)", model_config)
+        for compaction_config in (runtime_config, preset):
+            self.assertIn("thresholdRatio: 0.8", compaction_config)
+            self.assertIn("retainRatio: 0.16", compaction_config)
+            self.assertIn("compactionRetries: 1", compaction_config)
+            self.assertIn("maxOverflowRetries: 1", compaction_config)
         self.assertIn("name: './notebook-jsonrpc-server.mjs'", runtime_config)
         self.assertIn("@deepseek-ai/dsh-compaction-tool-result-pruner", runtime_config)
         self.assertIn("requestImagePixelBudget: 4194304", runtime_config)

@@ -15,6 +15,8 @@
         api: !!js process.env.HARNESS_API_PROTOCOL ?? 'openai-completions'
         baseURL: !!js process.env.HARNESS_BASE_URL ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1'
         defaultInput: !!js "(process.env.HARNESS_INPUT_MODALITIES ?? 'text,image').split(',').map((value) => value.trim()).filter(Boolean)"
+        defaultContextWindow: !!js Number.parseInt(process.env.HARNESS_CONTEXT_WINDOW ?? '1000000', 10)
+        defaultMaxTokens: !!js Number.parseInt(process.env.HARNESS_MAX_TOKENS ?? '32768', 10)
         requestImagePixelBudget: 4194304
         requestImageMaxBytes: 4194304
         maxRequestImageBytes: 20971520
