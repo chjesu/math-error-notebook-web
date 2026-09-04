@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .practice_review import review_qr_payload
+
 
 _MATH_CACHE_DIR = Path(__file__).resolve().parents[2] / "tmp" / "pdfs" / "math"
 _MATH_COMMANDS = (
@@ -256,6 +258,8 @@ def build_practice_pdf(
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.pdfbase.ttfonts import TTFont
@@ -283,6 +287,27 @@ def build_practice_pdf(
 
     def answer_space() -> Spacer:
         return Spacer(1, 28 * mm)
+
+    def review_marker(code: str) -> Table:
+        size = 24 * mm
+        qr = QrCodeWidget(review_qr_payload(code), barLevel="Q", barBorder=4,
+                          barWidth=size, barHeight=size)
+        drawing = Drawing(size, size)
+        drawing.add(qr)
+        label = Paragraph(
+            f"<b>扫码关联</b><br/>复习码 {escape(code)}<br/>拍照时请保留二维码、完整题目和作答。",
+            meta,
+        )
+        table = Table([[drawing, label]], colWidths=[27 * mm, doc.width - 27 * mm],
+                      rowHeights=[size], hAlign="LEFT")
+        table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        return table
 
     def question_content(value: Any, style: ParagraphStyle = body, prefix: str = "") -> list[Any]:
         text = str(value)
@@ -345,7 +370,9 @@ def build_practice_pdf(
         if group_no > 1:
             story.append(CondPageBreak((150 if _MARKDOWN_IMAGE_RE.search(str(original["stem_text"])) else 80) * mm))
         story.append(Paragraph(f"{group_no}　错题编号 {escape(error_id[:8])}（第 {stage} 阶段 · {status_text}）", heading))
-        if original.get("review_code"):
+        if original.get("review_code") and requires_original:
+            story.append(review_marker(str(original["review_code"])))
+        elif original.get("review_code"):
             story.append(Paragraph(f"复习码 {escape(original['review_code'])} · 拍照时请保留复习码与完整题目", meta))
         story.extend(question_content(original["stem_text"], prefix="<b>错题回顾：</b>"))
         story.append(Paragraph(f"<b>错题原因：</b>{_formatted_text(original.get('error_reason') or '未记录', body.fontSize)}", body))
@@ -358,7 +385,7 @@ def build_practice_pdf(
             story.append(CondPageBreak((145 if _MARKDOWN_IMAGE_RE.search(str(item["stem_text"])) else 70) * mm))
             story.append(Paragraph(f"同类型推荐题 {index}　题库编号 {escape(str(item['question_id']))}（难度 {escape(difficulty)}/5）", heading))
             if item.get("review_code"):
-                story.append(Paragraph(f"复习码 {escape(item['review_code'])} · 拍照时请保留复习码与完整题目", meta))
+                story.append(review_marker(str(item["review_code"])))
             story.extend(question_content(item["stem_text"]))
             options = item.get("options")
             if options:

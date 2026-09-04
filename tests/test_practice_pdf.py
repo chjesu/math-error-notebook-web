@@ -7,6 +7,7 @@ import unittest
 import io
 import pypdf
 from PIL import Image
+from unittest.mock import patch
 
 from services.web_domain.practice_pdf import _formatted_text, _normalize_math_text, _replace_math_args, _render_math_image, build_practice_pdf
 
@@ -172,6 +173,24 @@ class PracticePdfMathTests(unittest.TestCase):
         content = build_practice_pdf(items, include_answers=False)
 
         self.assertTrue(content.startswith(b"%PDF-"))
+
+    def test_qr_is_printed_only_for_questions_that_must_be_answered(self) -> None:
+        items = [
+            {"kind": "original", "error_id": "redo", "question_id": None, "stem_text": "原题甲", "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "第 2 阶段", "review_stage": 2, "requires_original": True, "review_code": "Raaaaaaaaaaaa-01-AAAAAA"},
+            {"kind": "recommendation", "error_id": "redo", "question_id": "q1", "stem_text": "推荐题甲", "answer_text": "答案甲", "difficulty": 2, "source_title": "授权题库", "reason": "同类变式", "review_code": "Raaaaaaaaaaaa-02-BBBBBB"},
+            {"kind": "original", "error_id": "reference", "question_id": None, "stem_text": "原题乙", "answer_text": None, "difficulty": None, "source_title": "个人错题本", "reason": "第 4 阶段", "review_stage": 4, "requires_original": False, "review_code": "Raaaaaaaaaaaa-03-CCCCCC"},
+            {"kind": "recommendation", "error_id": "reference", "question_id": "q2", "stem_text": "推荐题乙", "answer_text": "答案乙", "difficulty": 3, "source_title": "授权题库", "reason": "迁移训练", "review_code": "Raaaaaaaaaaaa-04-DDDDDD"},
+        ]
+        from reportlab.graphics.barcode.qr import QrCodeWidget
+        with patch("reportlab.graphics.barcode.qr.QrCodeWidget", wraps=QrCodeWidget) as qr:
+            content = build_practice_pdf(items, include_answers=False)
+
+        self.assertTrue(content.startswith(b"%PDF-"))
+        self.assertEqual([call.args[0] for call in qr.call_args_list], [
+            "LZLM1:RAAAAAAAAAAAA-01-AAAAAA",
+            "LZLM1:RAAAAAAAAAAAA-02-BBBBBB",
+            "LZLM1:RAAAAAAAAAAAA-04-DDDDDD",
+        ])
 
     def test_recommendation_options_are_printed_in_the_pdf(self) -> None:
         items = [

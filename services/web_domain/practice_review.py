@@ -5,11 +5,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from copy import deepcopy
 import hashlib
+from io import BytesIO
 import json
 import re
 from typing import Any
 
+import numpy as np
+from PIL import Image, UnidentifiedImageError
+import zxingcpp
+
 from .learning import ReviewTask, question_match_score, question_number_tokens, learning_day, normalized_question_text
+
+
+_REVIEW_QR_PREFIX = "LZLM1:"
 
 
 def review_item_key(item: dict) -> str | None:
@@ -313,7 +321,53 @@ def checked_review_code(value: str) -> bool:
     return bool(re.fullmatch(r"R[0-9a-f]{12}-\d{2}-[0-9A-F]{6}", value, flags=re.IGNORECASE))
 
 
+def authoritative_review_locator(value: Any) -> dict[str, Any]:
+    """A valid printed code owns identity; OCR guesses are only diagnostics."""
+    locator = review_locator(value)
+    code = str(locator.get("code") or "")
+    return {"code": code} if checked_review_code(code) else locator
+
+
+def review_qr_payload(code: str) -> str:
+    if not checked_review_code(code):
+        raise ValueError("invalid review code")
+    return f"{_REVIEW_QR_PREFIX}{code.upper()}"
+
+
+def decode_review_qr_codes(content: bytes) -> list[str]:
+    """Read only this product's review QR codes, ordered as they appear on the page."""
+    if not content:
+        return []
+    try:
+        with Image.open(BytesIO(content)) as source:
+            source.load()
+            image = source.convert("RGB")
+        if image.width * image.height > 20_000_000:
+            image.thumbnail((4472, 4472))
+        found = zxingcpp.read_barcodes(
+            np.asarray(image), formats=zxingcpp.BarcodeFormat.QRCode,
+            try_rotate=True, try_downscale=True, try_invert=True,
+        )
+    except (OSError, UnidentifiedImageError, Image.DecompressionBombError, ValueError, RuntimeError):
+        return []
+    rows = []
+    for barcode in found:
+        text = str(barcode.text or "").strip()
+        if not text.startswith(_REVIEW_QR_PREFIX):
+            continue
+        code = text[len(_REVIEW_QR_PREFIX):]
+        if not checked_review_code(code):
+            continue
+        points = (barcode.position.top_left, barcode.position.top_right,
+                  barcode.position.bottom_left, barcode.position.bottom_right)
+        rows.append((sum(point.y for point in points) / 4, sum(point.x for point in points) / 4, code.upper()))
+    return list(dict.fromkeys(row[2] for row in sorted(rows)))
+
+
 def identity_matching_items(manifest: list[dict], locator: dict, user_id: str) -> list[dict]:
+    code = str(locator.get("code") or "")
+    if checked_review_code(code):
+        return [item for item in manifest if code.lower() == str(item.get("code") or "").lower()]
     matches = []
     for item in manifest:
         if locator.get("code") and locator["code"].lower() != item["code"].lower():

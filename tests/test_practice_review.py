@@ -14,14 +14,31 @@ import unittest
 from unittest.mock import patch
 import uuid
 
+import numpy as np
 from PIL import Image
 from pypdf import PdfReader
+import zxingcpp
 
 from services.web_domain import ErrorEntry, GradeCandidate, InMemoryNotebookStore, NotebookService, Question
 from services.web_domain.learning import Recommendation, ReviewTask, build_review_calendar
 from services.web_domain.notebook import Attempt
-from services.web_domain.practice_review import fixed_plan_items, legacy_manifest, review_locator, shared_review_checkpoints
+from services.web_domain.practice_review import decode_review_qr_codes, fixed_plan_items, legacy_manifest, review_locator, shared_review_checkpoints
 import test_web_app_e2e as api_tests
+
+
+def qr_png(codes: list[str]) -> bytes:
+    images = [Image.fromarray(np.asarray(zxingcpp.write_barcode_to_image(
+        zxingcpp.create_barcode(f"LZLM1:{code}", zxingcpp.BarcodeFormat.QRCode), scale=5,
+    ))) for code in codes]
+    canvas = Image.new("L", (max(image.width for image in images) + 40,
+                             sum(image.height for image in images) + 40 * (len(images) + 1)), "white")
+    top = 40
+    for image in images:
+        canvas.paste(image, (20, top))
+        top += image.height + 40
+    buffer = BytesIO()
+    canvas.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 class PracticeReviewTests(unittest.TestCase):
@@ -485,6 +502,36 @@ class PracticeReviewTests(unittest.TestCase):
         result = legacy_manifest(f"错题编号 {source}（第 1 阶段 · 需重做）", self.job.job_id, [error], [task], {}, self.now)
         self.assertEqual(result[0]["error_id"], migrated)
 
+    def test_checked_code_ignores_conflicting_model_ocr_metadata(self):
+        self.job = self.paper()
+        item = self.job.checkpoint["review_manifest"][1]
+        context = self.service.resolve_practice_review(
+            user_id=self.owner,
+            question_text="模型还把题干抄错了",
+            locator={
+                "code": item["code"], "pdf_id": "wrong.pdf", "error_id": "wrong",
+                "question_id": "wrong", "stage": 6, "kind": "original",
+            },
+            review_mode=True,
+        )
+        self.assertEqual(
+            (context["status"], context["job_id"], context["error_id"], context["question_id"],
+             context["stage"], context["kind"], context["stem_text"]),
+            ("matched", self.job.job_id, item["error_id"], item["question_id"],
+             item["stage"], item["kind"], item["stem_text"]),
+        )
+
+    def test_review_qr_decoder_accepts_only_product_codes_in_page_order(self):
+        self.job = self.paper()
+        codes = [item["code"] for item in self.job.checkpoint["review_manifest"]]
+        self.assertEqual(decode_review_qr_codes(qr_png(codes)), [code.upper() for code in codes])
+        foreign = zxingcpp.write_barcode_to_image(
+            zxingcpp.create_barcode("https://example.com", zxingcpp.BarcodeFormat.QRCode), scale=5,
+        )
+        buffer = BytesIO()
+        Image.fromarray(np.asarray(foreign)).save(buffer, format="PNG")
+        self.assertEqual(decode_review_qr_codes(buffer.getvalue()), [])
+
     def test_locators_are_bounded_and_normal_questions_stay_new(self):
         for locator in [{"user_id": "other"}, {"stage": True}, {"stage": 7}, {"code": "x" * 181}]:
             with self.assertRaises(ValueError):
@@ -519,15 +566,19 @@ class PracticeReviewApiTests(unittest.TestCase):
         self.fixture.store.bind_model_session(user_id=self.fixture.owner, session_id="review-test")
         self.job = self.fixture.paper()
 
-    def process(self, index=0, *, code=True, conflict=False, color="white", question_text=None):
+    def process(self, index=0, *, code=True, conflict=False, color="white", question_text=None,
+                image_review_code=None, review=None):
         item = self.job.checkpoint["review_manifest"][index]
-        buffer = BytesIO()
-        Image.new("RGB", (12, 12), color).save(buffer, format="PNG")
-        content = buffer.getvalue()
+        if image_review_code:
+            content = qr_png([image_review_code])
+        else:
+            buffer = BytesIO()
+            Image.new("RGB", (12, 12), color).save(buffer, format="PNG")
+            content = buffer.getvalue()
         row = {"item_no": 1, "question_text": question_text or item["stem_text"], "answer_text": "x=5", "verdict": "incorrect" if conflict else "correct",
             "first_error": "计算错误" if conflict else "", "cause_code": "calculation" if conflict else "", "cause_evidence": "计算时漏掉一步" if conflict else "",
             "knowledge_points": ["方程"], "correct_solution": "移项并求解得到正确答案", "final_answer": "y=100" if conflict else "y=3或-3", "prevention_cue": "检查计算", "confidence": 0.98,
-            "review": {"code": item["code"] if code else "invalid-code"}}
+            "review": review or {"code": item["code"] if code else "invalid-code"}}
         payload = {"session_id": "review-test", "review_mode": True, "attachment": {"attachment_id": "sha256:" + hashlib.sha256(content).hexdigest(), "name": "review.png", "media_type": "image/png", "data": base64.b64encode(content).decode()}, "items": [row]}
         self.last_payload = payload
         result = self.call("/v1/internal/harness/intakes/process", payload)
@@ -546,6 +597,18 @@ class PracticeReviewApiTests(unittest.TestCase):
         candidate = self.fixture.store.get_grade_candidate(user_id=self.fixture.owner, candidate_id=result["candidate_id"])
         attempt = self.fixture.store.get_attempt(user_id=self.fixture.owner, attempt_id=candidate.attempt_id)
         self.assertEqual((attempt.question_text, attempt.question_id), (item["stem_text"], self.fixture.question.question_id))
+
+    def test_qr_code_overrides_model_ocr_identity(self):
+        item = self.job.checkpoint["review_manifest"][1]
+        result = self.process(1, image_review_code=item["code"], review={
+            "code": "invalid-code", "pdf_id": "wrong.pdf", "error_id": "wrong",
+            "question_id": "wrong", "stage": 6, "kind": "original",
+        })
+        self.assertEqual(result["review_association"], {
+            "status": "matched", "pdf_id": self.job.job_id, "review_code": item["code"],
+            "error_id": item["error_id"], "question_id": item["question_id"],
+            "stage": item["stage"], "kind": item["kind"],
+        })
 
     def call(self, path, payload):
         return self.client.call(path, method="POST", payload=payload, origin=None,

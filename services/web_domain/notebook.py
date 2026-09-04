@@ -46,7 +46,7 @@ from .mysql_store import (
 )
 from .intake_batch import BatchClaim, InMemoryIntakeBatchRepository
 from .practice_pdf import build_practice_pdf
-from .practice_review import add_practice_calendar, apply_submission, build_manifest, fixed_plan_items, identity_matching_items, legacy_manifest, matching_items, practice_paper_progress, review_code_state, review_locator, shared_review_checkpoints, unresolved_receipt
+from .practice_review import authoritative_review_locator, add_practice_calendar, apply_submission, build_manifest, checked_review_code, fixed_plan_items, identity_matching_items, legacy_manifest, matching_items, practice_paper_progress, review_code_state, review_locator, shared_review_checkpoints, unresolved_receipt
 
 
 @dataclass(frozen=True)
@@ -1546,7 +1546,7 @@ class NotebookService:
             evidence=json.dumps(diagnosis, ensure_ascii=False, separators=(",", ":")))
 
     def resolve_practice_review(self, *, user_id: str, question_text: str, locator: dict | None = None, review_mode: bool = False) -> dict | None:
-        locator = review_locator(locator)
+        locator = authoritative_review_locator(locator)
         if not locator and not review_mode:
             return None
         papers = self.store.list_practice_pdfs(user_id=user_id)
@@ -1585,8 +1585,6 @@ class NotebookService:
                         return saved["review_manifest"]
                     manifest = self.store.mutate_practice_checkpoint(user_id=user_id, job_id=job.job_id, operation=freeze)
             for item in matching_items(manifest or [], locator, question_text, user_id):
-                if "stage" in locator and locator["stage"] != item["stage"]:
-                    continue
                 group = [row for row in manifest if row["task_id"] == item["task_id"] and row["required"]]
                 signature = (item["task_id"], item["due_at"], item["kind"], item["question_id"], tuple(sorted((row["kind"], row["question_id"] or "") for row in group)))
                 matches.append((signature, job.job_id, item, bool(checkpoint.get("review_submissions"))))
@@ -1619,7 +1617,8 @@ class NotebookService:
 
     def _pending_review_options(self, *, user_id: str, attempt: Attempt, context: dict, diagnosis: dict,
                                 papers: list[tuple[dict, Job]]) -> list[dict]:
-        locator = review_locator(context.get("locator"))
+        locator = authoritative_review_locator(context.get("locator"))
+        exact_code = checked_review_code(str(locator.get("code") or ""))
         validation = diagnosis.get("cross_validation")
         verified_id = str(validation.get("question_id")) if isinstance(validation, dict) and validation.get("status") == "consistent" and validation.get("question_id") else ""
         verified_locator = {"question_id": verified_id, "kind": "recommendation"} if verified_id else {}
@@ -1637,7 +1636,7 @@ class NotebookService:
             source = "visible_identity" if rows else ""
             if not rows and identity_locator:
                 continue
-            if rows and verified_locator:
+            if rows and verified_locator and not exact_code:
                 rows = identity_matching_items(rows, verified_locator, user_id)
                 if not rows:
                     continue

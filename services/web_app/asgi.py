@@ -34,7 +34,7 @@ from services.web_domain import (
     reference_conflict_resolved,
 )
 from .codex_model import ModelUnavailableError
-from services.web_domain.practice_review import review_locator
+from services.web_domain.practice_review import decode_review_qr_codes, review_locator
 from .gateway import LoopbackHarnessGateway
 from .intake_pipeline import NotebookIntakeBatchProcessor
 
@@ -1550,9 +1550,12 @@ class NotebookAsgiApp:
                 content=content,
                 idempotency_key=f"harness-file-{digest[:51]}",
             )
+            review_locators = [review_locator(item.get("review")) for item in raw_items]
+            qr_codes = decode_review_qr_codes(content)
+            if len(qr_codes) == len(review_locators):
+                review_locators = [{"code": code} for code in qr_codes]
             exact_review_contexts = []
-            for item in raw_items:
-                locator = review_locator(item.get("review"))
+            for item, locator in zip(raw_items, review_locators, strict=True):
                 context = None
                 if locator.get("code") or locator.get("question_id"):
                     context = await self._sync(
@@ -1569,7 +1572,7 @@ class NotebookAsgiApp:
                 for index, item in enumerate(raw_items):
                     if exact_review_contexts[index] is not None:
                         continue
-                    locator = review_locator(item.get("review"))
+                    locator = dict(review_locators[index])
                     locator.setdefault("pdf_id", batch_job)
                     context = await self._sync(
                         self.notebook.resolve_practice_review,
@@ -1637,8 +1640,8 @@ class NotebookAsgiApp:
                 reserved_intakes = [intake.intake_id for intake in intakes]
                 await self._sync(self.notebook.store.reserve_grade_batch, user_id=user_id, intake_ids=reserved_intakes)
             results = []
-            processing_items = [(intake, None, None) for intake in intakes] if frozen_candidates else zip(intakes, raw_items, exact_review_contexts, strict=True)
-            for intake, item, exact_context in processing_items:
+            processing_items = [(intake, None, None, None) for intake in intakes] if frozen_candidates else zip(intakes, raw_items, exact_review_contexts, review_locators, strict=True)
+            for intake, item, exact_context, exact_locator in processing_items:
                 exact_question_id = str((exact_context or {}).get("question_id") or "")
                 reference = (
                     await self._sync(self.notebook.store.get_verified_question, question_id=exact_question_id)
@@ -1668,7 +1671,7 @@ class NotebookAsgiApp:
                     if not context or context.get("status") == "unmatched":
                         context = await self._sync(
                             self.notebook.resolve_practice_review, user_id=user_id, question_text=intake.question_text,
-                            locator=item.get("review"), review_mode=bool(context) or payload.get("review_mode", False),
+                            locator=exact_locator, review_mode=bool(context) or payload.get("review_mode", False),
                         )
                     if (not context or context.get("status") == "unmatched") and isinstance(validation, dict) and validation.get("status") == "consistent":
                         question_id = str(validation["question_id"])
