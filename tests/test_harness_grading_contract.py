@@ -135,7 +135,7 @@ assert.equal(afterExact.results[0].status,'review_waiting','exact inspection mus
 const unclearAgent={{id:'unclear-session',session:{{events:[{{type:'turn/start',data:{{turn:2}}}}],deriveMessages:()=>[{{role:'user',content:[{{type:'image',attachment:'two'}}]}}]}}}};
 const unclearExec={{agent:unclearAgent,signal:new AbortController().signal}};
 const unclearFrozen=await transcribe.execute({{items:[{{attachment_index:1,item_no:1,question_text:'字迹不足，无法恢复完整题干',answer_text:'',review}}]}},unclearExec);
-const unclear=await processTool.execute({{batch_ref:unclearFrozen.batch_ref,items:[{{attachment_index:1,item_no:1,verdict:'unclear',first_error:'题干不足',cause_code:'unclear',cause_evidence:'关键公式无法辨认',knowledge_points:[],prevention_cue:'补充清晰图片',confidence:0.1}}]}},unclearExec);
+const unclear=await processTool.execute({{batch_ref:unclearFrozen.batch_ref,items:[{{attachment_index:1,item_no:1,verdict:'unclear',first_error:'题干不足',cause_code:'unclear',cause_evidence:'关键公式无法辨认',knowledge_points:[],correct_solution:'',final_answer:'',prevention_cue:'补充清晰图片',confidence:0.1}}]}},unclearExec);
 assert.equal(unclear.results[0].verdict,'incorrect');
 const referenceTool=tools.find(t=>t.name==='adjudicate_error_notebook_reference_conflicts');
 const same={{candidate_id:'4'.repeat(32),input_version:1,status:'review_unmatched',receipt_message:'仍待关联',question_text:'q',review_match_candidates:[option]}};
@@ -189,6 +189,48 @@ const replacementBatch=await transcribe.execute({{items:[{{attachment_index:1,it
 assert.equal(replacementBatch.superseded_batch_ref,firstBatch.batch_ref,'failed transcription must preserve the prior active batch');
 const replacementTransitions=JSON.parse(transcribe.output.render({{}},replacementBatch)[0].text.split('LZLM_PROTECTED_V1 ').at(-1));
 assert.deepEqual(replacementTransitions,[{{key:'batch:'+replacementBatch.batch_ref,status:'active'}},{{key:'batch:'+firstBatch.batch_ref,status:'resolved'}}]);
+// Missing independent solutions in a later image must be repairable before any write.
+const itemSchema=processTool.parameters.properties.items.items;
+for(const field of ['correct_solution','final_answer']){{
+  assert.ok(itemSchema.required.includes(field),'model schema must require '+field);
+  assert.match(itemSchema.properties[field].description,/independent/);
+  assert.match(itemSchema.properties[field].description,/verified_reference/);
+}}
+const repairAgent={{id:'repair-session',session:agent.session}};
+const repairExec={{agent:repairAgent,signal:exec.signal}};
+const repairFrozen=await transcribe.execute({{items:[
+  {{attachment_index:1,item_no:1,question_text:'题干一：若 x²=4，求 x。',answer_text:'x=2',review}},
+  {{attachment_index:2,item_no:1,question_text:'题干二：解方程 y+1=3。',answer_text:'y=1',review}}
+]}},repairExec);
+assert.deepEqual(repairFrozen.items.map(item=>item.grading_strategy),['verified_reference','independent']);
+const repairText=transcribe.output.render({{}},repairFrozen)[0].text;
+assert.match(repairText,/correct_solution/);
+assert.match(repairText,/final_answer/);
+const writesBeforeRepair=processCalls;
+const imageOneBeforeRepair=imageOneWrites;
+for(const verdict of ['correct','partial','incorrect']){{
+  for(const field of ['correct_solution','final_answer']){{
+    for(const value of [undefined,'','   ',null,12]){{
+      const incomplete={{...grade(2,'由 y+1=3，得 y=2。'),verdict,[field]:value}};
+      if(value===undefined) delete incomplete[field];
+      await assert.rejects(()=>processTool.execute({{batch_ref:repairFrozen.batch_ref,items:[grade(1),incomplete]}},repairExec),error=>{{
+        assert.match(error.message,/图片 2 第 1 题缺少/);
+        assert.ok(error.message.includes(field));
+        assert.ok(error.message.includes(repairFrozen.batch_ref));
+        assert.match(error.message,/全部未完成题目：1:1, 2:1/);
+        assert.match(error.message,/无需重传图片或重新转写/);
+        assert.deepEqual(JSON.parse(error.message.split('LZLM_PROTECTED_V1 ').at(-1)),[{{key:'batch:'+repairFrozen.batch_ref,status:'active'}}]);
+        return true;
+      }});
+      assert.equal(processCalls,writesBeforeRepair,'validation of all items must precede every write');
+    }}
+  }}
+}}
+const repaired=await processTool.execute({{batch_ref:repairFrozen.batch_ref,items:[grade(1),grade(2,'由 y+1=3，得 y=2。')]}},repairExec);
+assert.equal(repaired.results.length,2);
+assert.equal(repaired.batch_ref,repairFrozen.batch_ref,'repair must keep the exact frozen batch');
+assert.equal(imageOneWrites,imageOneBeforeRepair+1,'repair writes the first image exactly once');
+assert.equal(processCalls,writesBeforeRepair+2,'repair processes both pending images exactly once');
 console.log(JSON.stringify({{old_chars:oldJson.length,new_chars:leanJson.length,old_utf8_bytes:Buffer.byteLength(oldJson,'utf8'),new_utf8_bytes:Buffer.byteLength(leanJson,'utf8')}}));
 """
         result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20)

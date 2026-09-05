@@ -442,7 +442,7 @@ function transcribeAttachmentsTool(ctx) {
         ...value.items.flatMap((item) => item.grading_strategy === "verified_reference" ? [
           `图片 ${item.attachment_index} · 第 ${item.item_no} 题题干：${item.question_text}`,
           `图片 ${item.attachment_index} · 第 ${item.item_no} 题学生作答：${item.answer_text || "未作答"}`,
-          "判题策略：verified_reference。二维码或精确题库编号已关联到已验证当前版本；禁止重新完整解题，只核对学生作答与以下参考答案是否等价。处理时宿主会使用该授权版本的答案与解析，不要复制它们。",
+          '判题策略：verified_reference。二维码或精确题库编号已关联到已验证当前版本；禁止重新完整解题，只核对学生作答与以下参考答案是否等价。correct_solution、final_answer 均填空字符串 ""，由宿主补齐授权参考，不要复制它们。',
           `当前题库题干：${item.reference.question_text}`,
           `当前题库参考答案：${item.reference.reference_answer}`,
           `当前题库参考解析：${item.reference.reference_solution || "暂无解析"}`,
@@ -450,7 +450,7 @@ function transcribeAttachmentsTool(ctx) {
         ] : [
           `图片 ${item.attachment_index} · 第 ${item.item_no} 题题干：${item.question_text}`,
           `图片 ${item.attachment_index} · 第 ${item.item_no} 题学生作答：${item.answer_text || "未作答"}`,
-          "判题策略：independent。没有取得精确且已验证的当前参考，必须独立解题并提交完整解析与最终答案。"
+          '判题策略：independent。没有取得精确且已验证的当前参考，必须独立解题。correct_solution 填完整正确解法，final_answer 填所有小题的最终答案；二者不能用 first_error 代替。仅确实无法辨认题目而判 unclear 时可填空字符串 ""。'
         ]),
         `处理批次引用：${value.batch_ref}。调用 process_error_notebook_attachments 时只提交该引用、题目位置和新生成的判定字段。`,
         protectedTrailer([
@@ -534,8 +534,8 @@ function processAttachmentsTool(ctx) {
     cause_code: {type: "string", enum: ["", "knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear"]},
     cause_evidence: {type: "string"},
     knowledge_points: {type: "array", items: {type: "string"}},
-    correct_solution: {type: "string"},
-    final_answer: {type: "string"},
+    correct_solution: {type: "string", description: 'Required key. For independent non-unclear items, give the complete correct solution for every subquestion, not just the student error. For verified_reference or unclear, use ""; never copy verified reference text.'},
+    final_answer: {type: "string", description: 'Required key. For independent non-unclear items, give the final answers to all subquestions. For verified_reference or unclear, use ""; the host supplies the verified answer.'},
     prevention_cue: {type: "string"},
     confidence: {type: "number"},
   };
@@ -584,12 +584,12 @@ function processAttachmentsTool(ctx) {
   };
   return {
     name: "process_error_notebook_attachments",
-    description: "Required after transcribe_error_notebook_attachments. Copy its opaque batch_ref and submit each still-pending item once in frozen image order. Do not copy question_text, answer_text, review, grading_strategy, or verified reference answer/solution: the host rehydrates those immutable fields from this session's exact frozen batch. For independent items, provide complete correct_solution and final_answer; for verified_reference items, only grade equivalence and the host supplies the authorized current answer and solution. The host rejects stale, reordered, duplicate, missing, or out-of-batch positions, rechecks reference freshness and preserves confirmed images across a bounded recovery. Never invent ids.",
+    description: 'Required after transcribe_error_notebook_attachments. Copy its opaque batch_ref and submit every still-pending item in frozen order. Do not repeat question_text, answer_text, review, grading_strategy or reference text; the host rehydrates them. Always include correct_solution and final_answer: independent non-unclear items need the complete correct solution and all final answers, not just first_error; verified_reference or unclear items use "". The host injects authorized references and checks freshness. If solution fields are missing, complete them from the frozen text and retry this tool once with the same batch_ref and all pending items, without reuploading or retranscribing. Never invent ids.',
     parameters: {
       type: "object", additionalProperties: false, required: ["batch_ref", "items"],
       properties: {
         batch_ref: {type: "string", description: "Opaque current batch reference returned by transcription or reference recovery."},
-        items: {type: "array", items: {type: "object", additionalProperties: false, required: ["attachment_index", "item_no", "verdict", "first_error", "cause_code", "cause_evidence", "knowledge_points", "prevention_cue", "confidence"], properties: itemProperties}}
+        items: {type: "array", items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}
       }
     },
     output: {
@@ -619,15 +619,21 @@ function processAttachmentsTool(ctx) {
         throw new Error("A result refers to an attachment outside the latest user message");
       }
       const submitted = new Map(args.items.map((item) => [itemKey(item), item]));
+      const missingSolutions = pending.flatMap((expected) => {
+        const grade = submitted.get(itemKey(expected));
+        if (expected.grading_strategy !== "independent" || grade.verdict === "unclear") return [];
+        const fields = ["correct_solution", "final_answer"].filter((field) => typeof grade[field] !== "string" || !grade[field].trim());
+        return fields.length ? [`图片 ${expected.attachment_index} 第 ${expected.item_no} 题缺少 ${fields.join("、")}`] : [];
+      });
+      if (missingSolutions.length) {
+        throw new Error(`independent 判题必须提交完整解析与最终答案：${missingSolutions.join("；")}。本次调用尚未提交任何题目。请基于已冻结题干补齐 correct_solution（完整正确解法）和 final_answer（所有小题最终答案），不能仅提交 first_error，也不能为省略解答改判 unclear。保持其他判定字段，使用相同 batch_ref=${frozen.batchRef} 按顺序重新调用 process_error_notebook_attachments 一次，包含全部未完成题目：${pending.map(itemKey).join(", ")}。无需重传图片或重新转写。\n${protectedTrailer([protectedMarker("batch", frozen.batchRef, "active")])}`);
+      }
       let usage = null;
       for (let attachmentIndex = 1; attachmentIndex <= images.length; attachmentIndex += 1) {
         const frozenItems = pending.filter((item) => item.attachment_index === attachmentIndex);
         if (frozenItems.length === 0) continue;
         const items = frozenItems.map((expected) => {
           const grade = submitted.get(itemKey(expected));
-          if (expected.grading_strategy === "independent" && grade.verdict !== "unclear" && (!grade.correct_solution?.trim() || !grade.final_answer?.trim())) {
-            throw new Error("independent 判题必须提交完整解析与最终答案");
-          }
           return {
             ...grade,
             correct_solution: grade.correct_solution || "",
