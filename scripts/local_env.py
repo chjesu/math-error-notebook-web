@@ -65,8 +65,11 @@ HARNESS_WEB_HOME = ROOT / "data" / "runtime" / "deepseek-harness-web-home"
 HARNESS_PRODUCT_WORKSPACE = HARNESS_WEB_HOME / "math-notebook-workspace"
 HARNESS_AGENT_PRESETS = ROOT / "config" / "deepseek-harness" / "agent-presets"
 HARNESS_RUNTIME_PRESET = HARNESS_WEB_HOME / ".agent-presets" / "math-notebook" / "agent.cordis.yml"
+HARNESS_PROTECTED_COMPACTION = ROOT / "config" / "deepseek-harness" / "notebook-protected-compaction.mjs"
+HARNESS_PROTECTED_PRUNER = ROOT / "config" / "deepseek-harness" / "notebook-protected-pruner.mjs"
 HARNESS_WEB_PATCH = ROOT / "config" / "deepseek-harness" / "web-product.patch.yml"
 HARNESS_JSONRPC_SERVER = ROOT / "config" / "deepseek-harness" / "notebook-jsonrpc-server.mjs"
+HARNESS_RUNTIME_PRELOAD = ROOT / "scripts" / "harness-runtime-preload.mjs"
 HARNESS_WEB_STDOUT = ROOT / "data" / "runtime" / "deepseek-harness-web.stdout.log"
 HARNESS_WEB_STDERR = ROOT / "data" / "runtime" / "deepseek-harness-web.stderr.log"
 HARNESS_PROVIDER = "notebook-provider"
@@ -1388,8 +1391,11 @@ def _harness_web_command(port: int) -> list[str]:
         raise RuntimeError("DeepSeek Harness Web is not installed; run npm ci")
     if not HARNESS_WEB_PATCH.is_file():
         raise RuntimeError(f"DeepSeek Harness Web patch is missing: {HARNESS_WEB_PATCH}")
+    if not HARNESS_RUNTIME_PRELOAD.is_file():
+        raise RuntimeError(f"DeepSeek Harness runtime preload is missing: {HARNESS_RUNTIME_PRELOAD}")
     return [
         executable,
+        "--import", HARNESS_RUNTIME_PRELOAD.resolve().as_uri(),
         str(entry),
         "--profile", "web",
         "--patch", str(HARNESS_WEB_PATCH),
@@ -1397,6 +1403,13 @@ def _harness_web_command(port: int) -> list[str]:
         "--port", str(port),
         "--no-open",
     ]
+
+
+def _install_harness_runtime_files() -> None:
+    HARNESS_RUNTIME_PRESET.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(HARNESS_AGENT_PRESETS / "math-notebook" / "agent.cordis.yml", HARNESS_RUNTIME_PRESET)
+    shutil.copy2(HARNESS_PROTECTED_COMPACTION, HARNESS_RUNTIME_PRESET.parent / HARNESS_PROTECTED_COMPACTION.name)
+    shutil.copy2(HARNESS_PROTECTED_PRUNER, HARNESS_RUNTIME_PRESET.parent / HARNESS_PROTECTED_PRUNER.name)
 
 
 def _pin_harness_model_settings() -> None:
@@ -1608,8 +1621,7 @@ def _start_harness_web(internal_token: str, product_origin: str) -> tuple[subpro
     HARNESS_WEB_HOME.mkdir(parents=True, exist_ok=True)
     _pin_harness_model_settings()
     HARNESS_PRODUCT_WORKSPACE.mkdir(parents=True, exist_ok=True)
-    HARNESS_RUNTIME_PRESET.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(HARNESS_AGENT_PRESETS / "math-notebook" / "agent.cordis.yml", HARNESS_RUNTIME_PRESET)
+    _install_harness_runtime_files()
     HARNESS_WEB_STDOUT.parent.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment.update({
@@ -1736,6 +1748,9 @@ def _check_harness_sources() -> None:
         HARNESS_JSONRPC_SERVER,
         HARNESS_WEB_PATCH,
         HARNESS_AGENT_PRESETS / "math-notebook/agent.cordis.yml",
+        HARNESS_RUNTIME_PRELOAD,
+        HARNESS_PROTECTED_COMPACTION,
+        HARNESS_PROTECTED_PRUNER,
     ]
     for source in sources:
         if re.search(r"(?m)^(<<<<<<< |=======\s*$|>>>>>>> )", source.read_text(encoding="utf-8")):

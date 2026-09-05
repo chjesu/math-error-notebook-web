@@ -113,15 +113,15 @@ const agent = {id:'session-hybrid',session:{events:[{type:'turn/start',data:{tur
 ]}};
 const exec = {agent,signal:new AbortController().signal};
 const review = {code:'',pdf_id:'',error_id:'',question_id:'',stage:0,kind:''};
-await tools.find(tool=>tool.name==='transcribe_error_notebook_attachments').execute({items:[
+const transcription = await tools.find(tool=>tool.name==='transcribe_error_notebook_attachments').execute({items:[
   {attachment_index:1,item_no:1,question_text:'q-old',answer_text:'x=1',review},
   {attachment_index:1,item_no:2,question_text:'q-other',answer_text:'x=1',review}
 ]},exec);
 const processTool = tools.find(tool=>tool.name==='process_error_notebook_attachments');
-const grade = (attachment_index,item_no,question_text) => ({attachment_index,item_no,question_text,answer_text:'x=1',
+const grade = (attachment_index,item_no) => ({attachment_index,item_no,
   verdict:'correct',first_error:'',cause_code:'',cause_evidence:'',knowledge_points:['方程'],correct_solution:'解答',
-  final_answer:'x=1',prevention_cue:'检查',confidence:0.99,grading_strategy:'independent',review});
-const processed = await processTool.execute({items:[grade(1,1,'q-old'),grade(1,2,'q-other')]},exec);
+  final_answer:'x=1',prevention_cue:'检查',confidence:0.99});
+const processed = await processTool.execute({batch_ref:transcription.batch_ref,items:[grade(1,1),grade(1,2)]},exec);
 if (processed.results[0].review_match_candidates[0].stem_text !== 'q-old') throw new Error('candidate evidence lost');
 const referenceTool = tools.find(tool=>tool.name==='adjudicate_error_notebook_reference_conflicts');
 const reference = await referenceTool.execute({items:[{candidate_id:ids.old,input_version:1,status:'consistent',
@@ -329,7 +329,7 @@ globalThis.fetch = async (url, options) => {
     processCalls++;
     return {ok:true,json:async()=>({results:body.items.map(item=>{
       const row=links[Number(item.question_text)];
-      return {candidate_id:row.candidate_id,input_version:1,question_text:row.question_text,
+      return {item_no:item.item_no,candidate_id:row.candidate_id,input_version:1,question_text:row.question_text,
         receipt_status:'review_unmatched',review_match_candidates:row.options,reference_review:null};
     })})};
   }
@@ -339,7 +339,7 @@ globalThis.fetch = async (url, options) => {
     throw new Error('multi-image page mismatch');
   }
   processedPages++;
-  return {ok:true,json:async()=>({results:body.items.map(item=>({candidate_id:item.candidate_id,input_version:1,
+  return {ok:true,json:async()=>({results:body.items.map(item=>({item_no:item.item_no,candidate_id:item.candidate_id,input_version:1,
     status:'review_completed',receipt_message:'saved',error_id:''}))})};
 };
 const imageTools=[];
@@ -351,10 +351,10 @@ const imageExec={agent:{id:'multi-image',session:{events:[{type:'turn/start',dat
 const review={code:'',pdf_id:'',error_id:'',question_id:'',stage:0,kind:''};
 const frozen=links.slice(0,21).map((row,index)=>({attachment_index:index<20?1:2,item_no:index<20?index+1:1,
   question_text:String(index),answer_text:'1',review}));
-await imageTools.find(tool=>tool.name==='transcribe_error_notebook_attachments').execute({items:frozen},imageExec);
-const processed=await imageTools.find(tool=>tool.name==='process_error_notebook_attachments').execute({items:frozen.map(row=>({
-  ...row,verdict:'correct',first_error:'',cause_code:'',cause_evidence:'',knowledge_points:[],
-  correct_solution:'1',final_answer:'1',prevention_cue:'',confidence:1,grading_strategy:'independent'
+const transcribed=await imageTools.find(tool=>tool.name==='transcribe_error_notebook_attachments').execute({items:frozen},imageExec);
+const processed=await imageTools.find(tool=>tool.name==='process_error_notebook_attachments').execute({batch_ref:transcribed.batch_ref,items:frozen.map(row=>({
+  attachment_index:row.attachment_index,item_no:row.item_no,verdict:'correct',first_error:'',cause_code:'',cause_evidence:'',knowledge_points:[],
+  correct_solution:'1',final_answer:'1',prevention_cue:'',confidence:1
 }))},imageExec);
 const imagePractice=imageTools.find(tool=>tool.name==='adjudicate_practice_review_associations');
 if (processCalls !== 2 || processed.results.length !== 21 || JSON.parse(processed.next_review_batch_json).length !== 20) {
@@ -607,14 +607,14 @@ const transcriptionText = transcriber.output.render({{}}, transcription)[0].text
 if (!transcriptionText.includes('禁止重新完整解题') || !transcriptionText.includes('必须独立解题')) throw new Error('strategy instructions missing');
 afterTranscription = true;
 const tool = registered.find((value) => value.name === 'process_error_notebook_attachments');
-const result = await tool.execute({{items: [{{
-  attachment_index: 1, item_no: 1, question_text: 'q', answer_text: 'a', verdict: 'incorrect', first_error: 'e',
+const result = await tool.execute({{batch_ref: transcription.batch_ref, items: [{{
+  attachment_index: 1, item_no: 1, verdict: 'incorrect', first_error: 'e',
   cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'], correct_solution: 'solution',
-  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9, grading_strategy: 'verified_reference', review
+  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9
 }}, {{
-  attachment_index: 2, item_no: 1, question_text: 'q2', answer_text: 'a', verdict: 'incorrect', first_error: 'e',
+  attachment_index: 2, item_no: 1, verdict: 'incorrect', first_error: 'e',
   cause_code: 'calculation', cause_evidence: 'because', knowledge_points: ['point'], correct_solution: 'solution',
-  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9, grading_strategy: 'independent', review
+  final_answer: 'answer', prevention_cue: 'check', confidence: 0.9
 }}]}}, {{
   agent, signal: new AbortController().signal
 }});

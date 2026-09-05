@@ -58,11 +58,13 @@ class LocalEnvironmentTests(unittest.TestCase):
         with mock.patch.object(local_env.shutil, "which", return_value="node"):
             command = local_env._harness_web_command(0)
         self.assertTrue(command[0].lower().endswith(("node", "node.exe")))
-        self.assertEqual(Path(command[1]), local_env.ROOT / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js")
-        self.assertEqual(command[2:4], ["--profile", "web"])
-        self.assertEqual(command[4], "--patch")
-        self.assertEqual(Path(command[5]), local_env.HARNESS_WEB_PATCH)
-        self.assertEqual(command[6:], ["--host", "127.0.0.1", "--port", "0", "--no-open"])
+        self.assertEqual(command[1], "--import")
+        self.assertEqual(command[2], local_env.HARNESS_RUNTIME_PRELOAD.resolve().as_uri())
+        self.assertEqual(Path(command[3]), local_env.ROOT / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js")
+        self.assertEqual(command[4:6], ["--profile", "web"])
+        self.assertEqual(command[6], "--patch")
+        self.assertEqual(Path(command[7]), local_env.HARNESS_WEB_PATCH)
+        self.assertEqual(command[8:], ["--host", "127.0.0.1", "--port", "0", "--no-open"])
         self.assertEqual(local_env.HARNESS_PRODUCT_WORKSPACE.parent, local_env.HARNESS_WEB_HOME)
         self.assertTrue((local_env.HARNESS_AGENT_PRESETS / "math-notebook" / "agent.cordis.yml").is_file())
         self.assertEqual(

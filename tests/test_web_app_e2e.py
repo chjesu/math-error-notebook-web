@@ -1154,6 +1154,77 @@ class NotebookE2ETests(unittest.TestCase):
             (question.question_id, 4, "x=5"),
         )
 
+    def test_changed_verified_reference_does_not_poison_intake_before_host_refresh_retry(self) -> None:
+        cookie = self.login("13500135018")
+        session_id = "session-reference-refresh"
+        self.call(
+            "/v1/harness/sessions/bind", method="POST",
+            payload={"session_id": session_id}, cookie=cookie, origin="https://example.test",
+        )
+        question_id = "7" * 32
+        old_question = Question(
+            question_id, "若 x+5=10，求 x。", "x=5", 10, 2.0, "授权题库",
+            solution_text="等式两边减 5，得 x=5。", version_id="8" * 32, version_no=1,
+        )
+        self.domain_store.add_question(old_question, license_status="user_authorized")
+        content = self.png_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        attachment = {
+            "attachment_id": f"sha256:{digest}", "name": "reference-refresh.png", "media_type": "image/png",
+            "data": base64.b64encode(content).decode("ascii"),
+        }
+        review = {"code": "", "pdf_id": "", "error_id": "", "question_id": question_id, "stage": 0, "kind": ""}
+        internal = {
+            "origin": None, "client": ("127.0.0.1", 3080),
+            "extra_headers": {"authorization": "Bearer test-internal-token"},
+        }
+        frozen = self.call(
+            "/v1/internal/harness/grading-references", method="POST",
+            payload={"session_id": session_id, "attachment": attachment, "items": [
+                {"item_no": 1, "question_text": old_question.stem_text, "review": review},
+            ]}, **internal,
+        )[2]["items"][0]
+        self.domain_store.add_question(Question(
+            question_id, old_question.stem_text, "x=6", 10, 2.0, "授权题库",
+            solution_text="当前校正版答案为 x=6。", version_id="9" * 32, version_no=2,
+        ), license_status="user_authorized")
+        item = {
+            "item_no": 1, "question_text": old_question.stem_text, "answer_text": "x=5",
+            "verdict": "incorrect", "first_error": "使用了旧参考", "cause_code": "calculation",
+            "cause_evidence": "学生答案与当前答案不同", "knowledge_points": ["一元一次方程"],
+            "correct_solution": frozen["reference"]["reference_solution"],
+            "final_answer": frozen["reference"]["reference_answer"], "prevention_cue": "核对当前版本",
+            "confidence": 0.9, "grading_strategy": "verified_reference", "review": review,
+        }
+        payload = {"session_id": session_id, "attachment": attachment, "items": [item]}
+        changed = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
+        user_id = next(iter(self.domain_store.intakes.values())).user_id
+        usage_after_rejection = self.domain_store.learning_usage(user_id=user_id)
+        self.assertEqual((changed[0], changed[2]["error"]["code"]), (409, "reference_changed"))
+        self.assertTrue(all(intake.status == "waiting_confirmation" for intake in self.domain_store.intakes.values()))
+        self.assertEqual((len(self.domain_store.attempts), len(self.domain_store.candidates)), (0, 0))
+        self.assertEqual((usage_after_rejection["grade"]["count"], usage_after_rejection["grade"]["pending"]), (0, 0))
+
+        refreshed = self.call(
+            "/v1/internal/harness/grading-references", method="POST",
+            payload={"session_id": session_id, "attachment": attachment, "items": [
+                {"item_no": 1, "question_text": old_question.stem_text, "review": review},
+            ]}, **internal,
+        )[2]["items"][0]
+        retry_payload = json.loads(json.dumps(payload))
+        retry_payload["items"][0].update(
+            correct_solution=refreshed["reference"]["reference_solution"],
+            final_answer=refreshed["reference"]["reference_answer"],
+        )
+        retry = self.call("/v1/internal/harness/intakes/process", method="POST", payload=retry_payload, **internal)
+        replay = self.call("/v1/internal/harness/intakes/process", method="POST", payload=retry_payload, **internal)
+        usage_after_replay = self.domain_store.learning_usage(user_id=user_id)
+        self.assertEqual((retry[0], replay[0]), (200, 200))
+        self.assertEqual((retry[2]["results"][0]["receipt_status"], replay[2]["results"][0]["receipt_status"]), ("review_unmatched", "review_unmatched"))
+        self.assertEqual(retry[2]["results"][0]["candidate_id"], replay[2]["results"][0]["candidate_id"])
+        self.assertEqual(len(self.domain_store.candidates), 1)
+        self.assertEqual((usage_after_replay["grade"]["count"], usage_after_replay["grade"]["pending"]), (1, 0))
+
     def test_deletion_keeps_durable_pending_state_when_domain_cleanup_fails(self) -> None:
         phone = "13400134000"
         cookie = self.login(phone)
@@ -1311,12 +1382,35 @@ class NotebookE2ETests(unittest.TestCase):
         self.assertEqual(context_response[0], 200)
         context = json.loads(context_response[2]["context_json"])
         self.assertEqual(context["scope"], "current_bound_account")
+        self.assertEqual(context["query"], {
+            "mode": "exact", "error_id": error.error_id, "review_code": frozen_manifest[1]["code"],
+        })
         self.assertEqual(context["error"]["error_id"], error.error_id)
-        self.assertEqual(context["progress"]["due_review_count"], 1)
-        self.assertEqual(context["practice_pdfs"][0]["task_id"], paper.job_id)
         self.assertEqual(context["review_item"]["status"], "correct")
         self.assertEqual(context["review_item"]["recommended_action"], "submit_remaining_required")
         self.assertEqual(context["review_item"]["pending_items"][0]["review_code"], frozen_manifest[0]["code"])
+        self.assertEqual(set(context), {"scope", "query", "error", "review_item"})
+        overview_response = self.call(
+            "/v1/internal/harness/context", method="POST",
+            payload={"session_id": "session-context"}, **internal,
+        )
+        self.assertEqual(overview_response[0], 200)
+        overview = json.loads(overview_response[2]["context_json"])
+        self.assertEqual(overview["query"], {"mode": "overview"})
+        self.assertEqual(overview["progress"]["due_review_count"], 1)
+        self.assertEqual(overview["practice_pdfs"][0]["task_id"], paper.job_id)
+        self.assertEqual(overview["pagination"]["errors"]["total"], 1)
+        self.assertFalse(overview["pagination"]["errors"]["has_more"])
+        unrelated_error = ErrorEntry("d" * 32, user.user_id, "2" * 32, "另一题", "作答", "错因", "open", now)
+        self.domain_store.errors[unrelated_error.error_id] = unrelated_error
+        mismatched_context = self.call(
+            "/v1/internal/harness/context", method="POST",
+            payload={
+                "session_id": "session-context", "error_id": unrelated_error.error_id,
+                "review_code": frozen_manifest[1]["code"],
+            }, **internal,
+        )
+        self.assertEqual((mismatched_context[0], mismatched_context[2]["error"]["code"]), (404, "not_found"))
         denied_context = self.call(
             "/v1/internal/harness/context", method="POST",
             payload={"session_id": "session-context-other", "error_id": error.error_id}, **internal,
@@ -1345,6 +1439,103 @@ class NotebookE2ETests(unittest.TestCase):
             payload={"session_id": "session-context-other"}, **internal,
         )
         self.assertEqual((denied_reflow[0], denied_reflow[2]["error"]["code"]), (404, "not_found"))
+
+    def test_harness_context_sections_are_bounded_pageable_and_fail_closed(self) -> None:
+        cookie = self.login("13800138014")
+        other_cookie = self.login("13800138015")
+        bound = self.call(
+            "/v1/harness/sessions/bind", method="POST", payload={"session_id": "session-paged-context"},
+            cookie=cookie, origin="https://example.test",
+        )
+        self.assertEqual(bound[0], 200)
+        user = self.auth_service.authenticate_session(cookie.split("=", 1)[1])
+        other_user = self.auth_service.authenticate_session(other_cookie.split("=", 1)[1])
+        assert user is not None and other_user is not None
+        now = datetime.now(timezone.utc)
+        error_ids = []
+        for index in range(25):
+            error_id = f"{index + 1:032x}"
+            error_ids.append(error_id)
+            self.domain_store.errors[error_id] = ErrorEntry(
+                error_id, user.user_id, f"{index + 101:032x}", f"题目 {index + 1}", "作答", "错因", "open",
+                now - timedelta(minutes=index),
+            )
+        self.domain_store.errors["f" * 32] = ErrorEntry(
+            "f" * 32, other_user.user_id, "e" * 32, "其他账号题目", "作答", "错因", "open", now,
+        )
+        internal = {
+            "origin": None,
+            "client": ("127.0.0.1", 3080),
+            "extra_headers": {"authorization": "Bearer test-internal-token"},
+        }
+        second_page = self.call(
+            "/v1/internal/harness/context", method="POST",
+            payload={
+                "session_id": "session-paged-context", "scope": "errors", "page": 2, "page_size": 10,
+            }, **internal,
+        )
+        self.assertEqual(second_page[0], 200)
+        context = json.loads(second_page[2]["context_json"])
+        self.assertEqual(set(context), {"scope", "query", "errors", "pagination"})
+        self.assertEqual(context["query"], {"mode": "section", "section": "errors"})
+        self.assertEqual(context["pagination"], {"page": 2, "page_size": 10, "total": 25, "has_more": True})
+        self.assertEqual([item["error_id"] for item in context["errors"]], error_ids[10:20])
+
+        overview_page = self.call(
+            "/v1/internal/harness/context", method="POST",
+            payload={"session_id": "session-paged-context"}, **internal,
+        )
+        self.assertEqual(overview_page[0], 200)
+        overview_context = json.loads(overview_page[2]["context_json"])
+        self.assertEqual(overview_context["pagination"]["errors"], {
+            "page": 1, "page_size": 20, "total": 25, "has_more": True,
+        })
+
+        exact = self.call(
+            "/v1/internal/harness/context", method="POST",
+            payload={"session_id": "session-paged-context", "error_id": error_ids[-1]}, **internal,
+        )
+        self.assertEqual(exact[0], 200)
+        exact_context = json.loads(exact[2]["context_json"])
+        self.assertEqual(exact_context["error"]["error_id"], error_ids[-1])
+        self.assertNotIn("errors", exact_context)
+
+        pending_items = [{"candidate_id": f"{index + 201:032x}", "options": []} for index in range(25)]
+        original_pending = self.notebook.list_pending_practice_review_links
+        self.notebook.list_pending_practice_review_links = lambda *, user_id: pending_items  # type: ignore[method-assign]
+        try:
+            pending_page = self.call(
+                "/v1/internal/harness/context", method="POST",
+                payload={
+                    "session_id": "session-paged-context", "scope": "pending_review_links",
+                    "page": 2, "page_size": 10,
+                }, **internal,
+            )
+        finally:
+            self.notebook.list_pending_practice_review_links = original_pending  # type: ignore[method-assign]
+        self.assertEqual(pending_page[0], 200)
+        pending_context = json.loads(pending_page[2]["context_json"])
+        self.assertEqual(set(pending_context), {"scope", "query", "pending_review_links", "pagination"})
+        self.assertEqual(pending_context["pagination"], {"page": 2, "page_size": 10, "total": 25, "has_more": True})
+        self.assertEqual(pending_context["pending_review_links"], pending_items[10:20])
+        self.assertEqual(len(pending_items), 25)
+
+        invalid_payloads = (
+            {"session_id": "session-paged-context", "scope": "unknown"},
+            {"session_id": "session-paged-context", "scope": "exact"},
+            {"session_id": "session-paged-context", "error_id": error_ids[0], "page": 1},
+            {"session_id": "session-paged-context", "scope": "overview", "page_size": 10},
+            {"session_id": "session-paged-context", "scope": "errors", "page_size": 21},
+            {"session_id": "session-paged-context", "scope": "errors", "page": True},
+            {"session_id": "session-paged-context", "error_id": "A" * 32},
+            {"session_id": "session-paged-context", "scope": "errors", "unexpected": True},
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                response = self.call(
+                    "/v1/internal/harness/context", method="POST", payload=payload, **internal,
+                )
+                self.assertEqual((response[0], response[2]["error"]["code"]), (400, "invalid_request"))
 
     @staticmethod
     def multipart(filename: str, content: bytes, purpose: str = "question_image") -> tuple[str, bytes]:

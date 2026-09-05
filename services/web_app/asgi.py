@@ -1701,28 +1701,45 @@ class NotebookAsgiApp:
                 if any(intake.status != "confirmed" or intake.intake_id not in frozen_candidates for intake in intakes):
                     raise RuntimeError("conflict")
 
+            prevalidated_references = {}
+            if not frozen_candidates:
+                for intake, item, exact_context, exact_locator in zip(intakes, raw_items, exact_review_contexts, review_locators, strict=True):
+                    exact_question_id = str((exact_context or {}).get("question_id") or "")
+                    if not exact_question_id and re.fullmatch(r"[0-9a-f]{32}", str((exact_locator or {}).get("question_id") or "")):
+                        exact_question_id = str(exact_locator["question_id"])
+                    reference = (
+                        await self._sync(self.notebook.store.get_verified_question, question_id=exact_question_id)
+                        if exact_question_id else
+                        await self._sync(self.notebook.store.find_verified_question, question_text=intake.question_text)
+                    )
+                    final_answer = str(item["final_answer"]).strip()
+                    validation = cross_validate_reference(reference, final_answer) if reference is not None and final_answer else None
+                    if item.get("grading_strategy", "independent") == "verified_reference" and (
+                        not exact_question_id or not isinstance(validation, dict) or validation.get("status") != "consistent"
+                    ):
+                        raise RuntimeError("reference_changed")
+                    prevalidated_references[intake.intake_id] = (exact_question_id, reference, validation)
+
             if not frozen_candidates:
                 reserved_intakes = [intake.intake_id for intake in intakes]
                 await self._sync(self.notebook.store.reserve_grade_batch, user_id=user_id, intake_ids=reserved_intakes)
             results = []
             processing_items = [(intake, None, None, None) for intake in intakes] if frozen_candidates else zip(intakes, raw_items, exact_review_contexts, review_locators, strict=True)
             for intake, item, exact_context, exact_locator in processing_items:
-                exact_question_id = str((exact_context or {}).get("question_id") or "")
-                if not exact_question_id and re.fullmatch(r"[0-9a-f]{32}", str((exact_locator or {}).get("question_id") or "")):
-                    exact_question_id = str(exact_locator["question_id"])
-                reference = (
-                    await self._sync(self.notebook.store.get_verified_question, question_id=exact_question_id)
-                    if exact_question_id else
-                    await self._sync(self.notebook.store.find_verified_question, question_text=intake.question_text)
-                )
                 if frozen_candidates:
+                    exact_question_id = str((exact_context or {}).get("question_id") or "")
+                    reference = (
+                        await self._sync(self.notebook.store.get_verified_question, question_id=exact_question_id)
+                        if exact_question_id else
+                        await self._sync(self.notebook.store.find_verified_question, question_text=intake.question_text)
+                    )
                     candidate = frozen_candidates[intake.intake_id]
                     final_answer = str(self._diagnosis(candidate.evidence).get("final_answer") or "")
                 else:
                     assert item is not None
                     grading_strategy = item.get("grading_strategy", "independent")
-                    if grading_strategy == "verified_reference" and (not exact_question_id or reference is None):
-                        raise RuntimeError("reference_changed")
+                    exact_question_id, reference, validation = prevalidated_references[intake.intake_id]
+                    final_answer = str(item["final_answer"]).strip()
                     attempt_id, _ = await self._sync(
                         self.notebook.store.confirm_intake,
                         user_id=user_id,
@@ -1730,12 +1747,6 @@ class NotebookAsgiApp:
                         expected_version=intake.input_version,
                         idempotency_key=f"harness-grade-{intake.intake_id}-{intake.input_version}",
                     )
-                    final_answer = str(item["final_answer"]).strip()
-                    validation = cross_validate_reference(reference, final_answer) if reference is not None and final_answer else None
-                    if grading_strategy == "verified_reference" and (
-                        not isinstance(validation, dict) or validation.get("status") != "consistent"
-                    ):
-                        raise RuntimeError("reference_changed")
                     verdict, first_error, evidence = self._grade_values(
                         item,
                         evidence_key="cause_evidence",
@@ -2342,59 +2353,138 @@ class NotebookAsgiApp:
             return
         try:
             payload = await self._json_body(receive)
-            if "session_id" not in payload or set(payload) - {"session_id", "error_id", "review_code"}:
+            allowed_fields = {"session_id", "error_id", "review_code", "scope", "page", "page_size"}
+            if "session_id" not in payload or set(payload) - allowed_fields:
                 raise ValueError("invalid context request")
             session_id = self._harness_session_id(payload)
             error_id = payload.get("error_id")
             review_code = payload.get("review_code")
+            requested_scope = payload.get("scope")
+            page = payload.get("page", 1)
+            page_size = payload.get("page_size", 20)
             if error_id is not None and (not isinstance(error_id, str) or re.fullmatch(r"[0-9a-f]{32}", error_id) is None):
                 raise ValueError("invalid context request")
             if review_code is not None and (not isinstance(review_code, str) or re.fullmatch(r"R[0-9a-f]{12}-\d{2}(?:-[0-9A-F]{6})?", review_code, re.IGNORECASE) is None):
                 raise ValueError("invalid context request")
+            valid_scopes = {
+                "exact", "overview", "errors", "due_reviews", "active_reviews",
+                "practice_pdfs", "pending_review_links",
+            }
+            if requested_scope is not None and (not isinstance(requested_scope, str) or requested_scope not in valid_scopes):
+                raise ValueError("invalid context request")
+            if (not isinstance(page, int) or isinstance(page, bool) or page < 1
+                    or not isinstance(page_size, int) or isinstance(page_size, bool) or not 1 <= page_size <= 20):
+                raise ValueError("invalid context request")
+            mode = requested_scope or ("exact" if error_id is not None or review_code is not None else "overview")
+            paged_scopes = valid_scopes - {"exact", "overview"}
+            has_page_fields = "page" in payload or "page_size" in payload
+            if mode == "exact":
+                if error_id is None and review_code is None or has_page_fields:
+                    raise ValueError("invalid context request")
+            elif mode == "overview":
+                if error_id is not None or review_code is not None or has_page_fields:
+                    raise ValueError("invalid context request")
+            elif mode in paged_scopes:
+                if error_id is not None or review_code is not None:
+                    raise ValueError("invalid context request")
             user_id = await self._harness_user_id(session_id)
             if user_id is None:
                 raise PermissionError("unbound harness session")
-            errors = await self._sync(self.notebook.store.list_errors, user_id=user_id)
-            exact_error = None
-            if error_id is not None:
-                entry = await self._sync(self.notebook.store.get_error, user_id=user_id, error_id=error_id)
-                if entry is None:
-                    raise LookupError("error not found")
-                exact_error = self._error_entry(entry)
-            due_tasks = await self._sync(self.notebook.store.list_due_reviews, user_id=user_id)
-            due_reviews = []
-            for task in due_tasks[:20]:
-                entry = await self._sync(self.notebook.store.get_error, user_id=user_id, error_id=task.error_id)
-                due_reviews.append(self._review(task) | {
-                    "question_text": entry.question_text if entry else "",
-                    "first_error": entry.first_error if entry else None,
-                })
-            active_tasks = await self._sync(self.notebook.store.list_active_reviews, user_id=user_id)
-            active_reviews = []
-            for task in active_tasks[:20]:
-                entry = await self._sync(self.notebook.store.get_error, user_id=user_id, error_id=task.error_id)
-                active_reviews.append(self._review(task) | {
-                    "question_text": entry.question_text if entry else "",
-                    "first_error": entry.first_error if entry else None,
-                })
-            papers = await self._sync(self.notebook.list_practice_pdfs, user_id=user_id)
-            plan = await self._sync(self.notebook.today_practice_plan, user_id=user_id, papers=papers)
-            pending = await self._sync(self.notebook.list_pending_practice_review_links, user_id=user_id)
-            review_item = await self._sync(self.notebook.inspect_review_code, user_id=user_id, code=review_code) if review_code else None
-            if review_code and review_item is None:
-                raise LookupError("review code not found")
+
+            if mode == "exact":
+                context: dict[str, Any] = {
+                    "scope": "current_bound_account",
+                    "query": {"mode": "exact"},
+                }
+                if error_id is not None:
+                    context["query"]["error_id"] = error_id
+                    entry = await self._sync(self.notebook.store.get_error, user_id=user_id, error_id=error_id)
+                    if entry is None:
+                        raise LookupError("error not found")
+                    context["error"] = self._error_entry(entry)
+                if review_code is not None:
+                    review_item = await self._sync(self.notebook.inspect_review_code, user_id=user_id, code=review_code)
+                    if review_item is None or error_id is not None and review_item.get("error_id") != error_id:
+                        raise LookupError("review code not found")
+                    context["query"]["review_code"] = review_code
+                    context["review_item"] = review_item
+                await self._json(send, 200, {"context_json": json.dumps(context, ensure_ascii=False, separators=(",", ":"))})
+                return
+
+            def paged(items: list[Any]) -> tuple[list[Any], dict[str, Any]]:
+                start = (page - 1) * page_size
+                selected = items[start:start + page_size]
+                return selected, {
+                    "page": page,
+                    "page_size": page_size,
+                    "total": len(items),
+                    "has_more": start + len(selected) < len(items),
+                }
+
             context = {
                 "scope": "current_bound_account",
-                "progress": await self._sync(self.notebook.progress, user_id=user_id),
-                "errors": [self._error_entry(item) for item in errors[:20]],
-                "due_reviews": due_reviews,
-                "active_reviews": active_reviews,
-                "practice_pdfs": [item | {"download_url": f"/v1/practice-pdfs/{item['task_id']}/download"} for item in papers[:20]],
-                "today_plan": plan,
-                "pending_review_links": pending[:20],
-                "error": exact_error,
-                "review_item": review_item,
+                "query": {"mode": "overview" if mode == "overview" else "section", **({} if mode == "overview" else {"section": mode})},
             }
+            if mode in {"overview", "errors"}:
+                errors = await self._sync(self.notebook.store.list_errors, user_id=user_id)
+                selected, pagination = paged(errors)
+                context["errors"] = [self._error_entry(item) for item in selected]
+                if mode == "errors":
+                    context["pagination"] = pagination
+                else:
+                    context.setdefault("pagination", {})["errors"] = pagination
+            if mode in {"overview", "due_reviews"}:
+                due_tasks = await self._sync(self.notebook.store.list_due_reviews, user_id=user_id)
+                selected, pagination = paged(due_tasks)
+                due_reviews = []
+                for task in selected:
+                    entry = await self._sync(self.notebook.store.get_error, user_id=user_id, error_id=task.error_id)
+                    due_reviews.append(self._review(task) | {
+                        "question_text": entry.question_text if entry else "",
+                        "first_error": entry.first_error if entry else None,
+                    })
+                context["due_reviews"] = due_reviews
+                if mode == "due_reviews":
+                    context["pagination"] = pagination
+                else:
+                    context.setdefault("pagination", {})["due_reviews"] = pagination
+            if mode in {"overview", "active_reviews"}:
+                active_tasks = await self._sync(self.notebook.store.list_active_reviews, user_id=user_id)
+                selected, pagination = paged(active_tasks)
+                active_reviews = []
+                for task in selected:
+                    entry = await self._sync(self.notebook.store.get_error, user_id=user_id, error_id=task.error_id)
+                    active_reviews.append(self._review(task) | {
+                        "question_text": entry.question_text if entry else "",
+                        "first_error": entry.first_error if entry else None,
+                    })
+                context["active_reviews"] = active_reviews
+                if mode == "active_reviews":
+                    context["pagination"] = pagination
+                else:
+                    context.setdefault("pagination", {})["active_reviews"] = pagination
+            papers = None
+            if mode in {"overview", "practice_pdfs"}:
+                papers = await self._sync(self.notebook.list_practice_pdfs, user_id=user_id)
+                selected, pagination = paged(papers)
+                context["practice_pdfs"] = [
+                    item | {"download_url": f"/v1/practice-pdfs/{item['task_id']}/download"} for item in selected
+                ]
+                if mode == "practice_pdfs":
+                    context["pagination"] = pagination
+                else:
+                    context.setdefault("pagination", {})["practice_pdfs"] = pagination
+            if mode in {"overview", "pending_review_links"}:
+                pending = await self._sync(self.notebook.list_pending_practice_review_links, user_id=user_id)
+                selected, pagination = paged(pending)
+                context["pending_review_links"] = selected
+                if mode == "pending_review_links":
+                    context["pagination"] = pagination
+                else:
+                    context.setdefault("pagination", {})["pending_review_links"] = pagination
+            if mode == "overview":
+                context["progress"] = await self._sync(self.notebook.progress, user_id=user_id)
+                context["today_plan"] = await self._sync(self.notebook.today_practice_plan, user_id=user_id, papers=papers or [])
             await self._json(send, 200, {"context_json": json.dumps(context, ensure_ascii=False, separators=(",", ":"))})
         except LookupError:
             await self._error(send, 404, "not_found")
