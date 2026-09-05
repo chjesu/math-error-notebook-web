@@ -23,6 +23,18 @@ function itemKey(item) {
   return `${item.attachment_index}:${item.item_no}`;
 }
 
+function pendingGradingItems(frozen) {
+  return frozen.items.filter((item) => !frozen.completed.has(itemKey(item)));
+}
+
+function gradingBatchError(frozen, message, received) {
+  const pending = pendingGradingItems(frozen).map(itemKey);
+  const completed = [...frozen.completed.keys()];
+  const state = JSON.stringify({batch_ref: frozen.batchRef, pending_item_keys: pending, completed_item_keys: completed,
+    ...(received ? {received_item_keys: received.map(itemKey)} : {})});
+  return new Error(`${message}\n当前权威批次状态：${state}\n题号格式为 attachment_index:item_no（图片序号:该图片内题号），不是整批连续题号；不得重编号、猜测子集或重交已确认题。保留原判定字段，只按 pending_item_keys 的顺序提交全部未完成题目。必要时调用 transcribe_error_notebook_attachments({"items":[]}) 只取回同轮冻结内容，不会重置进度，无需重传图片。相同业务错误只重试一次；仍失败则停止并说明未完成状态，不得循环试探或声称已保存。\n${protectedTrailer([protectedMarker("batch", frozen.batchRef, "active")])}`);
+}
+
 function protectedMarker(kind, id, status) {
   return {key: `${kind}:${id}`, status};
 }
@@ -257,28 +269,31 @@ function receiptTool() {
   };
 }
 
-function latestUserImages(agent) {
-  if (!agent.session?.deriveMessages) return [];
+function latestUserMessage(agent) {
+  if (!agent.session?.deriveMessages) return null;
   const messages = agent.session.deriveMessages();
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "user") continue;
-    return Array.isArray(message.content) ? message.content.filter((block) => block.type === "image") : [];
+    // Harness projects tool results as user messages; they are not a new upload.
+    if (message.source?.kind === "tool" || (Array.isArray(message.content) && message.content.length
+      && message.content.every((block) => ["tool-result", "tool_result"].includes(block.type)))) continue;
+    return message;
   }
-  return [];
+  return null;
+}
+
+function latestUserImages(agent) {
+  const message = latestUserMessage(agent);
+  return Array.isArray(message?.content) ? message.content.filter((block) => block.type === "image") : [];
 }
 
 function latestUserText(agent) {
-  const messages = agent.session.deriveMessages();
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role !== "user") continue;
-    if (typeof message.content === "string") return message.content;
-    return Array.isArray(message.content)
-      ? message.content.filter((block) => block.type === "text" && typeof block.text === "string").map((block) => block.text).join("\n")
-      : "";
-  }
-  return "";
+  const message = latestUserMessage(agent);
+  if (typeof message?.content === "string") return message.content;
+  return Array.isArray(message?.content)
+    ? message.content.filter((block) => block.type === "text" && typeof block.text === "string").map((block) => block.text).join("\n")
+    : "";
 }
 
 function currentTurn(agent) {
@@ -422,10 +437,10 @@ function transcribeAttachmentsTool(ctx) {
   };
   return {
     name: "transcribe_error_notebook_attachments",
-    description: "Required first when the latest user message contains 1-10 math images. Do OCR and segmentation only: for each image copy every printed question stem separately from the student's final handwritten answer, in image order. Do not solve or grade yet. Use one-based attachment_index and restart item_no at 1 for every image. The returned transcription is frozen for the later processing call in this same turn.",
+    description: 'Required first when the latest user message contains 1-10 math images. Do OCR and segmentation only: for each image copy every printed question stem separately from the student\'s final handwritten answer, in image order. Do not solve or grade yet. Use one-based attachment_index and restart item_no at 1 for every image. The returned transcription is frozen for later processing in this same turn. For recovery only, call with items:[] to read the active frozen batch and all still-pending items without re-OCR, attachment reads, or resetting completed results. Empty items cannot start a new batch.',
     parameters: {
       type: "object", additionalProperties: false, required: ["items"],
-      properties: {items: {type: "array", minItems: 1, maxItems: 200, items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
+      properties: {items: {type: "array", minItems: 0, maxItems: 200, items: {type: "object", additionalProperties: false, required: Object.keys(itemProperties), properties: itemProperties}}}
     },
     output: {
       schema: {
@@ -452,7 +467,7 @@ function transcribeAttachmentsTool(ctx) {
           `图片 ${item.attachment_index} · 第 ${item.item_no} 题学生作答：${item.answer_text || "未作答"}`,
           '判题策略：independent。没有取得精确且已验证的当前参考，必须独立解题。correct_solution 填完整正确解法，final_answer 填所有小题的最终答案；二者不能用 first_error 代替。仅确实无法辨认题目而判 unclear 时可填空字符串 ""。'
         ]),
-        `处理批次引用：${value.batch_ref}。调用 process_error_notebook_attachments 时只提交该引用、题目位置和新生成的判定字段。`,
+        `处理批次引用：${value.batch_ref}。必须提交的全部未完成题目（attachment_index:item_no）：${value.items.map(itemKey).join(", ")}。item_no 在每张图片内从 1 编号，不能改成整批连续题号。调用 process_error_notebook_attachments 时只提交该引用、上述题目位置和新生成的判定字段。`,
         protectedTrailer([
           protectedMarker("batch", value.batch_ref, "active"),
           ...(value.superseded_batch_ref ? [protectedMarker("batch", value.superseded_batch_ref, "resolved")] : [])
@@ -461,6 +476,10 @@ function transcribeAttachmentsTool(ctx) {
     },
     async execute(args, exec) {
       if (!exec.agent) throw new Error("Notebook transcription requires an owning Harness session");
+      const active = transcriptionByAgent.get(exec.agent);
+      if (active && active.turn !== null && active.turn === currentTurn(exec.agent)) {
+        return {schema: "math-notebook-transcription/v1", batch_ref: active.batchRef, items: pendingGradingItems(active)};
+      }
       const images = latestUserImages(exec.agent);
       if (images.length === 0) {
         exec.concludeTurn();
@@ -477,7 +496,7 @@ function transcribeAttachmentsTool(ctx) {
         ...item,
         question_text: item.question_text.trim(),
         answer_text: item.answer_text.trim()
-      }));
+      })).sort((left, right) => left.attachment_index - right.attachment_index || left.item_no - right.item_no);
       if (items.some((item) => item.question_text === "")) throw new Error("Every transcription item requires a question stem");
       const storedImages = [];
       const references = new Map();
@@ -584,7 +603,7 @@ function processAttachmentsTool(ctx) {
   };
   return {
     name: "process_error_notebook_attachments",
-    description: 'Required after transcribe_error_notebook_attachments. Copy its opaque batch_ref and submit every still-pending item in frozen order. Do not repeat question_text, answer_text, review, grading_strategy or reference text; the host rehydrates them. Always include correct_solution and final_answer: independent non-unclear items need the complete correct solution and all final answers, not just first_error; verified_reference or unclear items use "". The host injects authorized references and checks freshness. If solution fields are missing, complete them from the frozen text and retry this tool once with the same batch_ref and all pending items, without reuploading or retranscribing. Never invent ids.',
+    description: 'Required after transcribe_error_notebook_attachments. Copy its opaque batch_ref and submit every still-pending item in frozen order. item_no is local to each image, never a global question number. After an error use its exact pending_item_keys; never guess subsets or replay completed_item_keys. Read active frozen text using transcribe_error_notebook_attachments({"items":[]}) if needed. Do not repeat question_text, answer_text, review, grading_strategy or reference text; the host rehydrates them. Always include correct_solution and final_answer: independent non-unclear items need the complete correct solution and all final answers, not just first_error; verified_reference or unclear items use "". The host injects authorized references and checks freshness. If solution fields are missing, complete them from the frozen text and retry this tool once with the same batch_ref and all pending items, without reuploading or retranscribing. Never invent ids.',
     parameters: {
       type: "object", additionalProperties: false, required: ["batch_ref", "items"],
       properties: {
@@ -610,10 +629,10 @@ function processAttachmentsTool(ctx) {
       const frozen = transcriptionByAgent.get(exec.agent);
       if (!frozen || (frozen.turn !== null && currentTurn(exec.agent) !== frozen.turn)) throw new Error("请先调用 transcribe_error_notebook_attachments 冻结本批图片的题干与作答");
       const images = frozen.images;
-      if (args.batch_ref !== frozen.batchRef) throw new Error("判题批次引用已过期；请使用最近一次工具返回的 batch_ref");
-      const pending = frozen.items.filter((item) => !frozen.completed.has(itemKey(item)));
+      if (args.batch_ref !== frozen.batchRef) throw gradingBatchError(frozen, "判题批次引用已过期；请使用最近一次工具返回的 batch_ref", args.items);
+      const pending = pendingGradingItems(frozen);
       if (args.items.length !== pending.length || args.items.some((item, index) => itemKey(item) !== itemKey(pending[index])) || new Set(args.items.map(itemKey)).size !== args.items.length) {
-        throw new Error("判题提交必须按顺序且恰好包含当前冻结批次的全部未完成题目，不得遗漏、重复、倒置或串题");
+        throw gradingBatchError(frozen, "判题提交清单不匹配，本次调用尚未提交任何题目；不得遗漏、重复、倒置或串题。", args.items);
       }
       if (args.items.some((item) => item.attachment_index < 1 || item.attachment_index > images.length)) {
         throw new Error("A result refers to an attachment outside the latest user message");
@@ -665,8 +684,8 @@ function processAttachmentsTool(ctx) {
             items: items.map(({attachment_index: _attachmentIndex, ...item}) => item)
           }),
           signal: exec.signal
-        });
-        const payload = await response.json();
+        }).catch(() => { throw gradingBatchError(frozen, `图片 ${attachmentIndex} 的处理连接中断，尚未取得该图片的确认回执；结果未确认不等于未写入。`); });
+        const payload = await response.json().catch(() => { throw gradingBatchError(frozen, `图片 ${attachmentIndex} 的处理响应无法读取，尚未取得该图片的确认回执；结果未确认不等于未写入。`); });
         if (!response.ok || !Array.isArray(payload.results)) {
           const code = payload.error?.code;
           if (code === "daily_grade_limit") throw new Error("今天已完成 40 道判题，请先复习和订正；新图片可明日继续处理。");
@@ -689,7 +708,7 @@ function processAttachmentsTool(ctx) {
             });
             const refreshed = await refresh.json();
             if (!refresh.ok || !Array.isArray(refreshed.items) || refreshed.items.length !== frozenItems.length) {
-              throw toolRequestError("Reference recovery failed", refresh, refreshed);
+              throw gradingBatchError(frozen, toolRequestError("Reference recovery failed", refresh, refreshed).message);
             }
             const byNumber = new Map(refreshed.items.map((item) => [item.item_no, item]));
             const refreshedItems = frozen.items.map((item) => item.attachment_index !== attachmentIndex ? item : {
@@ -704,10 +723,10 @@ function processAttachmentsTool(ctx) {
             const stillPending = frozen.items.filter((item) => !frozen.completed.has(itemKey(item)));
             throw new Error(`题库参考已刷新为新的冻结版本；已确认题目不会重写。请按以下唯一当前批次重新判定未完成题目，无需重新上传：${gradingBatchText(frozen, stillPending)}\n${protectedTrailer([protectedMarker("batch", frozen.batchRef, "active"), protectedMarker("batch", args.batch_ref, "resolved")])}`);
           }
-          throw toolRequestError("Notebook processing failed", response, payload);
+          throw gradingBatchError(frozen, `图片 ${attachmentIndex}：${toolRequestError("Notebook processing failed", response, payload).message}`);
         }
         if (payload.results.length !== frozenItems.length || frozenItems.some((expected) => payload.results.filter((item) => item.item_no === expected.item_no).length !== 1)) {
-          throw new Error("Notebook processing returned missing, duplicate, reordered, or out-of-batch results");
+          throw gradingBatchError(frozen, "Notebook processing returned missing, duplicate, reordered, or out-of-batch results");
         }
         usage = payload.usage || usage;
         for (const item of payload.results) frozen.completed.set(`${attachmentIndex}:${item.item_no}`, {...item, attachment_index: attachmentIndex});

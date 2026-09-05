@@ -11,6 +11,124 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HarnessGradingContractTests(unittest.TestCase):
+    def test_partial_failure_reports_exact_pending_batch_and_preserves_recovery_state(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is needed for Harness contract checks")
+        module_uri = (ROOT / "extensions/dsh-math-notebook-ui/lib/index.js").resolve().as_uri()
+        script = r"""
+process.env.LZLM_PRODUCT_ORIGIN='http://product';
+process.env.LZLM_HARNESS_INTERNAL_TOKEN='internal-test-token';
+process.env.LZLM_HARNESS_WORKSPACE_ROOT='C:/workspace';
+const assert=await import('node:assert/strict');
+const extension=await import(MODULE_URI);
+const tools=[], writes=[], requests=[];
+let reads=0, references=0, failure='conflict', failedImage=2;
+const review={code:'',pdf_id:'',error_id:'',question_id:'',stage:0,kind:''};
+const key=item=>`${item.attachment_index}:${item.item_no}`;
+const textItem=(attachment_index,item_no)=>({attachment_index,item_no,
+  question_text:`question-${attachment_index}-${item_no}`,answer_text:`answer-${attachment_index}-${item_no}`,review});
+const grade=item=>({attachment_index:item.attachment_index,item_no:item.item_no,
+  verdict:'correct',first_error:'',cause_code:'',cause_evidence:'checked',knowledge_points:['algebra'],
+  correct_solution:`solution-${key(item)}`,final_answer:`answer-${key(item)}`,prevention_cue:'check',confidence:0.9});
+globalThis.fetch=async(url,options)=>{
+  const body=JSON.parse(options.body);
+  if(url.endsWith('/grading-references')){
+    references++;
+    return {ok:true,json:async()=>({items:body.items.map(item=>({item_no:item.item_no,grading_strategy:'independent',reference:null}))})};
+  }
+  assert.ok(url.endsWith('/intakes/process'));
+  const image=Number(body.attachment.name.split('.')[0]);
+  requests.push(image);
+  if(image===failedImage && failure){
+    if(failure==='network') throw new Error('network unavailable');
+    if(failure==='json') return {ok:true,json:async()=>{throw new Error('invalid JSON')}};
+    return {ok:false,status:409,json:async()=>({error:{code:'conflict'}})};
+  }
+  for(const item of body.items){
+    const identity=`${image}:${item.item_no}`;
+    assert.equal(item.question_text,`question-${image}-${item.item_no}`);
+    assert.equal(item.answer_text,`answer-${image}-${item.item_no}`);
+    assert.equal(item.correct_solution,`solution-${identity}`);
+    writes.push(identity);
+  }
+  return {ok:true,json:async()=>({results:body.items.map(item=>({...item,candidate_id:`candidate-${image}-${item.item_no}`,
+    input_version:1,receipt_status:'not_saved_correct',receipt_message:'confirmed',error_id:'',
+    review_match_candidates:[],reference_review:null}))})};
+};
+await extension.apply({workspaceRegistry:{create:async()=>undefined},tools:{register:t=>tools.push(t)},
+  attachments:{readImage:async ref=>{reads++;return {ref:{attachmentId:`id-${ref}`,name:`${ref}.png`,mediaType:'image/png'},data:new Uint8Array([1])}}}});
+const transcribe=tools.find(t=>t.name==='transcribe_error_notebook_attachments');
+const processTool=tools.find(t=>t.name==='process_error_notebook_attachments');
+let messages=[{role:'user',content:[1,2,3].map(n=>({type:'image',attachment:n}))},
+  {role:'user',source:{kind:'tool'},content:[{type:'tool-result',content:[{type:'text',text:'unrelated tool receipt'}]}]}];
+const agent={id:'batch-recovery',session:{events:[{type:'turn/start',data:{turn:1}}],deriveMessages:()=>messages}};
+const exec={agent,signal:new AbortController().signal,concludeTurn:()=>undefined};
+const errorFrom=async args=>{
+  try {await processTool.execute(args,exec);assert.fail('expected rejection');}
+  catch(error){assert.ok(error.message.includes('当前权威批次状态：'),error.message);return error;}
+};
+const state=error=>JSON.parse(error.message.split('当前权威批次状态：')[1].split('\n')[0]);
+// Three photos, five questions. Interleaved OCR input becomes canonical image order.
+const frozen=await transcribe.execute({items:[textItem(1,1),textItem(2,1),textItem(1,2),textItem(2,2),textItem(3,1)]},exec);
+assert.deepEqual(frozen.items.map(key),['1:1','1:2','2:1','2:2','3:1']);
+assert.match(transcribe.output.render({},frozen)[0].text,/1:1, 1:2, 2:1, 2:2, 3:1/);
+const full={batch_ref:frozen.batch_ref,items:frozen.items.map(grade)};
+const error=await errorFrom(full);
+assert.match(error.message,/409: conflict/);
+assert.deepEqual(state(error),{batch_ref:frozen.batch_ref,pending_item_keys:['2:1','2:2','3:1'],completed_item_keys:['1:1','1:2']});
+assert.deepEqual(writes,['1:1','1:2']);
+const beforeRequests=requests.length;
+for(const items of [full.items, [grade(textItem(3,1))], [grade(textItem(2,1)),grade(textItem(2,1)),grade(textItem(3,1))],
+  [grade(textItem(3,1)),grade(textItem(2,1)),grade(textItem(2,2))],
+  [grade(textItem(2,1)),grade(textItem(2,2)),grade(textItem(4,1))]]){
+  const rejected=await errorFrom({batch_ref:frozen.batch_ref,items});
+  assert.deepEqual(state(rejected).pending_item_keys,['2:1','2:2','3:1']);
+  assert.deepEqual(state(rejected).received_item_keys,items.map(key));
+  assert.match(rejected.message,/本次调用尚未提交任何题目/);
+}
+assert.equal(requests.length,beforeRequests,'invalid guesses must never write');
+// Recovery returns the exact original frozen text; not even an OCR rewrite resets completion.
+const beforeReads=reads,beforeReferences=references;
+for(const items of [[],[textItem(1,1)]]){
+  const recovered=await transcribe.execute({items},exec);
+  assert.equal(recovered.batch_ref,frozen.batch_ref);
+  assert.deepEqual(recovered.items,frozen.items.slice(2));
+}
+assert.equal(reads,beforeReads);
+assert.equal(references,beforeReferences);
+failure='';
+const finished=await processTool.execute({batch_ref:state(error).batch_ref,
+  items:state(error).pending_item_keys.map(k=>full.items.find(item=>key(item)===k))},exec);
+assert.deepEqual(finished.results.map(key),['1:1','1:2','2:1','2:2','3:1']);
+assert.deepEqual(writes,['1:1','1:2','2:1','2:2','3:1'],'each confirmed question written once');
+// Network/JSON failures also disclose the authoritative pending set, without pretending rollback.
+for(const mode of ['network','json']){
+  agent.session.events=[{type:'turn/start',data:{turn:mode}}];
+  messages=[{role:'user',content:[{type:'image',attachment:1}]},
+    {role:'user',content:[{type:'tool-result',content:[]}]}];
+  failedImage=1;failure=mode;
+  const batch=await transcribe.execute({items:[textItem(1,1)]},exec);
+  const failed=await errorFrom({batch_ref:batch.batch_ref,items:[grade(textItem(1,1))]});
+  assert.deepEqual(state(failed).pending_item_keys,['1:1']);
+  assert.deepEqual(state(failed).completed_item_keys,[]);
+  assert.match(failed.message,/结果未确认不等于未写入/);
+  failure='';
+  assert.equal((await processTool.execute({batch_ref:batch.batch_ref,items:[grade(textItem(1,1))]},exec)).results.length,1);
+}
+// Never reuse an old upload when the genuine latest user message has no images.
+agent.session.events=[{type:'turn/start',data:{turn:99}}];
+messages.push({role:'user',content:[{type:'text',text:'new message without an image'}]});
+const empty=await transcribe.execute({items:[]},exec);
+assert.deepEqual(empty.items,[]);
+assert.equal(empty.batch_ref,'');
+messages=[{role:'user',content:[{type:'image',attachment:1}]}];
+await assert.rejects(()=>transcribe.execute({items:[]},exec),/每张图片/);
+console.log('batch recovery contracts passed');
+""".replace("MODULE_URI", json.dumps(module_uri))
+        result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_lean_batch_rehydrates_and_recovers_without_replaying_confirmed_image(self) -> None:
         node = shutil.which("node")
         if node is None:
