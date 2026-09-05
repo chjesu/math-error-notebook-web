@@ -488,6 +488,18 @@ class NotebookE2ETests(unittest.TestCase):
             client=("127.0.0.1", 12345),
         )
         self.assertEqual((fetched[0], fetched[2]["batch_id"]), (200, created[2]["batch_id"]))
+        renamed = self.call(
+            "/v1/internal/harness/intake-batches", method="POST",
+            payload={"session_id": "harness-session-1", "attachments": [{
+                "attachment_id": f"sha256:{digest}", "name": "clipboard.png",
+                "media_type": "image/png", "data": base64.b64encode(content).decode("ascii"),
+            }]},
+            extra_headers={"Authorization": "Bearer test-internal-token"},
+            client=("127.0.0.1", 12345),
+        )
+        self.assertEqual(renamed[0], 202)
+        self.assertEqual(renamed[2]["batch_id"], created[2]["batch_id"])
+        self.assertEqual(len(self.domain_store.files), 1)
 
     def test_refresh_history_restores_owned_image_attachment_and_preview(self) -> None:
         class EmptyHistoryModel:
@@ -775,6 +787,11 @@ class NotebookE2ETests(unittest.TestCase):
         changed_count = json.loads(json.dumps(payload))
         changed_count["items"] = changed_count["items"][:1]
         changed_count_replay = self.call("/v1/internal/harness/intakes/process", method="POST", payload=changed_count, **internal)
+        renamed = json.loads(json.dumps(payload))
+        renamed["attachment"]["name"] = "clipboard.png"
+        renamed_replay = self.call("/v1/internal/harness/intakes/process", method="POST", payload=renamed, **internal)
+        self.assertEqual(renamed_replay[0], 200)
+        self.assertEqual(renamed_replay[2]["results"], replay[2]["results"])
 
         self.assertEqual((first[0], replay[0], changed_grade_replay[0], changed_text_replay[0], changed_count_replay[0]), (200, 200, 200, 200, 200))
         self.assertEqual((concurrent_conflict[0], concurrent_conflict[2]["error"]["code"]), (409, "conflict"))
@@ -1153,6 +1170,46 @@ class NotebookE2ETests(unittest.TestCase):
             (prepared["reference"]["question_id"], prepared["reference"]["version_no"], prepared["reference"]["reference_answer"]),
             (question.question_id, 4, "x=5"),
         )
+
+    def test_fast_grading_accepts_unchanged_choice_reference_with_options(self) -> None:
+        cookie = self.login("13500135019")
+        session_id = "session-choice-reference"
+        self.call("/v1/harness/sessions/bind", method="POST", cookie=cookie,
+                  payload={"session_id": session_id}, origin="https://example.test")
+        question = Question(
+            "6" * 32, "计算 2+3，选择正确答案。", "A", 10, 1.0, "授权题库",
+            solution_text="2+3=5，故选 A。", options=("A．5", "B．6", "C．7", "D．8"),
+        )
+        self.domain_store.add_question(question, license_status="user_authorized")
+        content = self.png_bytes()
+        attachment = {"attachment_id": f"sha256:{hashlib.sha256(content).hexdigest()}",
+                      "name": "choice.png", "media_type": "image/png", "data": base64.b64encode(content).decode("ascii")}
+        review = {"question_id": question.question_id}
+        internal = {"origin": None, "client": ("127.0.0.1", 3080),
+                    "extra_headers": {"authorization": "Bearer test-internal-token"}}
+        frozen = self.call("/v1/internal/harness/grading-references", method="POST", payload={
+            "session_id": session_id, "attachment": attachment,
+            "items": [{"item_no": 1, "question_text": question.stem_text, "review": review}],
+        }, **internal)[2]["items"][0]
+        self.assertEqual(frozen["grading_strategy"], "verified_reference")
+        item = {
+            "item_no": 1, "question_text": question.stem_text, "answer_text": "A", "verdict": "correct",
+            "first_error": "", "cause_code": "", "cause_evidence": "学生选 A，与参考一致",
+            "knowledge_points": ["整数加法"], "correct_solution": frozen["reference"]["reference_solution"],
+            "final_answer": "B", "prevention_cue": "核对选项", "confidence": 0.99,
+            "grading_strategy": "verified_reference", "review": review,
+        }
+        payload = {"session_id": session_id, "attachment": attachment, "items": [item]}
+        rejected = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
+        self.assertEqual((rejected[0], rejected[2]["error"]["code"]), (409, "reference_changed"))
+        self.assertEqual(len(self.domain_store.candidates), 0)
+        item["final_answer"] = frozen["reference"]["reference_answer"]
+        first = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
+        replay = self.call("/v1/internal/harness/intakes/process", method="POST", payload=payload, **internal)
+        self.assertEqual((first[0], replay[0]), (200, 200))
+        self.assertEqual(first[2]["results"], replay[2]["results"])
+        self.assertEqual(first[2]["results"][0]["verdict"], "correct")
+        self.assertEqual(len(self.domain_store.candidates), 1)
 
     def test_changed_verified_reference_does_not_poison_intake_before_host_refresh_retry(self) -> None:
         cookie = self.login("13500135018")

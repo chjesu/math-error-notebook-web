@@ -342,6 +342,12 @@ class LearningLoopTests(unittest.TestCase):
 
         self.assertEqual(validation["status"], "consistent")
         self.assertNotEqual(validation["reference_answer_sha256"], validation["independent_answer_sha256"])
+        label = cross_validate_reference(reference, "C")
+        self.assertEqual(label["status"], "consistent")
+        self.assertEqual(label["reference_answer_sha256"], label["independent_answer_sha256"])
+        for wrong in ("A", "B", "D", "1", "4", "", "C,D"):
+            with self.subTest(wrong=wrong):
+                self.assertEqual(cross_validate_reference(reference, wrong)["status"], "conflict")
 
 
 if __name__ == "__main__":

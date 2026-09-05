@@ -1346,7 +1346,8 @@ class NotebookAsgiApp:
                     purpose="question_image",
                     original_name=attachment["name"],
                     content=content,
-                    idempotency_key=f"harness-file-{digest[:51]}",
+                    # File uniqueness is already scoped by owner/purpose/content;
+                    # a pasted copy may have a different filename.
                 )
                 file_ids.append(record.file_id)
                 digests.append(digest)
@@ -1613,7 +1614,7 @@ class NotebookAsgiApp:
                 purpose="question_image",
                 original_name=name,
                 content=content,
-                idempotency_key=f"harness-file-{digest[:51]}",
+                # Reuse content identity, including legacy uploads with other names.
             )
             review_locators = [review_locator(item.get("review")) for item in raw_items]
             qr_codes = decode_review_qr_codes(content)

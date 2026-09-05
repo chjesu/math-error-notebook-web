@@ -208,7 +208,8 @@ def cross_validate_reference(reference: VerifiedQuestionReference, independent_a
                 r"^\s*[A-Z]\s*[.、．:：)]\s*", "", reference.options[option_index], flags=re.IGNORECASE,
             )
             comparable_expected = _canonical_answer_parts(option_text)
-    status = "consistent" if comparable_expected and actual_parts and comparable_expected == actual_parts else "conflict"
+    # A verified choice may be submitted as either its label or its value.
+    status = "consistent" if actual_parts and actual_parts in (expected_parts, comparable_expected) else "conflict"
     return {
         "schema": "question-bank-cross-validation/v1",
         "status": status,
