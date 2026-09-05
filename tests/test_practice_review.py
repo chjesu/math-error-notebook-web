@@ -643,6 +643,34 @@ class PracticeReviewApiTests(unittest.TestCase):
         self.assertEqual([item["receipt_status"] for item in response[2]["results"]], ["review_completed", "review_completed"])
         self.assertEqual(len(self.fixture.store.review_attempts), 1)
 
+    def test_correct_final_answers_without_working_complete_review_and_replay_once(self):
+        # The model supplies its solution; the student's frozen text stays answer-only.
+        with patch.object(self.client, "call", return_value=(200, {}, {"results": [{}]})):
+            self.process()
+        payload = self.last_payload
+        original = payload["items"][0]
+        original.update(answer_text="x=5", final_answer="x=5", correct_solution="由 x+5=10，移项得 x=10-5=5。",
+                        prevention_cue="可练习补写移项过程；仅作建议，无需补交。")
+        item = self.job.checkpoint["review_manifest"][1]
+        payload["items"].append(original | {
+            "item_no": 2, "question_text": item["stem_text"], "answer_text": "y=3或-3",
+            "final_answer": "y=3或-3", "correct_solution": "由 y²=9，开平方得 y=3或-3。",
+            "review": {"code": item["code"]},
+        })
+        first = self.call("/v1/internal/harness/intakes/process", payload)
+        self.assertEqual(first[0], 200, first)
+        results = first[2]["results"]
+        self.assertEqual([row["answer_text"] for row in results], ["x=5", "y=3或-3"])
+        self.assertEqual([row["verdict"] for row in results], ["correct", "correct"])
+        self.assertEqual([row["receipt_status"] for row in results], ["review_completed", "review_completed"])
+        self.assertTrue(all(row["review_association"]["status"] == "matched" for row in results))
+        replay = self.call("/v1/internal/harness/intakes/process", payload)
+        self.assertEqual(replay[0], 200, replay)
+        self.assertEqual([row["candidate_id"] for row in replay[2]["results"]], [row["candidate_id"] for row in results])
+        self.assertEqual((len(self.fixture.store.errors), len(self.fixture.store.review_attempts)), (1, 1))
+        progress = self.fixture.service.list_practice_pdfs(user_id=self.fixture.owner)[0]["progress"]
+        self.assertEqual(progress["answered_count"], 2)
+
     def test_storage_failure_returns_retryable_receipt_with_frozen_candidate(self):
         with patch.object(self.fixture.service, "commit_practice_review", side_effect=RuntimeError("storage unavailable")):
             result = self.process()

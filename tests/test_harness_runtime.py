@@ -10,9 +10,21 @@ import unittest
 from unittest.mock import patch
 
 from services.web_app.harness_runtime import HarnessRuntimeAdapter, HarnessRuntimeConfig
+from scripts.codex_task_router import ANSWER_FIRST_GRADING_POLICY
 
 
 class HarnessRuntimeTests(unittest.TestCase):
+    def test_structured_grading_and_conversation_use_answer_first_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            adapter = HarnessRuntimeAdapter(self.config(Path(directory)))
+            with patch.object(adapter, "_schema_text", return_value="{}"), patch.object(adapter, "_run_structured") as run:
+                adapter.run_structured_turn({"task": "math-grade-adjudication"}, "{}", Path(directory) / "grade.json")
+                self.assertIn(ANSWER_FIRST_GRADING_POLICY, run.call_args.args[2])
+                adapter.run_conversation_turn({"task": "math-notebook-loop"}, "{}", Path(directory) / "loop.json")
+                self.assertIn(ANSWER_FIRST_GRADING_POLICY, run.call_args.args[2])
+                adapter.run_structured_turn({"task": "math-grade-solution"}, "{}", Path(directory) / "solve.json")
+                self.assertNotIn(ANSWER_FIRST_GRADING_POLICY, run.call_args.args[2])
+
     def test_default_provider_matches_the_product_qwen_configuration(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             config = HarnessRuntimeConfig.from_environment(Path(__file__).parents[1])

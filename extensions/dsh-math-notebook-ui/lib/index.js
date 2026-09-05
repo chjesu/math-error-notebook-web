@@ -14,6 +14,7 @@ const transcriptionByAgent = new WeakMap();
 const pendingAdjudicationByAgent = new WeakMap();
 const pendingReviewAssociationByAgent = new WeakMap();
 const reviewAssociationReceiptsByAgent = new WeakMap();
+const answerFirstPolicy = "答案优先：包括解答题，所有所求最终答案清晰、完整且正确即判 correct；不得仅因缺少过程降级或要求补交。补过程仅作建议，不阻断保存、PDF 关联和复习完成。correct_solution 是模型的参考解析，不是学生作答；不得补造学生过程。错答、漏答、歧义及未完成的证明仍正常判定。";
 
 function newBatchReference() {
   return globalThis.crypto.randomUUID();
@@ -454,6 +455,7 @@ function transcribeAttachmentsTool(ctx) {
       },
       render: (_args, value) => value.items.length === 0 ? [{type: "text", text: missingImageMessage}] : [{type: "text", text: [
         "题干与作答已经冻结，不得重新识别或改写。严格按每题 grading_strategy 判题：",
+        answerFirstPolicy,
         ...value.items.flatMap((item) => item.grading_strategy === "verified_reference" ? [
           `图片 ${item.attachment_index} · 第 ${item.item_no} 题题干：${item.question_text}`,
           `图片 ${item.attachment_index} · 第 ${item.item_no} 题学生作答：${item.answer_text || "未作答"}`,
@@ -548,14 +550,14 @@ function processAttachmentsTool(ctx) {
   const itemProperties = {
     attachment_index: {type: "integer", description: "One-based image index in the latest user message."},
     item_no: {type: "integer", description: "One-based question order within that image."},
-    verdict: {type: "string", enum: ["correct", "partial", "incorrect", "unclear"]},
-    first_error: {type: "string"},
+    verdict: {type: "string", enum: ["correct", "partial", "incorrect", "unclear"], description: answerFirstPolicy},
+    first_error: {type: "string", description: "Only a substantive error, not missing working when final answers are correct. Use an empty string for correct."},
     cause_code: {type: "string", enum: ["", "knowledge_gap", "concept_confusion", "formula_condition", "method_choice", "reasoning_gap", "algebra_transform", "calculation", "misreading", "incomplete_cases", "expression", "careless", "unclear"]},
     cause_evidence: {type: "string"},
     knowledge_points: {type: "array", items: {type: "string"}},
     correct_solution: {type: "string", description: 'Required key. For independent non-unclear items, give the complete correct solution for every subquestion, not just the student error. For verified_reference or unclear, use ""; never copy verified reference text.'},
     final_answer: {type: "string", description: 'Required key. For independent non-unclear items, give the final answers to all subquestions. For verified_reference or unclear, use ""; the host supplies the verified answer.'},
-    prevention_cue: {type: "string"},
+    prevention_cue: {type: "string", description: "Optional learning advice. Missing working on a correct answer is advice only, never a resubmission or review-completion requirement."},
     confidence: {type: "number"},
   };
   const resultProperties = {
@@ -645,7 +647,7 @@ function processAttachmentsTool(ctx) {
         return fields.length ? [`图片 ${expected.attachment_index} 第 ${expected.item_no} 题缺少 ${fields.join("、")}`] : [];
       });
       if (missingSolutions.length) {
-        throw new Error(`independent 判题必须提交完整解析与最终答案：${missingSolutions.join("；")}。本次调用尚未提交任何题目。请基于已冻结题干补齐 correct_solution（完整正确解法）和 final_answer（所有小题最终答案），不能仅提交 first_error，也不能为省略解答改判 unclear。保持其他判定字段，使用相同 batch_ref=${frozen.batchRef} 按顺序重新调用 process_error_notebook_attachments 一次，包含全部未完成题目：${pending.map(itemKey).join(", ")}。无需重传图片或重新转写。\n${protectedTrailer([protectedMarker("batch", frozen.batchRef, "active")])}`);
+        throw new Error(`independent 判题必须提交完整解析与最终答案：${missingSolutions.join("；")}。缺少的是模型参考解析，不是学生答题过程；禁止要求学生补过程。${answerFirstPolicy}本次调用尚未提交任何题目。请基于已冻结题干补齐 correct_solution（完整正确解法）和 final_answer（所有小题最终答案），不能仅提交 first_error，也不能为省略解答改判 unclear。保持其他判定字段，使用相同 batch_ref=${frozen.batchRef} 按顺序重新调用 process_error_notebook_attachments 一次，包含全部未完成题目：${pending.map(itemKey).join(", ")}。无需重传图片或重新转写。\n${protectedTrailer([protectedMarker("batch", frozen.batchRef, "active")])}`);
       }
       let usage = null;
       for (let attachmentIndex = 1; attachmentIndex <= images.length; attachmentIndex += 1) {

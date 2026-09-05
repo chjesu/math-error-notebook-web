@@ -38,6 +38,13 @@ MAX_INPUT_BYTES = 262_144
 CLI_MAX_ATTEMPTS = 2
 CLI_RETRY_DELAY_SECONDS = 1.0
 _CLI_LOG_LOCK = Lock()
+ANSWER_FIRST_GRADING_POLICY = (
+    " Grade all clear, complete and correct final answers as correct, including constructed-response questions. "
+    "Never downgrade to partial/incorrect/unclear solely for missing or abbreviated student working. "
+    "Suggest more working only as optional advice, never as a prerequisite for saving or review completion. "
+    "Your complete reference solution is not required student working; never invent unseen student steps. "
+    "Still assess wrong answers, omitted subquestions, ambiguous answers and unfinished proofs normally. "
+)
 
 
 class CodexCliInvocationError(RuntimeError):
@@ -330,6 +337,7 @@ def _review_prompt(route: dict, review_input: str) -> str:
         )
     elif route["task"].startswith("math-grade"):
         purpose = "Produce a read-only math grading candidate from the frozen attempt, attached original image, independent reference solution, and deterministic verification report. Recheck the conclusion rather than blindly copying the reference solution. Find the first substantive error, classify its cause, give direct evidence, concrete knowledge points for review and notebook indexing, a complete correct solution, final answer, and a short prevention cue. Never invent unreadable content; use unclear when evidence is insufficient or evidence conflicts."
+        purpose += ANSWER_FIRST_GRADING_POLICY
     else:
         purpose = "Perform a read-only engineering review."
     role_context = ""
@@ -485,7 +493,7 @@ def run_conversation_turn(
         "Return a read-only structured candidate only. Never claim that a database write or confirmation happened. "
         "Use revise_intake only when returning the complete corrected question and answer. Use revise_grade only "
         "when returning a complete grading candidate including concrete knowledge_points. Use ready when the current candidate is ready for the user-controlled gate. "
-        "Review input:\n" + review_input
+        + ANSWER_FIRST_GRADING_POLICY + "Review input:\n" + review_input
     )
     if session_id:
         if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 128:

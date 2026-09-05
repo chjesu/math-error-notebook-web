@@ -587,6 +587,12 @@ assert.ok(!source.includes('plan_kind: "practice"'));
         self.assertIn("./notebook-protected-pruner.mjs", preset)
         self.assertIn("confirm_error_notebook_entry", preset)
         for prompt in (patch, preset, runtime_config):
+            self.assertIn('本项目采用答案优先判题：选择题、填空题和解答题', prompt)
+            self.assertIn('学生所有所求最终答案清晰、完整且正确时一律判 correct', prompt)
+            self.assertIn('不得作为保存、PDF 关联或完成复习的前提', prompt)
+            self.assertIn('模型的 correct_solution 是模型负责的完整参考解析', prompt)
+            self.assertIn('错答、漏答小问、最终答案有歧义仍正常判定', prompt)
+            self.assertIn('证明题不能仅复述待证结论就算完成证明', prompt)
             self.assertIn('第一行必须是“错题编号（error_id）：<完整编号>”', prompt)
             self.assertIn('放在“题目整理”之前', prompt)
             self.assertIn('32 位小写十六进制 error_id', prompt)

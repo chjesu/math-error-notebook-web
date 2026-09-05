@@ -324,6 +324,9 @@ assert.deepEqual(repairFrozen.items.map(item=>item.grading_strategy),['verified_
 const repairText=transcribe.output.render({{}},repairFrozen)[0].text;
 assert.match(repairText,/correct_solution/);
 assert.match(repairText,/final_answer/);
+assert.match(repairText,/包括解答题/);
+assert.match(repairText,/不得仅因缺少过程降级或要求补交/);
+assert.match(processTool.parameters.properties.items.items.properties.verdict.description,/所有所求最终答案清晰、完整且正确即判 correct/);
 const writesBeforeRepair=processCalls;
 const imageOneBeforeRepair=imageOneWrites;
 for(const verdict of ['correct','partial','incorrect']){{
@@ -337,6 +340,8 @@ for(const verdict of ['correct','partial','incorrect']){{
         assert.ok(error.message.includes(repairFrozen.batch_ref));
         assert.match(error.message,/全部未完成题目：1:1, 2:1/);
         assert.match(error.message,/无需重传图片或重新转写/);
+        assert.match(error.message,/缺少的是模型参考解析，不是学生答题过程/);
+        assert.match(error.message,/禁止要求学生补过程/);
         assert.deepEqual(JSON.parse(error.message.split('LZLM_PROTECTED_V1 ').at(-1)),[{{key:'batch:'+repairFrozen.batch_ref,status:'active'}}]);
         return true;
       }});

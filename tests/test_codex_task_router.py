@@ -19,6 +19,15 @@ SPEC.loader.exec_module(router)
 
 
 class CodexTaskRouterTests(unittest.TestCase):
+    def test_grading_policy_does_not_require_student_working_for_correct_answers(self) -> None:
+        for task in ("math-grade-candidate", "math-grade-adjudication"):
+            prompt = router._review_prompt({"task": task}, "{}")
+            self.assertIn(router.ANSWER_FIRST_GRADING_POLICY, prompt)
+            self.assertIn("including constructed-response questions", prompt)
+            self.assertIn("optional advice", prompt)
+            self.assertIn("omitted subquestions", prompt)
+        self.assertNotIn(router.ANSWER_FIRST_GRADING_POLICY, router._review_prompt({"task": "math-grade-solution"}, "{}"))
+
     def test_documented_direct_script_route_command(self) -> None:
         completed = subprocess.run(
             [
@@ -230,6 +239,7 @@ class CodexTaskRouterTests(unittest.TestCase):
             thread_ids = []
 
             def fake_turn(*, route, prompt, output_path, thread_id, event_callback):
+                self.assertIn(router.ANSWER_FIRST_GRADING_POLICY, prompt)
                 thread_ids.append(thread_id)
                 packet = json.loads(prompt.split("Review input:\n", 1)[1])
                 result = {
